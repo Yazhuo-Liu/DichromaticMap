@@ -548,7 +548,7 @@ def tensor_readout(cell, angle):
             f"G{g+1}:\n" + np.array2string(e3, precision=6, suppress_small=True)
         )
     lines.append(
-        "Common C1,C2 columns / a0 (screen x,y):\n"
+        "Common C1,C2 columns / a0 (unrotated analysis x,y):\n"
         + np.array2string(cell.cell, precision=6)
     )
     axial = geometry.axial_repeat_half_indices

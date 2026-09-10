@@ -9,7 +9,8 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/tilt-test-mpl")
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "legacy"))
 import time
 import unittest
 import math

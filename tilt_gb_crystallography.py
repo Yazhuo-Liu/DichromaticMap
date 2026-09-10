@@ -309,6 +309,152 @@ def csl_angle_deg(m: int, n: int, axis: str = "110") -> float:
     return float(np.degrees(2.0 * np.arctan2(np.sqrt(norm_squared) * n, m)))
 
 
+def validate_cell_vertices(vertices):
+    """Four distinct convex vertices in perimeter order, in model coordinates."""
+    vertices = np.asarray(vertices, dtype=float)
+    if vertices.shape != (4, 2) or not np.all(np.isfinite(vertices)):
+        raise ValueError("Select four finite vertices in perimeter order")
+    edges = np.roll(vertices, -1, axis=0) - vertices
+    lengths = np.linalg.norm(edges, axis=1)
+    tolerance = 1e-8 * max(1.0, float(lengths.max()))
+    turns = edges[:, 0] * np.roll(edges[:, 1], -1) - edges[:, 1] * np.roll(
+        edges[:, 0], -1
+    )
+    if np.any(lengths <= tolerance) or not (
+        np.all(turns > tolerance * lengths) or np.all(turns < -tolerance * lengths)
+    ):
+        raise ValueError(
+            "Vertices must form a convex, non-crossing cell; pick them around its perimeter"
+        )
+    return vertices
+
+
+def cell_membership(points, vertices):
+    """Interior, boundary and (if parallelogram) half-open membership masks.
+
+    Half-open means p0 + u*(p1-p0) + v*(p3-p0), 0 <= u,v < 1.
+    It avoids counting the upper two edges twice when cells are repeated.
+    Geometric parallelogram shape does not prove crystal periodicity.
+    """
+    vertices = validate_cell_vertices(vertices)
+    points = np.asarray(points, dtype=float).reshape(-1, 2)
+    edges = np.roll(vertices, -1, axis=0) - vertices
+    lengths = np.linalg.norm(edges, axis=1)
+    tolerance = 1e-8 * max(1.0, float(lengths.max()))
+    orientation = np.sign(np.linalg.det(np.column_stack((edges[0], -edges[-1]))))
+    delta = points[:, None, :] - vertices
+    distances = (
+        orientation
+        * (edges[None, :, 0] * delta[:, :, 1] - edges[None, :, 1] * delta[:, :, 0])
+        / lengths
+    )
+    closed = np.all(distances >= -tolerance, axis=1)
+    interior = np.all(distances > tolerance, axis=1)
+    half_open = None
+    if (
+        np.linalg.norm((vertices[2] - vertices[1]) - (vertices[3] - vertices[0]))
+        <= tolerance
+    ):
+        basis = np.column_stack((vertices[1] - vertices[0], vertices[3] - vertices[0]))
+        inverse = np.linalg.inv(basis)
+        uv = (points - vertices[0]) @ inverse.T
+        eps = tolerance * np.linalg.norm(inverse, axis=1)
+        half_open = np.all((uv >= -eps) & (uv < 1 - eps), axis=1)
+    return interior, closed & ~interior, half_open
+
+
+@dataclass(frozen=True)
+class CellAtomCounts:
+    interior: np.ndarray  # grain x axial layer, one full axial repeat
+    boundary: np.ndarray
+    half_open: np.ndarray | None
+    area: float  # a0 squared
+
+
+def count_cell_atoms(
+    vertices,
+    angle,
+    deformations,
+    lattice="FCC",
+    axis="110",
+    boundary_points=None,
+    region_states=(True, True, True, True),
+    layer=-1,
+):
+    """Count the entire selected cell, independently of viewport and rendering.
+
+    Each grain is counted separately; coincident atoms in different grains
+    are not silently merged. Optional region/layer filters match the viewer.
+    Generation uses the same interactive allocation guard as normal rendering.
+    """
+    vertices = validate_cell_vertices(vertices)
+    geometry = get_geometry(lattice, axis)
+    low, high = vertices.min(axis=0), vertices.max(axis=0)
+    margin = 1e-7 * max(1.0, float(np.max(high - low)))
+    width, height = high - low + 2 * margin
+    center = (low + high) / 2
+    inside_counts = np.zeros((2, geometry.layer_count), dtype=int)
+    edge_counts = np.zeros_like(inside_counts)
+    half_counts = np.zeros_like(inside_counts)
+    is_parallelogram = False
+    for grain_index, sign in enumerate((1, -1)):
+        try:
+            grain = projected_columns(
+                width,
+                height,
+                sign * angle / 2,
+                center,
+                deformations[grain_index],
+                lattice,
+                axis,
+            )
+        except GeometryLimitError as error:
+            raise GeometryLimitError(
+                "Manual cell exceeds the atom enumeration limit; select a smaller cell. "
+                "View zoom does not affect counting."
+            ) from error
+        inside, boundary, half_open = cell_membership(grain.positions, vertices)
+        visible = np.ones(len(grain.positions), dtype=bool)
+        if layer >= 0:
+            visible &= grain.layers == layer
+        if boundary_points is not None and len(boundary_points) == 2:
+            start, end = np.asarray(boundary_points)
+            direction = end - start
+            cross = direction[0] * (grain.positions[:, 1] - start[1]) - direction[1] * (
+                grain.positions[:, 0] - start[0]
+            )
+            visible &= (region_states[2 * grain_index] & (cross >= -1e-9)) | (
+                region_states[2 * grain_index + 1] & (cross <= 1e-9)
+            )
+        for mask, counts in (
+            (inside, inside_counts),
+            (boundary, edge_counts),
+            (half_open, half_counts),
+        ):
+            if mask is not None:
+                counts[grain_index] = np.bincount(
+                    grain.layers[mask & visible], minlength=geometry.layer_count
+                )
+        is_parallelogram = half_open is not None
+    # Translation-stable shoelace area.
+    relative = vertices - vertices[0]
+    area = (
+        abs(
+            np.sum(
+                relative[:, 0] * np.roll(relative[:, 1], -1)
+                - relative[:, 1] * np.roll(relative[:, 0], -1)
+            )
+        )
+        / 2
+    )
+    return CellAtomCounts(
+        inside_counts,
+        edge_counts,
+        half_counts if is_parallelogram else None,
+        float(area),
+    )
+
+
 @dataclass(frozen=True)
 class CSLPreset:
     sigma: int

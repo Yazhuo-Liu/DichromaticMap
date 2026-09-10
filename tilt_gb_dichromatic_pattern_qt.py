@@ -10,6 +10,8 @@ Controls
 * Press "Pick GB" and click B1/B2 to define a trial boundary.
 * Press "Measure vector" and click P1/P2 to label their lattice vector.
 * Atom selections survive panning and zooming.
+* Display rotation turns the drawing, without changing misorientation or strain.
+* Pick four same-layer common sites around a manual cell and count its atoms.
 * Choose FCC/BCC and a preset or custom integer tilt axis; axial layers are computed.
 * Every plot coordinate is in a0: coordinate 1 means one lattice constant.
 * Gold rings mark coincidences only when both position and layer agree.
@@ -57,6 +59,8 @@ from tilt_gb_crystallography import (
     matching_csl_preset,
     layer_name,
     GeometryLimitError,
+    validate_cell_vertices,
+    count_cell_atoms,
 )
 
 
@@ -74,6 +78,7 @@ COINCIDENCE_COLOR = "#e5a50a"
 BOUNDARY_COLOR = "#17212b"
 VECTOR_COLOR = "#8736a6"
 LAYER_SYMBOLS = ("o", "d", "t", "s", "p", "h", "star", "+", "x", "t1", "t2", "t3")
+MANUAL_CELL_COLOR = "#4755b8"
 
 
 # Backward-compatible names for scripts importing the original FCC [110] API.
@@ -97,6 +102,17 @@ class SelectedAtom:
     grain_index: int
     layer: int
     half_indices: np.ndarray
+
+
+@dataclass(frozen=True)
+class CellVertex:
+    position: np.ndarray  # unrotated model coordinates
+    layer: int
+    source: str  # exact CSL or local near-pair midpoint
+
+
+def cell_count_worker(*args):
+    return os.getpid(), count_cell_atoms(*args)
 
 
 @dataclass(frozen=True)
@@ -327,6 +343,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             initial_preset.angle_deg if initial_preset is not None else initial_angle
         )
         self.interaction_mode = "idle"
+        self.display_rotation_deg = 0.0
+        self.manual_vertices = []
+        self.manual_counts = None
+        self.manual_count_error = None
+        self.manual_count_key = None
+        self.manual_count_future = None
+        self.manual_count_pending = None
+        self.manual_count_running_key = None
+        self.manual_local_cutoff = None
         self.axial_repeat = 0
         self.grains: list[ProjectedGrain] = []
         self.grain_signature = None
@@ -430,6 +455,28 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.local_link_item.setZValue(3)
         self.plot_item.addItem(self.local_match_item)
         self.plot_item.addItem(self.local_link_item)
+        self.manual_cell_item = pg.PlotCurveItem(
+            pen=pg.mkPen(
+                MANUAL_CELL_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DashDotLine
+            )
+        )
+        self.manual_vertex_item = self._ring_item(MANUAL_CELL_COLOR, diameter * 2.2)
+        self.manual_labels = [
+            self._text_item(f"C{i+1}", MANUAL_CELL_COLOR) for i in range(4)
+        ]
+        self.manual_annotation = self._text_item(
+            "", MANUAL_CELL_COLOR, font_size=10, bordered=True
+        )
+        for item in (
+            self.manual_cell_item,
+            self.manual_vertex_item,
+            *self.manual_labels,
+            self.manual_annotation,
+        ):
+            item.setZValue(4)
+            self.plot_item.addItem(item)
+        for item in (*self.manual_labels, self.manual_annotation):
+            item.hide()
 
         self.boundary_endpoint_item = self._ring_item("#111827", diameter * 2.2)
         self.vector_endpoint_item = self._ring_item(VECTOR_COLOR, diameter * 2.35)
@@ -695,6 +742,31 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.angle_exact_label = QtWidgets.QLabel()
         self.angle_exact_label.setObjectName("mutedLabel")
         orientation_layout.addWidget(self.angle_exact_label)
+        rotation_row = QtWidgets.QHBoxLayout()
+        rotation_row.addWidget(QtWidgets.QLabel("Display rotation"))
+        self.rotation_spin = QtWidgets.QDoubleSpinBox()
+        self.rotation_spin.setRange(-180, 180)
+        self.rotation_spin.setDecimals(1)
+        self.rotation_spin.setSuffix("°")
+        self.rotation_spin.setSingleStep(1)
+        self.rotation_spin.valueChanged.connect(self._on_display_rotation)
+        rotation_row.addWidget(self.rotation_spin)
+        rotation_reset = QtWidgets.QToolButton()
+        rotation_reset.setText("0°")
+        rotation_reset.clicked.connect(lambda: self.rotation_spin.setValue(0))
+        rotation_row.addWidget(rotation_reset)
+        orientation_layout.addLayout(rotation_row)
+        self.rotation_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.rotation_slider.setRange(-1800, 1800)
+        self.rotation_slider.setTickPosition(QtWidgets.QSlider.TickPosition.TicksBelow)
+        self.rotation_slider.setTickInterval(450)
+        self.rotation_slider.setToolTip(
+            "Rotate the displayed pattern only; misorientation, strain and Miller indices stay unchanged"
+        )
+        self.rotation_slider.valueChanged.connect(
+            lambda value: self._on_display_rotation(value / 10)
+        )
+        orientation_layout.addWidget(self.rotation_slider)
         layout.addWidget(orientation_box)
 
         display_box = QtWidgets.QGroupBox("DISPLAY")
@@ -747,7 +819,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         self.worker_spin.valueChanged.connect(self._on_worker_count_changed)
         display_layout.addWidget(self.worker_spin, 4, 1)
-        self.cell_check = QtWidgets.QCheckBox("Show common cell")
+        self.cell_check = QtWidgets.QCheckBox("Show automatic cell")
         self.cell_check.setChecked(True)
         self.cell_check.setToolTip(
             "Layer-preserving CSL / Near-CSL periodic cell, not a GB structural unit"
@@ -759,6 +831,51 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.cell_fit_button.clicked.connect(self._fit_near_cell)
         display_layout.addWidget(self.cell_fit_button, 5, 1)
         layout.addWidget(display_box)
+
+        manual_box = QtWidgets.QGroupBox("MANUAL COMMON CELL")
+        manual_layout = QtWidgets.QVBoxLayout(manual_box)
+        self.manual_pick_button = QtWidgets.QPushButton("Pick 4 CSL vertices   M")
+        self.manual_pick_button.setCheckable(True)
+        self.manual_pick_button.clicked.connect(self._start_manual_cell)
+        manual_layout.addWidget(self.manual_pick_button)
+        manual_help = QtWidgets.QLabel(
+            "Pick around the perimeter, all in one layer. Gold CSL or purple near-pair centers."
+        )
+        manual_help.setWordWrap(True)
+        manual_help.setObjectName("mutedLabel")
+        manual_layout.addWidget(manual_help)
+        manual_actions = QtWidgets.QHBoxLayout()
+        self.manual_undo_button = QtWidgets.QPushButton("Undo vertex")
+        self.manual_undo_button.clicked.connect(self._undo_manual_vertex)
+        self.manual_clear_button = QtWidgets.QPushButton("Clear")
+        self.manual_clear_button.clicked.connect(self._clear_manual_cell)
+        self.manual_fit_button = QtWidgets.QPushButton("Fit")
+        self.manual_fit_button.setEnabled(False)
+        self.manual_fit_button.clicked.connect(self._fit_manual_cell)
+        for button in (
+            self.manual_undo_button,
+            self.manual_clear_button,
+            self.manual_fit_button,
+        ):
+            manual_actions.addWidget(button)
+        manual_layout.addLayout(manual_actions)
+        self.manual_visible_check = QtWidgets.QCheckBox(
+            "Count visible regions / layers only"
+        )
+        self.manual_visible_check.setToolTip(
+            "Unchecked: count both grains and every axial layer, independently of the viewport"
+        )
+        self.manual_visible_check.toggled.connect(self._queue_manual_count)
+        manual_layout.addWidget(self.manual_visible_check)
+        self.manual_info = QtWidgets.QPlainTextEdit()
+        self.manual_info.setReadOnly(True)
+        self.manual_info.setMinimumHeight(125)
+        self.manual_info.setMaximumHeight(190)
+        self.manual_info.setPlainText(
+            "No manual cell. Counts cover one full axial repeat. A selected region is not proof of periodicity."
+        )
+        manual_layout.addWidget(self.manual_info)
+        layout.addWidget(manual_box)
 
         near_box = QtWidgets.QGroupBox("NEAR-CSL · METHOD")
         near_layout = QtWidgets.QVBoxLayout(near_box)
@@ -854,11 +971,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_poll_timer = QtCore.QTimer(self)
         self.near_poll_timer.setInterval(25)
         self.near_poll_timer.timeout.connect(self._poll_near_search)
+        self.manual_count_timer = QtCore.QTimer(self)
+        self.manual_count_timer.setInterval(30)
+        self.manual_count_timer.timeout.connect(self._poll_manual_count)
 
     def _create_shortcuts(self) -> None:
         shortcuts = (
             ("R", self._start_new_boundary),
             ("V", self._start_vector_measurement),
+            ("M", self._start_manual_cell),
             ("C", self._reset_view),
             ("F", lambda: self._set_region_states((True, True, True, True))),
             ("1", lambda: self._set_region_states((True, False, False, True))),
@@ -906,6 +1027,327 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         return max(5.0, float(np.sqrt(self.parameters.marker_size) * 1.55))
 
     # ---------- view and rendering ----------
+
+    def _to_view(self, points):
+        return np.asarray(points) @ rotation_matrix_2d(self.display_rotation_deg).T
+
+    def _from_view(self, points):
+        return np.asarray(points) @ rotation_matrix_2d(self.display_rotation_deg)
+
+    def _model_view_bounds(self):
+        x0, x1, y0, y1 = self._view_range()
+        corners = self._from_view(np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]))
+        low, high = corners.min(axis=0), corners.max(axis=0)
+        return low[0], high[0], low[1], high[1]
+
+    def _on_display_rotation(self, angle):
+        angle = float(angle)
+        if abs(angle - self.display_rotation_deg) < 1e-10:
+            return
+        center, width, height = self._view_geometry()
+        model_center = self._from_view(center)
+        self.display_rotation_deg = angle
+        with QtCore.QSignalBlocker(self.rotation_spin), QtCore.QSignalBlocker(
+            self.rotation_slider
+        ):
+            self.rotation_spin.setValue(angle)
+            self.rotation_slider.setValue(round(angle * 10))
+        center = self._to_view(model_center)
+        self.view_box.setRange(
+            xRange=(center[0] - width / 2, center[0] + width / 2),
+            yRange=(center[1] - height / 2, center[1] + height / 2),
+            padding=0,
+        )
+        self._update_visible_points()
+        self._update_common_cell()
+        self._draw_boundary()
+        self._draw_vector()
+        self._draw_manual_cell()
+        self._update_title()
+        if not self._buffer_contains_view():
+            self.view_refresh_timer.start()
+
+    def _start_manual_cell(self, *_args):
+        if self.interaction_mode == "cell":
+            self._set_mode("idle")
+            return
+        if len(self.manual_vertices) == 4:
+            self._clear_manual_cell()
+        self._set_mode("cell")
+
+    def _clear_manual_cell(self, *_args):
+        self.manual_vertices = []
+        self.manual_counts = None
+        self.manual_count_error = None
+        self.manual_count_key = None
+        self.manual_count_pending = None
+        self.manual_local_cutoff = None
+        if self.manual_count_future is not None and self.manual_count_future.cancel():
+            self.manual_count_future = None
+        self.manual_info.setPlainText(
+            "No manual cell. Counts cover one full axial repeat; periodicity is not assumed."
+        )
+        self._draw_manual_cell()
+        if self.interaction_mode == "cell":
+            self._set_mode("idle")
+
+    def _undo_manual_vertex(self, *_args):
+        if not self.manual_vertices:
+            return
+        self.manual_vertices.pop()
+        self.manual_counts = None
+        self.manual_count_error = None
+        self.manual_count_key = None
+        self.manual_count_pending = None
+        self.manual_info.setPlainText("Continue picking vertices in perimeter order.")
+        self._draw_manual_cell()
+        self._set_mode("cell")
+
+    def _invalidate_manual_local_source(self):
+        if any(vertex.source == "local" for vertex in self.manual_vertices) and (
+            not self.local_active
+            or self.manual_local_cutoff != self.local_distance_spin.value()
+        ):
+            self._clear_manual_cell()
+
+    def _common_site_candidates(self):
+        """Only displayed common-site markers, restricted to the first layer."""
+        if self.grain_signature != self._geometry_signature():
+            return []
+        candidates = []
+        chosen_layer = (
+            self.manual_vertices[0].layer
+            if self.manual_vertices
+            else self.selected_layer
+        )
+        states = self._region_states()
+        if not self.csl_updating:
+            for layer, points in enumerate(self.coincident_points):
+                if chosen_layer >= 0 and layer != chosen_layer:
+                    continue
+                if self.selected_layer >= 0 and layer != self.selected_layer:
+                    continue
+                keep = np.ones(len(points), dtype=bool)
+                if len(self.selected_points) == 2:
+                    for grain in (0, 1):
+                        keep &= selected_region_mask(
+                            points,
+                            *self.selected_points,
+                            states[2 * grain],
+                            states[2 * grain + 1],
+                        )
+                candidates.extend(
+                    CellVertex(point.copy(), layer, "CSL") for point in points[keep]
+                )
+        if self.local_active and not self.local_updating:
+            keep = self._local_pair_mask()
+            if chosen_layer >= 0:
+                keep &= self.local_pairs.layers == chosen_layer
+            candidates.extend(
+                CellVertex(point.copy(), int(layer), "local")
+                for point, layer in zip(
+                    self.local_pairs.midpoints[keep], self.local_pairs.layers[keep]
+                )
+            )
+        return candidates
+
+    def _pick_manual_vertex(self, position):
+        candidates = self._common_site_candidates()
+        if not candidates:
+            self._update_status(
+                "No visible common sites in the required layer; enable Near-CSL or choose a CSL angle."
+            )
+            return
+        positions = np.array([candidate.position for candidate in candidates])
+        pixel_size = np.asarray(self.view_box.viewPixelSize())
+        delta = self._to_view(positions - position) / np.maximum(pixel_size, 1e-12)
+        distance = np.linalg.norm(delta, axis=1)
+        index = int(np.argmin(distance))
+        if distance[index] > max(14.0, self._base_marker_diameter()):
+            self._update_status(
+                "Click a gold CSL or purple near-pair marker in the first vertex's layer."
+            )
+            return
+        candidate = candidates[index]
+        if any(
+            np.linalg.norm(candidate.position - v.position) < 1e-8
+            for v in self.manual_vertices
+        ):
+            self._update_status("Choose a different common-site vertex.")
+            return
+        trial = self.manual_vertices + [candidate]
+        if len(trial) == 4:
+            try:
+                validate_cell_vertices([vertex.position for vertex in trial])
+            except ValueError as error:
+                self._update_status(str(error) + "; Undo vertex if needed.")
+                return
+        self.manual_vertices = trial
+        if candidate.source == "local":
+            self.manual_local_cutoff = self.local_distance_spin.value()
+        self._draw_manual_cell()
+        if len(trial) == 4:
+            self._set_mode("idle")
+            self._queue_manual_count()
+        else:
+            self._update_status()
+
+    def _draw_manual_cell(self):
+        points = np.array([v.position for v in self.manual_vertices]).reshape(-1, 2)
+        self._set_scatter(self.manual_vertex_item, points)
+        displayed = self._to_view(points)
+        outline = (
+            np.vstack((displayed, displayed[0])) if len(points) == 4 else displayed
+        )
+        self.manual_cell_item.setData(outline[:, 0], outline[:, 1])
+        self.manual_fit_button.setEnabled(len(points) == 4)
+        for index, label in enumerate(self.manual_labels):
+            label.setVisible(index < len(points))
+            if index < len(points):
+                vertex = self.manual_vertices[index]
+                label.setText(
+                    f"C{index+1} · {layer_name(vertex.layer)} · {vertex.source}"
+                )
+                label.setPos(*displayed[index])
+        self.manual_annotation.setVisible(len(points) == 4)
+        if len(points) == 4:
+            if self.manual_counts is None:
+                label = (
+                    "Manual cell · count unavailable"
+                    if self.manual_count_error
+                    else "Manual cell · counting…"
+                )
+            else:
+                counts = self.manual_counts
+                values = (
+                    counts.half_open
+                    if counts.half_open is not None
+                    else counts.interior + counts.boundary
+                )
+                convention = "half-open" if counts.half_open is not None else "closed"
+                g1, g2 = values.sum(axis=1)
+                label = f"Manual cell · {convention}\nG1: {g1}   G2: {g2}"
+            self.manual_annotation.setText(label)
+            self.manual_annotation.setPos(*displayed.mean(axis=0))
+
+    def _queue_manual_count(self, *_args):
+        if len(self.manual_vertices) != 4:
+            return
+        points = np.array([vertex.position for vertex in self.manual_vertices])
+        filtered = self.manual_visible_check.isChecked()
+        boundary = (
+            np.array(self.selected_points)
+            if filtered and len(self.selected_points) == 2
+            else None
+        )
+        states = self._region_states() if filtered else (True, True, True, True)
+        layer = self.selected_layer if filtered else -1
+        key = (
+            tuple(points.ravel()),
+            self._geometry_signature(),
+            filtered,
+            layer,
+            states,
+            tuple(boundary.ravel()) if boundary is not None else None,
+        )
+        if key == self.manual_count_key:
+            return
+        self.manual_count_key = key
+        self.manual_counts = None
+        self.manual_count_error = None
+        self.manual_count_pending = (
+            points,
+            self.angle_deg,
+            tuple(f.copy() for f in self.deformations),
+            self.geometry.lattice,
+            self.geometry.axis,
+            boundary,
+            states,
+            layer,
+        )
+        if self.manual_count_future is not None and self.manual_count_future.cancel():
+            self.manual_count_future = None
+        self.manual_info.setPlainText(
+            "Counting the entire cell in the background (independent of viewport)…"
+        )
+        self._draw_manual_cell()
+        self.manual_count_timer.start()
+        self._poll_manual_count()
+
+    def _poll_manual_count(self):
+        if self.manual_count_future is not None:
+            if not self.manual_count_future.done():
+                return
+            try:
+                pid, counts = self.manual_count_future.result()
+                self.worker_process_ids.add(pid)
+                if self.manual_count_running_key == self.manual_count_key:
+                    self.manual_counts = counts
+                    self._show_manual_counts()
+            except Exception as error:
+                if self.manual_count_running_key == self.manual_count_key:
+                    self.manual_count_error = str(error)
+                    self.manual_info.setPlainText(
+                        f"Cell count unavailable: {error}\nNo partial count is reported."
+                    )
+                    self.manual_annotation.setText("Manual cell · count unavailable")
+            self.manual_count_future = None
+        if self.manual_count_pending is not None:
+            args, self.manual_count_pending = self.manual_count_pending, None
+            executor = self.executor
+            if executor is None:
+                if self.local_thread_executor is None:
+                    self.local_thread_executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=1
+                    )
+                executor = self.local_thread_executor
+            self.manual_count_running_key = self.manual_count_key
+            try:
+                self.manual_count_future = executor.submit(cell_count_worker, *args)
+            except Exception as error:
+                self.manual_count_error = str(error)
+                self.manual_info.setPlainText(f"Cell count unavailable: {error}")
+                self._draw_manual_cell()
+        if self.manual_count_future is None:
+            self.manual_count_timer.stop()
+
+    def _show_manual_counts(self):
+        counts = self.manual_counts
+        lines = [
+            "Manual region; periodicity not verified.",
+            f"Area = {counts.area:.6g} a₀²; one axial repeat.",
+            (
+                "Visible regions/layers only."
+                if self.manual_visible_check.isChecked()
+                else "Both grains, all layers; independent of view."
+            ),
+        ]
+        for grain in (0, 1):
+            interior = counts.interior[grain]
+            boundary = counts.boundary[grain]
+            lines.append(
+                f"G{grain+1}: interior {interior.sum()}, boundary {boundary.sum()}, closed {(interior+boundary).sum()}"
+            )
+            if counts.half_open is not None:
+                lines.append(
+                    f"  Half-open count: {counts.half_open[grain].sum()} (upper edges excluded)"
+                )
+            for layer in range(self.geometry.layer_count):
+                value = f"  {layer_name(layer)}: interior {interior[layer]}, boundary {boundary[layer]}"
+                if counts.half_open is not None:
+                    value += f", half-open {counts.half_open[grain,layer]}"
+                lines.append(value)
+        if counts.half_open is None:
+            lines.append("Not a parallelogram: no half-open periodic-cell count.")
+        lines.append("G1/G2 counted separately; overlapping atoms are not merged.")
+        self.manual_info.setPlainText("\n".join(lines))
+        self._draw_manual_cell()
+
+    def _fit_manual_cell(self, *_args):
+        if len(self.manual_vertices) == 4:
+            self._fit_model_corners(
+                np.array([v.position for v in self.manual_vertices])
+            )
 
     def _empty_coincidences(self):
         return tuple(np.empty((0, 2)) for _ in range(self.geometry.layer_count))
@@ -1056,6 +1498,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.near_cell_item.setData([], [])
         else:
             corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]) @ cell.cell.T
+            corners = self._to_view(corners)
             self.near_cell_item.setData(corners[:, 0], corners[:, 1])
         self.near_cell_item.setVisible(cell is not None and self.cell_check.isChecked())
 
@@ -1108,6 +1551,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _toggle_near(self, enabled):
         self.near_enabled = bool(enabled)
+        self._invalidate_manual_local_source()
         self._sync_near_controls()
         self.near_button.setText("Disable Near-CSL" if enabled else "Enable Near-CSL")
         if enabled:
@@ -1127,6 +1571,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _queue_near_search(self, *_args):
         if not self.near_enabled:
             return
+        self._invalidate_manual_local_source()
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
         if self.near_search is not None:
@@ -1263,8 +1708,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_local_overlay()
         self._update_status()
 
-    def _update_local_overlay(self):
-        """Filter both original endpoints, never just the proposed midpoint."""
+    def _local_pair_mask(self):
+        """Visibility in physical coordinates; also used for manual picking."""
         pairs = self.local_pairs
         mask = np.full(len(pairs.layers), self.local_active, dtype=bool)
         if self.grain_signature != self._geometry_signature():
@@ -1292,12 +1737,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 & (midpoints[:, 1] >= bottom + halo)
                 & (midpoints[:, 1] <= top - halo)
             )
+        return mask
+
+    def _update_local_overlay(self):
+        """Filter both original endpoints, never just the proposed midpoint."""
+        pairs = self.local_pairs
+        mask = self._local_pair_mask()
+        midpoints = pairs.midpoints
         self._set_scatter(self.local_match_item, midpoints[mask])
         links = np.stack((pairs.first[mask], pairs.second[mask]), axis=1).reshape(-1, 2)
+        links = self._to_view(links)
         self.local_link_item.setData(links[:, 0], links[:, 1], connect="pairs")
         if not self.local_active:
             return
         x0, x1, y0, y1 = self._view_range()
+        midpoints = self._to_view(midpoints)
         visible = mask & (
             (midpoints[:, 0] >= x0)
             & (midpoints[:, 0] <= x1)
@@ -1328,6 +1782,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if cell is None:
             return
         corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1]]) @ cell.cell.T
+        self._fit_model_corners(corners)
+
+    def _fit_model_corners(self, corners):
+        corners = self._to_view(corners)
         center = (corners.min(axis=0) + corners.max(axis=0)) / 2
         extent = np.ptp(corners, axis=0) * 1.15
         _, old_width, old_height = self._view_geometry()
@@ -1368,7 +1826,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _buffer_geometry(
         self,
     ) -> tuple[np.ndarray, float, float, tuple[float, float, float, float]]:
-        center, view_width, view_height = self._view_geometry()
+        x0, x1, y0, y1 = self._model_view_bounds()
+        center = np.array([(x0 + x1) / 2, (y0 + y1) / 2])
+        view_width, view_height = x1 - x0, y1 - y0
         width = BUFFER_FACTOR * view_width
         height = BUFFER_FACTOR * view_height
         if self.local_active:
@@ -1398,6 +1858,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
 
     def _on_worker_count_changed(self, worker_count: int) -> None:
+        recount = len(self.manual_vertices) == 4 and self.manual_counts is None
         self._cancel_parallel_work()
         self.near_poll_timer.stop()
         if self.near_search is not None:
@@ -1408,6 +1869,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if self.near_enabled:
             self._queue_near_search()
         self._update_status(f"Compute pool changed to {self.worker_count} workers.")
+        if recount:
+            self.manual_count_key = None
+            self._queue_manual_count()
 
     def _cancel_parallel_work(self) -> None:
         self.parallel_generation += 1
@@ -1674,7 +2138,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _buffer_contains_view(self) -> bool:
         if self.buffer_bounds is None:
             return False
-        x_min, x_max, y_min, y_max = self._view_range()
+        x_min, x_max, y_min, y_max = self._model_view_bounds()
         bx_min, bx_max, by_min, by_max = self.buffer_bounds
         margin_x = 0.10 * (bx_max - bx_min)
         margin_y = 0.10 * (by_max - by_min)
@@ -1693,6 +2157,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_marker_sizes()
         self._draw_boundary()
         self._draw_vector()
+        self._draw_manual_cell()
         self._refresh_visible_counts()
         if not self._buffer_contains_view() and self.parallel_stage != "grains":
             self.view_refresh_timer.start()
@@ -1730,11 +2195,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.boundary_endpoint_item.setSize(diameter * 2.2)
         self.vector_endpoint_item.setSize(diameter * 2.35)
         self.local_match_item.setSize(diameter * 2.0)
+        self.manual_vertex_item.setSize(diameter * 2.2)
 
-    @staticmethod
-    def _set_scatter(item: pg.ScatterPlotItem, points: np.ndarray) -> None:
+    def _set_scatter(self, item: pg.ScatterPlotItem, points: np.ndarray) -> None:
         if len(points):
-            item.setData(pos=points)
+            item.setData(pos=self._to_view(points))
         else:
             item.setData(x=[], y=[])
 
@@ -1790,6 +2255,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 visible_points = np.empty((0, 2))
             self._set_scatter(item, visible_points)
         self._refresh_visible_counts()
+        self._queue_manual_count()
 
     def _refresh_visible_counts(self) -> None:
         self._update_local_overlay()
@@ -1798,6 +2264,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         x_min, x_max, y_min, y_max = self._view_range()
 
         def in_view(points: np.ndarray) -> np.ndarray:
+            points = self._to_view(points)
             return (
                 (points[:, 0] >= x_min)
                 & (points[:, 0] <= x_max)
@@ -1844,6 +2311,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             suffix = f" · STRAINED near-CSL · {100*self.near_cell.max_strain:.3f}%"
         elif self.local_active:
             suffix += f" · LOCAL near-CSL · d ≤ {self.local_distance_spin.value():.4f} a₀ · unstrained"
+        if self.display_rotation_deg:
+            suffix += f" · display rotation {self.display_rotation_deg:.1f}°"
         self.plot_item.setTitle(
             f"<span style='font-size:15px;color:#17212b'>"
             f"{self.geometry.lattice} ⟨{self.geometry.axis}⟩ tilt dichromatic pattern · θ = {self.angle_deg:.2f}°"
@@ -1935,6 +2404,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         vector_blocker = QtCore.QSignalBlocker(self.vector_button)
         self.pick_gb_button.setChecked(mode == "boundary")
         self.vector_button.setChecked(mode == "vector")
+        with QtCore.QSignalBlocker(self.manual_pick_button):
+            self.manual_pick_button.setChecked(mode == "cell")
         del gb_blocker, vector_blocker
         cursor = (
             QtCore.Qt.CursorShape.CrossCursor
@@ -1964,6 +2435,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._set_mode("vector")
 
     def _clear_lattice_selections(self) -> None:
+        self._clear_manual_cell()
         self.selected_points.clear()
         self.selected_atoms.clear()
         self.boundary_item.setData([], [])
@@ -1987,6 +2459,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._update_status(
                 "Lattice positions are updating; pick again when the new atoms appear."
             )
+            return
+        position = self._from_view(position)
+        if self.interaction_mode == "cell":
+            self._pick_manual_vertex(position)
             return
         atom, pixel_distance = self._nearest_atom(position)
         if atom is None or pixel_distance > 13.0:
@@ -2021,7 +2497,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if not len(candidate_indices):
                 continue
             candidate_points = grain.positions[candidate_indices]
-            deltas = candidate_points - position
+            deltas = self._to_view(candidate_points - position)
             distances_squared = (deltas[:, 0] * pixels_per_x) ** 2 + (
                 deltas[:, 1] * pixels_per_y
             ) ** 2
@@ -2053,7 +2529,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         index = len(self.selected_points) - 1
         label = self.boundary_labels[index]
         label.setText(f"B{index + 1}  {self._atom_name(atom)}")
-        label.setPos(*atom.position)
+        label.setPos(*self._to_view(atom.position))
         label.show()
         if len(self.selected_points) == 2:
             self._set_mode("idle")
@@ -2075,7 +2551,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         index = len(self.selected_atoms) - 1
         label = self.vector_labels[index]
         label.setText(f"P{index + 1}  {self._atom_name(atom)}")
-        label.setPos(*atom.position)
+        label.setPos(*self._to_view(atom.position))
         label.show()
         if len(self.selected_atoms) == 2:
             self._set_mode("idle")
@@ -2083,9 +2559,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_status()
 
     def _draw_boundary(self) -> None:
+        if self.selected_points:
+            points = np.asarray(self.selected_points)
+            self._set_scatter(self.boundary_endpoint_item, points)
+            for label, point in zip(self.boundary_labels, self._to_view(points)):
+                label.setPos(*point)
         if len(self.selected_points) != 2:
             return
-        first, second = self.selected_points
+        first, second = self._to_view(self.selected_points)
         intersections = self._line_box_intersections(first, second)
         if len(intersections) >= 2:
             line = np.asarray(intersections[:2])
@@ -2108,10 +2589,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             item.show()
 
     def _draw_vector(self) -> None:
+        if self.selected_atoms:
+            points = np.array([atom.position for atom in self.selected_atoms])
+            self._set_scatter(self.vector_endpoint_item, points)
+            for label, point in zip(self.vector_labels, self._to_view(points)):
+                label.setPos(*point)
         if len(self.selected_atoms) != 2:
             return
-        first = self.selected_atoms[0].position
-        second = self.selected_atoms[1].position
+        first = self._to_view(self.selected_atoms[0].position)
+        second = self._to_view(self.selected_atoms[1].position)
         self.vector_item.setData([first[0], second[0]], [first[1], second[1]])
         direction = second - first
         angle = float(np.degrees(np.arctan2(direction[1], direction[0])) - 180.0)
@@ -2193,6 +2679,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         first, second = self.selected_atoms
         projected = second.position - first.position
         if first.grain_index != second.grain_index:
+            projected = self._to_view(projected)
             return (
                 "Cross-grain · no unique [hkl]\n"
                 f"proj/a₀({self.geometry.x_label},{self.geometry.y_label}) = "
@@ -2249,6 +2736,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     if not self.selected_points
                     else "B1 selected · click B2"
                 )
+            elif self.interaction_mode == "cell":
+                layer = (
+                    f" · layer {layer_name(self.manual_vertices[0].layer)}"
+                    if self.manual_vertices
+                    else ""
+                )
+                message = f"Manual cell · pick C{len(self.manual_vertices)+1}/4 around the perimeter{layer}"
             elif self.interaction_mode == "vector":
                 message = (
                     "Vector mode · click P1"
@@ -2306,6 +2800,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         exporter.export(str(output_path))
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
+        self.manual_count_timer.stop()
+        self.manual_count_pending = None
+        if self.manual_count_future is not None:
+            self.manual_count_future.cancel()
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
         if self.near_search is not None:
