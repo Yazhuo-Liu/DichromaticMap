@@ -229,6 +229,7 @@ def projected_columns(
     deformation: np.ndarray | None = None,
     lattice: str = "FCC",
     axis: str = "110",
+    translation: np.ndarray | None = None,
 ) -> ProjectedGrain:
     """Generate only the columns intersecting an a0-scaled screen rectangle.
 
@@ -236,6 +237,7 @@ def projected_columns(
     phase.  Work scales with the projected area, not a three-dimensional volume.
     ``deformation`` acts in screen coordinates after the grain rotation.
     ``half_indices`` remain reference-crystal indices even after deformation.
+    ``translation`` is a uniform post-deformation shift in analysis x,y / a0.
     """
 
     if not np.isfinite(width) or not np.isfinite(height) or width <= 0 or height <= 0:
@@ -245,6 +247,11 @@ def projected_columns(
     center = np.asarray(center, dtype=float)
     if center.shape != (2,) or not np.all(np.isfinite(center)):
         raise ValueError("center must contain two finite coordinates")
+    translation = (
+        np.zeros(2) if translation is None else np.asarray(translation, dtype=float)
+    )
+    if translation.shape != (2,) or not np.all(np.isfinite(translation)):
+        raise ValueError("translation must contain two finite coordinates")
 
     geometry = get_geometry(lattice, axis)
     radians = np.deg2rad(rotation_deg)
@@ -268,7 +275,7 @@ def projected_columns(
     # Include points on the viewport edge despite floating-point rotation noise.
     crop_epsilon = 1.0e-10 * max(1.0, float(np.max(np.abs(corners))))
     for layer, offset in enumerate(geometry.layer_offsets_half_indices):
-        screen_offset = transform @ (offset @ geometry.frame[:, :2] / 2.0)
+        screen_offset = transform @ (offset @ geometry.frame[:, :2] / 2.0) + translation
         integer_corners = (corners - screen_offset) @ inverse_basis.T
         minima = np.floor(integer_corners.min(axis=0)).astype(int) - 1
         maxima = np.ceil(integer_corners.max(axis=0)).astype(int) + 1
@@ -368,7 +375,15 @@ class CellAtomCounts:
     interior: np.ndarray  # grain x axial layer, one full axial repeat
     boundary: np.ndarray
     half_open: np.ndarray | None
-    area: float  # a0 squared
+    areas: np.ndarray  # one actual polygon area per grain, a0 squared
+    half_open_available: np.ndarray  # parallelogram test per grain
+
+    @property
+    def area(self):
+        """Compatibility for a shared-area cell; never average different cells."""
+        if not np.allclose(self.areas, self.areas[0], atol=1e-10, rtol=1e-10):
+            raise ValueError("Grain polygon areas differ; use areas[grain_index]")
+        return float(self.areas[0])
 
 
 def count_cell_atoms(
@@ -380,24 +395,47 @@ def count_cell_atoms(
     boundary_points=None,
     region_states=(True, True, True, True),
     layer=-1,
+    translations=None,
 ):
     """Count the entire selected cell, independently of viewport and rendering.
 
-    Each grain is counted separately; coincident atoms in different grains
-    are not silently merged. Optional region/layer filters match the viewer.
+    Vertices may be one shared (4,2) polygon or two independent (2,4,2)
+    polygons built from each grain's actual atom positions. Each grain is
+    counted inside its own polygon; the viewer passes the picked layer.
+    layer=-1 retains all-layer counting for non-GUI callers.
     Generation uses the same interactive allocation guard as normal rendering.
     """
-    vertices = validate_cell_vertices(vertices)
+    vertices = np.asarray(vertices, dtype=float)
+    if vertices.shape == (4, 2):
+        vertices = np.stack((vertices, vertices))
+    if vertices.shape != (2, 4, 2):
+        raise ValueError("Provide a (4,2) common polygon or (2,4,2) grain polygons")
+    for polygon in vertices:
+        validate_cell_vertices(polygon)
     geometry = get_geometry(lattice, axis)
-    low, high = vertices.min(axis=0), vertices.max(axis=0)
-    margin = 1e-7 * max(1.0, float(np.max(high - low)))
-    width, height = high - low + 2 * margin
-    center = (low + high) / 2
+    if (
+        not isinstance(layer, (int, np.integer))
+        or not -1 <= layer < geometry.layer_count
+    ):
+        raise ValueError("Count layer must be -1 or a valid axial layer index")
     inside_counts = np.zeros((2, geometry.layer_count), dtype=int)
+    translations = (
+        np.zeros((2, 2))
+        if translations is None
+        else np.asarray(translations, dtype=float)
+    )
+    if translations.shape != (2, 2) or not np.all(np.isfinite(translations)):
+        raise ValueError("Provide two finite grain translations")
     edge_counts = np.zeros_like(inside_counts)
     half_counts = np.zeros_like(inside_counts)
-    is_parallelogram = False
+    is_parallelogram = np.zeros(2, dtype=bool)
+    areas = np.zeros(2)
     for grain_index, sign in enumerate((1, -1)):
+        polygon = vertices[grain_index]
+        low, high = polygon.min(axis=0), polygon.max(axis=0)
+        margin = 1e-7 * max(1.0, float(np.max(high - low)))
+        width, height = high - low + 2 * margin
+        center = (low + high) / 2
         try:
             grain = projected_columns(
                 width,
@@ -407,13 +445,14 @@ def count_cell_atoms(
                 deformations[grain_index],
                 lattice,
                 axis,
+                translations[grain_index],
             )
         except GeometryLimitError as error:
             raise GeometryLimitError(
                 "Manual cell exceeds the atom enumeration limit; select a smaller cell. "
                 "View zoom does not affect counting."
             ) from error
-        inside, boundary, half_open = cell_membership(grain.positions, vertices)
+        inside, boundary, half_open = cell_membership(grain.positions, polygon)
         visible = np.ones(len(grain.positions), dtype=bool)
         if layer >= 0:
             visible &= grain.layers == layer
@@ -435,23 +474,24 @@ def count_cell_atoms(
                 counts[grain_index] = np.bincount(
                     grain.layers[mask & visible], minlength=geometry.layer_count
                 )
-        is_parallelogram = half_open is not None
-    # Translation-stable shoelace area.
-    relative = vertices - vertices[0]
-    area = (
-        abs(
-            np.sum(
-                relative[:, 0] * np.roll(relative[:, 1], -1)
-                - relative[:, 1] * np.roll(relative[:, 0], -1)
+        is_parallelogram[grain_index] = half_open is not None
+        # Translation-stable area of this grain's actual polygon.
+        relative = polygon - polygon[0]
+        areas[grain_index] = (
+            abs(
+                np.sum(
+                    relative[:, 0] * np.roll(relative[:, 1], -1)
+                    - relative[:, 1] * np.roll(relative[:, 0], -1)
+                )
             )
+            / 2
         )
-        / 2
-    )
     return CellAtomCounts(
         inside_counts,
         edge_counts,
-        half_counts if is_parallelogram else None,
-        float(area),
+        half_counts if np.any(is_parallelogram) else None,
+        areas,
+        is_parallelogram,
     )
 
 

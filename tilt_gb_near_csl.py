@@ -6,6 +6,10 @@ geometric candidate analysis, not a relaxation or a stress-free equilibrium.
 
 Exact CSL cells use integer congruences without invoking the strain search.
 
+Selected local cells have a separate direct fit: align all four actual pairs
+with homogeneous Fg and uniform shifts about their centroids. Small polar
+rotations and principal strains have independent limits; there is no search.
+
 For integer M1/M2, minimize ||F1-I||_F^2 + ||F2-I||_F^2 subject to
 F1 B1 M1 = F2 B2 M2, symmetric positive-definite F1/F2, and a bound on
 principal stretch minus one. No additional polar rotation is introduced.
@@ -31,7 +35,11 @@ import multiprocessing
 import os
 import numpy as np
 
-from tilt_gb_crystallography import get_geometry, congruence_kernel
+from tilt_gb_crystallography import (
+    get_geometry,
+    congruence_kernel,
+    validate_cell_vertices,
+)
 
 DEFAULT_STRAIN_PERCENT = 2.0
 DEFAULT_SEARCH_INDEX = 12
@@ -210,6 +218,135 @@ class StrainedCell:
     def label(self):
         n1, n2 = self.atoms
         return f"{n1}/{n2} atoms | max strain {100*self.max_strain:.3f}%"
+
+
+@dataclass(frozen=True)
+class SelectedCellStrain:
+    """Exact homogeneous alignment of four selected same-layer atom pairs."""
+
+    cell: StrainedCell
+    translations: np.ndarray  # two uniform shifts, x' = Fg x + tg
+    vertices: np.ndarray  # (2,4,2), actual transformed endpoints
+    origin: np.ndarray  # common C1, not necessarily the laboratory origin
+    residual: float  # maximum selected-pair separation / a0
+    rotations_deg: np.ndarray  # polar rigid rotation, separate from strain
+    stretches: np.ndarray  # singular values, not eigenvalues of a nonsymmetric F
+
+
+def strain_selected_cell(
+    vertices,
+    angle,
+    percent=DEFAULT_STRAIN_PERCENT,
+    lattice="FCC",
+    axis="110",
+    layer=0,
+    max_rotation_deg=1.0,
+):
+    """Align all four pairs by bounded, homogeneous in-plane deformation.
+
+    Minimize sum_g ||Fg-I||_F^2 under equality of the centered vertex sets.
+    Small rotations are allowed and bounded separately using Fg = Rg Ug.
+    A zero rotation limit selects the symmetric, pure-strain solve instead.
+    No candidate search or individual atom snapping is used.
+    The two centroids are placed at their original midpoint by uniform shifts.
+    Integer same-layer edge vectors certify common translations; all FOUR pairs
+    are validated independently, so an incompatible fourth corner is not ignored.
+    This is geometric compatibility, not an elastic-energy minimum.
+    """
+    vertices = np.asarray(vertices, dtype=float)
+    if vertices.shape != (2, 4, 2):
+        raise ValueError("Select four paired atom vertices first")
+    for polygon in vertices:
+        validate_cell_vertices(polygon)
+    if not np.isfinite(percent) or not 0 < percent <= 10:
+        raise ValueError("Strain limit must be in (0,10]%")
+    if not np.isfinite(angle) or not 0 <= angle <= 90:
+        raise ValueError("Reference angle must be in [0,90] degrees")
+    if not np.isfinite(max_rotation_deg) or not 0 <= max_rotation_deg <= 5:
+        raise ValueError("Rotation limit must be in [0,5] degrees per grain")
+    geometry = get_geometry(lattice, axis)
+    if (
+        not isinstance(layer, (int, np.integer))
+        or not 0 <= layer < geometry.layer_count
+    ):
+        raise ValueError("Select one valid axial layer")
+    grain_bases = bases(angle, lattice, axis)
+    reference_offset = (
+        geometry.layer_offsets_half_indices[layer] @ geometry.frame[:, :2] / 2
+    )
+    phase = np.linalg.solve(geometry.planar_basis, reference_offset)
+    matrices = []
+    for polygon, basis in zip(vertices, grain_bases):
+        indices = polygon @ np.linalg.inv(basis).T - phase
+        integer = np.rint(indices).astype(np.int64)
+        if np.max(np.linalg.norm((indices - integer) @ basis.T, axis=1)) > 1e-7:
+            raise ValueError(
+                "Vertices must be original atoms in the same selected layer"
+            )
+        matrices.append((integer[[1, 3]] - integer[0]).T)
+    if determinant(matrices[0]) * determinant(matrices[1]) <= 0:
+        raise ValueError("The selected cells have incompatible orientation")
+
+    centroids = vertices.mean(axis=1)
+    a, b = vertices - centroids[:, None, :]
+    pure_strain = max_rotation_deg == 0
+    constraints = np.zeros((8, 6 if pure_strain else 8))
+    root2 = np.sqrt(2)
+    for i in range(4):
+        x, y = a[i]
+        u, v = b[i]
+        if pure_strain:
+            constraints[2 * i] = (x, 0, y / root2, -u, 0, -v / root2)
+            constraints[2 * i + 1] = (0, y, x / root2, 0, -v, -u / root2)
+        else:
+            constraints[2 * i] = (x, y, 0, 0, -u, -v, 0, 0)
+            constraints[2 * i + 1] = (0, 0, x, y, 0, 0, -u, -v)
+    solution = np.linalg.lstsq(constraints, (b - a).ravel(), rcond=1e-11)[0]
+    f = np.tile(np.eye(2), (2, 1, 1))
+    if pure_strain:
+        for g in (0, 1):
+            f[g, 0, 0] += solution[3 * g]
+            f[g, 1, 1] += solution[3 * g + 1]
+            f[g, 0, 1] = f[g, 1, 0] = solution[3 * g + 2] / root2
+    else:
+        f += solution.reshape(2, 2, 2)
+    left, stretches, right = np.linalg.svd(f)
+    rotation = left @ right
+    rotations_deg = np.degrees(np.arctan2(rotation[:, 1, 0], rotation[:, 0, 0]))
+    if np.min(stretches) <= 1e-10 or np.any(np.linalg.det(f) <= 0):
+        raise ValueError(
+            "All four pairs cannot be aligned without collapse/reflection; choose another cell"
+        )
+    max_strain = float(np.max(np.abs(stretches - 1)))
+    if max_strain > percent / 100 + 1e-12:
+        raise ValueError(
+            f"Least-change fit uses {100*max_strain:.6f}% principal strain, above the {percent:.4f}% limit. Nothing was changed."
+        )
+    if np.max(np.abs(rotations_deg)) > max_rotation_deg + 1e-9:
+        raise ValueError(
+            f"Least-change fit uses {np.max(np.abs(rotations_deg)):.6f}° rotation, above the {max_rotation_deg:.4f}° per-grain limit. Nothing was changed."
+        )
+    shifts = centroids.mean(axis=0) - np.einsum("gij,gj->gi", f, centroids)
+    transformed = np.einsum("gij,gnj->gni", f, vertices) + shifts[:, None, :]
+    residual = float(np.max(np.linalg.norm(transformed[0] - transformed[1], axis=1)))
+    common = f[0] @ grain_bases[0] @ matrices[0]
+    periodic_error = np.max(np.abs(common - f[1] @ grain_bases[1] @ matrices[1]))
+    if residual > 1e-8 or periodic_error > 1e-8:
+        raise ValueError(
+            "No exact homogeneous alignment of all four pairs; choose another cell"
+        )
+    cell = StrainedCell(
+        *matrices, f[0], f[1], common, max_strain, geometry.lattice, geometry.axis
+    )
+    return SelectedCellStrain(
+        cell,
+        shifts,
+        transformed,
+        transformed[:, 0].mean(axis=0),
+        residual,
+        rotations_deg,
+        stretches,
+    )
 
 
 def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110"):
@@ -535,12 +672,12 @@ def strain_tensors(cell, angle):
     return tuple(tensors)
 
 
-def tensor_readout(cell, angle):
+def tensor_readout(cell, angle, selected=False):
     """3D strain and common translations, with units and frame explicit."""
     geometry = get_geometry(cell.lattice, cell.axis)
     lines = [
-        cell.label(),
-        f"{geometry.lattice}; symmetric F1/F2; {geometry.axis_label} axial strain = 0",
+        ("Full axial repeat (all layers): " if selected else "") + cell.label(),
+        f"{geometry.lattice}; {'selected-cell F1/F2' if selected else 'symmetric F1/F2'}; {geometry.axis_label} axial strain = 0",
         "Green-Lagrange E (grain cubic [100],[010],[001] frame):",
     ]
     for g, e3 in enumerate(strain_tensors(cell, angle)):
@@ -562,6 +699,11 @@ def tensor_readout(cell, angle):
     )
     lines.extend(np.array2string(m) for m in (cell.m1, cell.m2))
     lines.append(
-        "Cell may be nonprimitive; counts are not Sigma. Bounded search, no energy fit."
+        "Cell may be nonprimitive; counts are not Sigma. "
+        + (
+            "Selected-vertex least-change fit; no energy fit."
+            if selected
+            else "Bounded search, no energy fit."
+        )
     )
     return "\n".join(lines)

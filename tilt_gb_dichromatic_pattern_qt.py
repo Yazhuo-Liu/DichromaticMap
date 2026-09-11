@@ -48,6 +48,7 @@ from tilt_gb_near_csl import (
     local_match_layers_worker,
     DEFAULT_LOCAL_DISTANCE,
     LOCAL_COLOR,
+    strain_selected_cell,
 )
 from tilt_gb_crystallography import (
     ProjectedGrain,
@@ -109,6 +110,7 @@ class CellVertex:
     position: np.ndarray  # unrotated model coordinates
     layer: int
     source: str  # exact CSL or local near-pair midpoint
+    grain_positions: np.ndarray | None = None  # (G1 blue, G2 red) actual endpoints
 
 
 def cell_count_worker(*args):
@@ -271,13 +273,14 @@ def generate_grain_worker(
     deformation: np.ndarray | None = None,
     lattice: str = "FCC",
     axis: str = "110",
+    translation: np.ndarray | None = None,
 ) -> tuple[int, ProjectedGrain]:
     """Process-pool entry point for one projected grain."""
 
     return (
         os.getpid(),
         projected_columns(
-            width, height, rotation_deg, center, deformation, lattice, axis
+            width, height, rotation_deg, center, deformation, lattice, axis, translation
         ),
     )
 
@@ -352,6 +355,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.manual_count_pending = None
         self.manual_count_running_key = None
         self.manual_local_cutoff = None
+        self.manual_strain_fit = None
+        self.manual_unstrained_vertices = None
+        self.manual_unstrained_cutoff = None
         self.axial_repeat = 0
         self.grains: list[ProjectedGrain] = []
         self.grain_signature = None
@@ -377,6 +383,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_solutions = []
         self.near_cell = None
         self.deformations = (np.eye(2), np.eye(2))
+        self.translations = np.zeros((2, 2))
         available_cpus = max(1, os.cpu_count() or 1)
         automatic_workers = min(4, available_cpus)
         self.worker_count = int(worker_count or automatic_workers)
@@ -456,10 +463,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot_item.addItem(self.local_match_item)
         self.plot_item.addItem(self.local_link_item)
         self.manual_cell_item = pg.PlotCurveItem(
-            pen=pg.mkPen(
-                MANUAL_CELL_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DashDotLine
-            )
+            pen=pg.mkPen(GRAIN_1_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DashLine)
         )
+        self.manual_grain_cell_items = [
+            self.manual_cell_item,
+            pg.PlotCurveItem(
+                pen=pg.mkPen(GRAIN_2_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DotLine)
+            ),
+        ]
         self.manual_vertex_item = self._ring_item(MANUAL_CELL_COLOR, diameter * 2.2)
         self.manual_labels = [
             self._text_item(f"C{i+1}", MANUAL_CELL_COLOR) for i in range(4)
@@ -468,7 +479,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "", MANUAL_CELL_COLOR, font_size=10, bordered=True
         )
         for item in (
-            self.manual_cell_item,
+            *self.manual_grain_cell_items,
             self.manual_vertex_item,
             *self.manual_labels,
             self.manual_annotation,
@@ -839,7 +850,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.manual_pick_button.clicked.connect(self._start_manual_cell)
         manual_layout.addWidget(self.manual_pick_button)
         manual_help = QtWidgets.QLabel(
-            "Pick around the perimeter, all in one layer. Gold CSL or purple near-pair centers."
+            "Pick 4 same-layer/symbol sites around the perimeter. Blue/red cells use their own atom vertices; count the picked layer only."
         )
         manual_help.setWordWrap(True)
         manual_help.setObjectName("mutedLabel")
@@ -860,10 +871,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             manual_actions.addWidget(button)
         manual_layout.addLayout(manual_actions)
         self.manual_visible_check = QtWidgets.QCheckBox(
-            "Count visible regions / layers only"
+            "Apply GB side visibility to counts"
         )
         self.manual_visible_check.setToolTip(
-            "Unchecked: count both grains and every axial layer, independently of the viewport"
+            "Counts always use the vertices' layer. Optionally apply G1/G2 side switches; the visible-layer selector never changes the counted layer."
         )
         self.manual_visible_check.toggled.connect(self._queue_manual_count)
         manual_layout.addWidget(self.manual_visible_check)
@@ -872,9 +883,48 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.manual_info.setMinimumHeight(125)
         self.manual_info.setMaximumHeight(190)
         self.manual_info.setPlainText(
-            "No manual cell. Counts cover one full axial repeat. A selected region is not proof of periodicity."
+            "No manual cell. Pick one layer; each grain is counted inside its own four actual atom vertices. Periodicity is not assumed."
         )
         manual_layout.addWidget(self.manual_info)
+        self.manual_strain_button = QtWidgets.QPushButton(
+            "Apply bulk strain to selected cell"
+        )
+        self.manual_strain_button.setEnabled(False)
+        self.manual_strain_button.clicked.connect(self._toggle_manual_strain)
+        self.manual_strain_button.setToolTip(
+            "Available after picking four same-layer vertices in Local matching, including at least one near pair. "
+            "Align all four pairs by bulk strain and bounded small rotations, then recompute exact CSL."
+        )
+        manual_layout.addWidget(self.manual_strain_button)
+        manual_strain_form = QtWidgets.QFormLayout()
+        self.manual_strain_limit = QtWidgets.QDoubleSpinBox()
+        self.manual_strain_limit.setRange(0.01, 10.0)
+        self.manual_strain_limit.setDecimals(3)
+        self.manual_strain_limit.setValue(DEFAULT_STRAIN_PERCENT)
+        self.manual_strain_limit.setSuffix(" %")
+        self.manual_strain_limit.setSingleStep(0.1)
+        self.manual_strain_limit.setEnabled(False)
+        manual_strain_form.addRow(
+            "Selected-cell strain limit", self.manual_strain_limit
+        )
+        self.manual_rotation_limit = QtWidgets.QDoubleSpinBox()
+        self.manual_rotation_limit.setRange(0, 5.0)
+        self.manual_rotation_limit.setDecimals(3)
+        self.manual_rotation_limit.setValue(1.0)
+        self.manual_rotation_limit.setSuffix("°")
+        self.manual_rotation_limit.setSingleStep(0.1)
+        self.manual_rotation_limit.setEnabled(False)
+        self.manual_rotation_limit.setToolTip(
+            "Maximum polar rigid rotation per grain, separate from strain. 0° restricts the fit to pure symmetric strain."
+        )
+        manual_strain_form.addRow("Rotation limit / grain", self.manual_rotation_limit)
+        manual_layout.addLayout(manual_strain_form)
+        self.manual_strain_note = QtWidgets.QLabel(
+            "Select a local near-CSL cell first. Both grains share the strain; no individual atoms are snapped."
+        )
+        self.manual_strain_note.setWordWrap(True)
+        self.manual_strain_note.setObjectName("mutedLabel")
+        manual_layout.addWidget(self.manual_strain_note)
         layout.addWidget(manual_box)
 
         near_box = QtWidgets.QGroupBox("NEAR-CSL · METHOD")
@@ -1068,6 +1118,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.view_refresh_timer.start()
 
     def _start_manual_cell(self, *_args):
+        if self.manual_strain_fit is not None:
+            self._manual_pick_warning(
+                "Restore the local structure before editing cell vertices."
+            )
+            return
         if self.interaction_mode == "cell":
             self._set_mode("idle")
             return
@@ -1085,13 +1140,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if self.manual_count_future is not None and self.manual_count_future.cancel():
             self.manual_count_future = None
         self.manual_info.setPlainText(
-            "No manual cell. Counts cover one full axial repeat; periodicity is not assumed."
+            "No manual cell. Counts use the picked layer and each grain's own atom vertices; periodicity is not assumed."
         )
         self._draw_manual_cell()
         if self.interaction_mode == "cell":
             self._set_mode("idle")
 
     def _undo_manual_vertex(self, *_args):
+        if self.manual_strain_fit is not None:
+            return
         if not self.manual_vertices:
             return
         self.manual_vertices.pop()
@@ -1110,21 +1167,134 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         ):
             self._clear_manual_cell()
 
+    def _sync_manual_strain_controls(self):
+        active = self.manual_strain_fit is not None
+        with QtCore.QSignalBlocker(self.near_method_combo):
+            self.near_method_combo.setItemText(
+                0,
+                (
+                    "Local cell · bulk strain applied"
+                    if active
+                    else "Local matching · no bulk strain"
+                ),
+            )
+        ready = (
+            self.local_active
+            and len(self.manual_vertices) == 4
+            and any(vertex.source == "local" for vertex in self.manual_vertices)
+        )
+        self.manual_strain_button.setEnabled(active or ready)
+        self.manual_strain_limit.setEnabled(ready and not active)
+        self.manual_rotation_limit.setEnabled(ready and not active)
+        self.manual_strain_button.setText(
+            "Restore original local structure"
+            if active
+            else "Apply bulk strain to selected cell"
+        )
+        for button in (
+            self.manual_pick_button,
+            self.manual_clear_button,
+            self.manual_undo_button,
+        ):
+            button.setEnabled(not active)
+        if not active and len(self.manual_vertices) < 4:
+            self.manual_strain_note.setText(
+                "Select a local near-CSL cell first. Both grains share the deformation; strain and small rotations have separate limits."
+            )
+
+    def _toggle_manual_strain(self, *_args):
+        if self.manual_strain_fit is not None:
+            vertices = self.manual_unstrained_vertices
+            cutoff = self.manual_unstrained_cutoff
+            self._cancel_parallel_work()
+            self._clear_near_cell()
+            self._sync_near_controls()
+            self.manual_vertices = vertices
+            self.manual_local_cutoff = cutoff
+            self._draw_manual_cell()
+            self._start_parallel_regeneration(True)
+            self._queue_manual_count()
+            self.manual_strain_note.setText(
+                "Original local structure restored; no bulk strain."
+            )
+            return
+        if not (
+            self.local_active
+            and len(self.manual_vertices) == 4
+            and any(vertex.source == "local" for vertex in self.manual_vertices)
+        ):
+            self._manual_pick_warning(
+                "First select four same-layer vertices using Local matching."
+            )
+            return
+        try:
+            fit = strain_selected_cell(
+                self._manual_grain_polygons(),
+                self.angle_deg,
+                self.manual_strain_limit.value(),
+                self.geometry.lattice,
+                self.geometry.axis,
+                self.manual_vertices[0].layer,
+                self.manual_rotation_limit.value(),
+            )
+        except ValueError as error:
+            self.manual_strain_note.setText(str(error))
+            self._update_status(str(error))
+            return
+        vertices = self.manual_vertices
+        cutoff = self.manual_local_cutoff
+        self.near_debounce_timer.stop()
+        self.near_poll_timer.stop()
+        if self.near_search is not None:
+            self.near_search.cancel()
+        self._cancel_parallel_work()
+        self._clear_lattice_selections()
+        self.manual_unstrained_vertices = vertices
+        self.manual_unstrained_cutoff = cutoff
+        self.manual_strain_fit = fit
+        self.near_cell = fit.cell
+        self.deformations = (fit.cell.f1, fit.cell.f2)
+        self.translations = fit.translations.copy()
+        self.manual_vertices = [
+            CellVertex(pair.mean(axis=0), vertex.layer, "CSL", pair.copy())
+            for vertex, pair in zip(vertices, fit.vertices.transpose(1, 0, 2))
+        ]
+        self._clear_local_pairs()
+        self._sync_near_controls()
+        self._draw_manual_cell()
+        self.manual_strain_note.setText(
+            f"Applied: max principal strain {100*fit.cell.max_strain:.6f}%; "
+            f"rotations G1 {fit.rotations_deg[0]:+.6f}°, G2 {fit.rotations_deg[1]:+.6f}°; "
+            f"four-pair residual {fit.residual:.2e} a₀. Full-lattice CSL is recomputed, layer by layer."
+        )
+        self.near_info.setPlainText(
+            "SELECTED-CELL BULK STRAIN (not stress-free)\n"
+            "All four original pairs aligned. Polar decomposition F = R U:\n"
+            + "\n".join(
+                f"G{g+1}: rotation {fit.rotations_deg[g]:+.8f}°; principal strains "
+                + np.array2string(100 * (fit.stretches[g] - 1), precision=8)
+                + " %"
+                for g in (0, 1)
+            )
+            + f"\nReference θ = {self.angle_deg:.8f}°; polar-frame θ = {self.angle_deg+fit.rotations_deg[0]-fit.rotations_deg[1]:.8f}°.\n"
+            "Uniform shifts align the two cell centroids at their original midpoint.\n"
+            "t1/t2 / a₀ (analysis x,y):\n"
+            + np.array2string(fit.translations, precision=8)
+            + "\n"
+            + tensor_readout(fit.cell, self.angle_deg, selected=True)
+        )
+        self._start_parallel_regeneration(True)
+        self._queue_manual_count()
+        self._update_title()
+
     def _common_site_candidates(self):
-        """Only displayed common-site markers, restricted to the first layer."""
+        """All displayed markers: reject wrong-layer clicks *after* hit-testing."""
         if self.grain_signature != self._geometry_signature():
             return []
         candidates = []
-        chosen_layer = (
-            self.manual_vertices[0].layer
-            if self.manual_vertices
-            else self.selected_layer
-        )
         states = self._region_states()
         if not self.csl_updating:
             for layer, points in enumerate(self.coincident_points):
-                if chosen_layer >= 0 and layer != chosen_layer:
-                    continue
                 if self.selected_layer >= 0 and layer != self.selected_layer:
                     continue
                 keep = np.ones(len(points), dtype=bool)
@@ -1141,21 +1311,64 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
         if self.local_active and not self.local_updating:
             keep = self._local_pair_mask()
-            if chosen_layer >= 0:
-                keep &= self.local_pairs.layers == chosen_layer
             candidates.extend(
-                CellVertex(point.copy(), int(layer), "local")
-                for point, layer in zip(
-                    self.local_pairs.midpoints[keep], self.local_pairs.layers[keep]
+                CellVertex(point.copy(), int(layer), "local", np.stack((first, second)))
+                for point, layer, first, second in zip(
+                    self.local_pairs.midpoints[keep],
+                    self.local_pairs.layers[keep],
+                    self.local_pairs.first[keep],
+                    self.local_pairs.second[keep],
                 )
             )
         return candidates
+
+    @staticmethod
+    def _cell_layer_label(layer):
+        symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
+        name = {"o": "circle", "d": "diamond", "t": "triangle", "s": "square"}.get(
+            symbol, symbol
+        )
+        return f"{layer_name(layer)} ({name})"
+
+    def _resolve_cell_vertex(self, candidate):
+        if candidate.grain_positions is not None:
+            return candidate
+        # Exact CSL stores marker centers; resolve its two real atoms once at
+        # selection time, not later from a possibly panned-away drawing buffer.
+        endpoints = []
+        for grain in self.grains:
+            points = grain.positions[grain.layers == candidate.layer]
+            if not len(points):
+                raise ValueError(
+                    "Common-site atoms are not available; wait for the lattice update"
+                )
+            distances = np.linalg.norm(points - candidate.position, axis=1)
+            index = int(np.argmin(distances))
+            if distances[index] > COINCIDENCE_TOLERANCE_FACTOR:
+                raise ValueError(
+                    "Common-site atoms no longer match this marker; pick again after updating"
+                )
+            endpoints.append(points[index].copy())
+        return replace(candidate, grain_positions=np.array(endpoints))
+
+    def _manual_grain_polygons(self):
+        if not self.manual_vertices:
+            return np.empty((2, 0, 2))
+        return np.stack(
+            [vertex.grain_positions for vertex in self.manual_vertices], axis=1
+        )
+
+    def _manual_pick_warning(self, message):
+        # Keep rejection feedback beside the picking controls, even if the
+        # general status label is outside the currently scrolled panel.
+        self.manual_info.setPlainText(message)
+        self._update_status(message)
 
     def _pick_manual_vertex(self, position):
         candidates = self._common_site_candidates()
         if not candidates:
             self._update_status(
-                "No visible common sites in the required layer; enable Near-CSL or choose a CSL angle."
+                "No visible common sites; enable Near-CSL or choose a CSL angle."
             )
             return
         positions = np.array([candidate.position for candidate in candidates])
@@ -1169,19 +1382,44 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
             return
         candidate = candidates[index]
+        hit_layers = {
+            candidates[i].layer
+            for i in np.flatnonzero(np.abs(distance - distance[index]) < 1e-6)
+        }
+        if len(hit_layers) > 1:
+            self._manual_pick_warning(
+                "Overlapping markers from different layers; isolate one layer with Visible axial layers, then pick again. Point not selected."
+            )
+            return
+        if self.manual_vertices and candidate.layer != self.manual_vertices[0].layer:
+            self._manual_pick_warning(
+                f"Wrong layer/symbol: expected {self._cell_layer_label(self.manual_vertices[0].layer)}, "
+                f"clicked {self._cell_layer_label(candidate.layer)}. Point not selected."
+            )
+            return
         if any(
             np.linalg.norm(candidate.position - v.position) < 1e-8
             for v in self.manual_vertices
         ):
             self._update_status("Choose a different common-site vertex.")
             return
+        try:
+            candidate = self._resolve_cell_vertex(candidate)
+        except ValueError as error:
+            self._update_status(str(error))
+            return
         trial = self.manual_vertices + [candidate]
         if len(trial) == 4:
-            try:
-                validate_cell_vertices([vertex.position for vertex in trial])
-            except ValueError as error:
-                self._update_status(str(error) + "; Undo vertex if needed.")
-                return
+            for grain_index in (0, 1):
+                try:
+                    validate_cell_vertices(
+                        [vertex.grain_positions[grain_index] for vertex in trial]
+                    )
+                except ValueError as error:
+                    self._manual_pick_warning(
+                        f"G{grain_index+1}: {error}; Undo vertex if needed. Point not selected."
+                    )
+                    return
         self.manual_vertices = trial
         if candidate.source == "local":
             self.manual_local_cutoff = self.local_distance_spin.value()
@@ -1190,16 +1428,31 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._set_mode("idle")
             self._queue_manual_count()
         else:
+            self.manual_info.setPlainText(
+                f"Selected {len(trial)}/4 vertices in layer {self._cell_layer_label(candidate.layer)}. "
+                "Continue around the perimeter in the same layer."
+            )
             self._update_status()
 
     def _draw_manual_cell(self):
+        self._sync_manual_strain_controls()
         points = np.array([v.position for v in self.manual_vertices]).reshape(-1, 2)
+        if self.manual_vertices:
+            self.manual_vertex_item.setSymbol(
+                LAYER_SYMBOLS[self.manual_vertices[0].layer % len(LAYER_SYMBOLS)]
+            )
         self._set_scatter(self.manual_vertex_item, points)
         displayed = self._to_view(points)
-        outline = (
-            np.vstack((displayed, displayed[0])) if len(points) == 4 else displayed
-        )
-        self.manual_cell_item.setData(outline[:, 0], outline[:, 1])
+        for polygon, item in zip(
+            self._manual_grain_polygons(), self.manual_grain_cell_items
+        ):
+            grain_view = self._to_view(polygon)
+            outline = (
+                np.vstack((grain_view, grain_view[0]))
+                if len(points) == 4
+                else grain_view
+            )
+            item.setData(outline[:, 0], outline[:, 1])
         self.manual_fit_button.setEnabled(len(points) == 4)
         for index, label in enumerate(self.manual_labels):
             label.setVisible(index < len(points))
@@ -1219,21 +1472,27 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             else:
                 counts = self.manual_counts
-                values = (
-                    counts.half_open
-                    if counts.half_open is not None
-                    else counts.interior + counts.boundary
-                )
-                convention = "half-open" if counts.half_open is not None else "closed"
-                g1, g2 = values.sum(axis=1)
-                label = f"Manual cell · {convention}\nG1: {g1}   G2: {g2}"
+                layer = self.manual_vertices[0].layer
+                lines = [f"Manual cell · layer {self._cell_layer_label(layer)} only"]
+                for grain in (0, 1):
+                    half_open = counts.half_open_available[grain]
+                    value = (
+                        counts.half_open[grain, layer]
+                        if half_open
+                        else (counts.interior + counts.boundary)[grain, layer]
+                    )
+                    convention = "half-open" if half_open else "closed"
+                    lines.append(
+                        f"G{grain+1}: {value} {convention} · {counts.interior[grain,layer]} interior"
+                    )
+                label = "\n".join(lines)
             self.manual_annotation.setText(label)
             self.manual_annotation.setPos(*displayed.mean(axis=0))
 
     def _queue_manual_count(self, *_args):
         if len(self.manual_vertices) != 4:
             return
-        points = np.array([vertex.position for vertex in self.manual_vertices])
+        points = self._manual_grain_polygons()
         filtered = self.manual_visible_check.isChecked()
         boundary = (
             np.array(self.selected_points)
@@ -1241,7 +1500,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             else None
         )
         states = self._region_states() if filtered else (True, True, True, True)
-        layer = self.selected_layer if filtered else -1
+        layer = self.manual_vertices[0].layer
         key = (
             tuple(points.ravel()),
             self._geometry_signature(),
@@ -1264,6 +1523,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             boundary,
             states,
             layer,
+            self.translations.copy(),
         )
         if self.manual_count_future is not None and self.manual_count_future.cancel():
             self.manual_count_future = None
@@ -1313,41 +1573,45 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _show_manual_counts(self):
         counts = self.manual_counts
+        layer = self.manual_vertices[0].layer
         lines = [
-            "Manual region; periodicity not verified.",
-            f"Area = {counts.area:.6g} a₀²; one axial repeat.",
             (
-                "Visible regions/layers only."
+                "Selected-cell bulk strain; common translations verified."
+                if self.manual_strain_fit is not None
+                else "Manual region; periodicity not verified."
+            ),
+            f"Only picked layer {self._cell_layer_label(layer)}; not an all-layer total.",
+            "Each grain uses its own four current atom vertices.",
+            (
+                "GB side visibility applied."
                 if self.manual_visible_check.isChecked()
-                else "Both grains, all layers; independent of view."
+                else "Both grains; independent of view and display-layer filter."
             ),
         ]
         for grain in (0, 1):
-            interior = counts.interior[grain]
-            boundary = counts.boundary[grain]
+            interior = counts.interior[grain, layer]
+            boundary = counts.boundary[grain, layer]
             lines.append(
-                f"G{grain+1}: interior {interior.sum()}, boundary {boundary.sum()}, closed {(interior+boundary).sum()}"
+                f"G{grain+1} ({'blue' if grain == 0 else 'red'}): area {counts.areas[grain]:.6g} a₀²"
             )
-            if counts.half_open is not None:
+            lines.append(
+                f"  Layer {layer_name(layer)}: interior {interior}, boundary {boundary}, closed {interior+boundary}"
+            )
+            if counts.half_open_available[grain]:
                 lines.append(
-                    f"  Half-open count: {counts.half_open[grain].sum()} (upper edges excluded)"
+                    f"  Half-open count: {counts.half_open[grain,layer]} (upper edges excluded)"
                 )
-            for layer in range(self.geometry.layer_count):
-                value = f"  {layer_name(layer)}: interior {interior[layer]}, boundary {boundary[layer]}"
-                if counts.half_open is not None:
-                    value += f", half-open {counts.half_open[grain,layer]}"
-                lines.append(value)
-        if counts.half_open is None:
-            lines.append("Not a parallelogram: no half-open periodic-cell count.")
+            else:
+                lines.append(
+                    "  Not a parallelogram: no half-open count for this grain."
+                )
         lines.append("G1/G2 counted separately; overlapping atoms are not merged.")
         self.manual_info.setPlainText("\n".join(lines))
         self._draw_manual_cell()
 
     def _fit_manual_cell(self, *_args):
         if len(self.manual_vertices) == 4:
-            self._fit_model_corners(
-                np.array([v.position for v in self.manual_vertices])
-            )
+            self._fit_model_corners(self._manual_grain_polygons().reshape(-1, 2))
 
     def _empty_coincidences(self):
         return tuple(np.empty((0, 2)) for _ in range(self.geometry.layer_count))
@@ -1376,6 +1640,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.angle_deg,
             tuple(self.deformations[0].ravel()),
             tuple(self.deformations[1].ravel()),
+            tuple(self.translations.ravel()),
         )
 
     def _update_geometry_labels(self):
@@ -1498,6 +1763,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.near_cell_item.setData([], [])
         else:
             corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]) @ cell.cell.T
+            if self.manual_strain_fit is not None:
+                corners += self.manual_strain_fit.origin
             corners = self._to_view(corners)
             self.near_cell_item.setData(corners[:, 0], corners[:, 1])
         self.near_cell_item.setVisible(cell is not None and self.cell_check.isChecked())
@@ -1508,13 +1775,28 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_cell = None
         self.near_solutions = []
         self.deformations = (np.eye(2), np.eye(2))
+        self.translations = np.zeros((2, 2))
+        self.manual_strain_fit = None
+        self.manual_unstrained_vertices = None
+        self.manual_unstrained_cutoff = None
+        self.manual_strain_note.setText(
+            "Select a local near-CSL cell first. Both grains share the strain; no individual atoms are snapped."
+        )
+        # A geometry switch can be between updating its model and rebuilding
+        # per-layer plot items here; do not rebuild the legend in that interval.
+        self.local_distance_spin.setEnabled(self.local_active)
+        self._sync_manual_strain_controls()
         self._update_common_cell()
         with QtCore.QSignalBlocker(self.near_combo):
             self.near_combo.clear()
 
     @property
     def local_active(self):
-        return self.near_enabled and self.near_method == "local"
+        return (
+            self.near_enabled
+            and self.near_method == "local"
+            and self.manual_strain_fit is None
+        )
 
     def _clear_local_pairs(self):
         self.local_pairs = LocalPairs.empty()
@@ -1537,6 +1819,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             not strain_method
         )
         self._rebuild_legend()
+        self._sync_manual_strain_controls()
 
     def _on_near_method_changed(self, *_args):
         self.near_method = self.near_method_combo.currentData()
@@ -1571,6 +1854,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _queue_near_search(self, *_args):
         if not self.near_enabled:
             return
+        if self.manual_strain_fit is not None and self.near_method == "local":
+            return  # Keep selected-cell strain on worker-count changes / fallback.
         self._invalidate_manual_local_source()
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
@@ -1599,7 +1884,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_debounce_timer.start()
 
     def _start_near_search(self):
-        if not self.near_enabled:
+        if not self.near_enabled or self.manual_strain_fit is not None:
             return
         if self.local_active:
             self._start_local_matching()
@@ -1616,7 +1901,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_poll_timer.start()
 
     def _poll_near_search(self):
-        if self.near_search is None or not self.near_enabled or self.local_active:
+        if (
+            self.near_search is None
+            or not self.near_enabled
+            or self.near_method != "strain"
+        ):
             self.near_poll_timer.stop()
             return
         result = self.near_search.poll()
@@ -1744,7 +2033,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         pairs = self.local_pairs
         mask = self._local_pair_mask()
         midpoints = pairs.midpoints
-        self._set_scatter(self.local_match_item, midpoints[mask])
+        self.local_match_item.setData(
+            pos=self._to_view(midpoints[mask]),
+            symbol=[
+                LAYER_SYMBOLS[int(layer) % len(LAYER_SYMBOLS)]
+                for layer in pairs.layers[mask]
+            ],
+        )
         links = np.stack((pairs.first[mask], pairs.second[mask]), axis=1).reshape(-1, 2)
         links = self._to_view(links)
         self.local_link_item.setData(links[:, 0], links[:, 1], connect="pairs")
@@ -1770,7 +2065,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_info.setPlainText(
             state + f"\nPair cutoff: {self.local_distance_spin.value():.4f} a₀."
             "\nSame-layer mutual nearest pairs; no atoms moved."
-            "\nPurple ring: proposed midpoint; line: original pair."
+            "\nPurple marker: midpoint, shaped by layer; line: original pair."
             "\nMidpoint alignment would move each atom by d/2."
             "\nNo bulk strain, relaxation or stress calculation."
             "\nLocal matches do not define a periodic common cell."
@@ -1782,6 +2077,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if cell is None:
             return
         corners = np.array([[0, 0], [1, 0], [1, 1], [0, 1]]) @ cell.cell.T
+        if self.manual_strain_fit is not None:
+            corners += self.manual_strain_fit.origin
         self._fit_model_corners(corners)
 
     def _fit_model_corners(self, corners):
@@ -1911,6 +2208,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 deformation=self.deformations[0],
                 lattice=self.geometry.lattice,
                 axis=self.geometry.axis,
+                translation=self.translations[0],
             ),
             projected_columns(
                 width,
@@ -1920,6 +2218,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 deformation=self.deformations[1],
                 lattice=self.geometry.lattice,
                 axis=self.geometry.axis,
+                translation=self.translations[1],
             ),
         ]
         self.buffer_bounds = bounds
@@ -1952,6 +2251,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     self.deformations[index],
                     self.geometry.lattice,
                     self.geometry.axis,
+                    self.translations[index],
                 )
                 for index, sign in enumerate((1.0, -1.0))
             ]
@@ -2307,18 +2607,26 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_common_cell()
         preset = matching_csl_preset(self.angle_deg, axis=self.geometry.axis)
         suffix = f" · {preset.name}" if preset is not None else ""
-        if self.near_cell is not None:
+        if self.manual_strain_fit is not None:
+            fit = self.manual_strain_fit
+            suffix = f"<br/>SELECTED-CELL BULK STRAIN · {100*self.near_cell.max_strain:.6f}% · ΔR₁/ΔR₂ = {fit.rotations_deg[0]:+.4f}°/{fit.rotations_deg[1]:+.4f}°"
+        elif self.near_cell is not None:
             suffix = f" · STRAINED near-CSL · {100*self.near_cell.max_strain:.3f}%"
         elif self.local_active:
             suffix += f" · LOCAL near-CSL · d ≤ {self.local_distance_spin.value():.4f} a₀ · unstrained"
         if self.display_rotation_deg:
             suffix += f" · display rotation {self.display_rotation_deg:.1f}°"
+        angle_label = "reference θ" if self.manual_strain_fit is not None else "θ"
         self.plot_item.setTitle(
             f"<span style='font-size:15px;color:#17212b'>"
-            f"{self.geometry.lattice} ⟨{self.geometry.axis}⟩ tilt dichromatic pattern · θ = {self.angle_deg:.2f}°"
+            f"{self.geometry.lattice} ⟨{self.geometry.axis}⟩ tilt dichromatic pattern · {angle_label} = {self.angle_deg:.2f}°"
             f"{suffix}</span>"
         )
-        exact = f"Exact θ = {self.angle_deg:.8f}°"
+        if self.manual_strain_fit is not None:
+            self.plot_item.titleLabel.setMaximumHeight(48)
+            self.plot_item.layout.setRowFixedHeight(0, 48)
+        prefix = "Reference" if self.manual_strain_fit is not None else "Exact"
+        exact = f"{prefix} θ = {self.angle_deg:.8f}°"
         if preset is not None:
             tail = ", ".join(
                 str(int(preset.n * index)) for index in self.geometry.axis_indices

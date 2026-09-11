@@ -11,6 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import time
 import unittest
+from unittest.mock import patch
 import numpy as np
 import tilt_gb_crystallography as crystal
 import tilt_gb_near_csl as near
@@ -21,7 +22,66 @@ def corners(cell):
     return np.array([[0, 0], [1, 0], [1, 1], [0, 1]]) @ cell.cell.T
 
 
+def fcc22_diamond_pairs():
+    """The user's FCC <110>, 22-degree B-layer diamond selection."""
+    first = crystal.projected_columns(25, 20, 11, lattice="FCC", axis="110")
+    second = crystal.projected_columns(25, 20, -11, lattice="FCC", axis="110")
+    pairs = near.local_near_pairs(first, second, 0.05)
+    ids = np.flatnonzero(pairs.layers == 1)
+    picked = [
+        ids[np.argmin(np.linalg.norm(pairs.midpoints[ids] - target, axis=1))]
+        for target in ([0, 5.6], [-2.5, 0], [0, -5.6], [2.5, 0])
+    ]
+    return pairs.midpoints[picked], np.stack(
+        (pairs.first[picked], pairs.second[picked])
+    )
+
+
 class CountingTests(unittest.TestCase):
+    def test_independent_grain_polygons_and_selected_layer(self):
+        polygons = np.array(
+            [
+                [[0, 0], [2, 0], [2, 2], [0, 2]],
+                [[0, 0], [3, 0], [3, 2], [0, 2]],
+            ],
+            dtype=float,
+        )
+        counts = crystal.count_cell_atoms(
+            polygons, 0, (np.eye(2), np.eye(2)), "BCC", "100", layer=0
+        )
+        np.testing.assert_array_equal(counts.interior, [[1, 0], [2, 0]])
+        np.testing.assert_array_equal(counts.boundary, [[8, 0], [10, 0]])
+        np.testing.assert_array_equal(counts.half_open, [[4, 0], [6, 0]])
+        np.testing.assert_array_equal(counts.areas, [4, 6])
+        np.testing.assert_array_equal(counts.half_open_available, [True, True])
+        with self.assertRaises(ValueError):
+            _ = counts.area  # No averaging two different grain areas.
+        polygons[1, 2] = [2, 2]
+        counts = crystal.count_cell_atoms(
+            polygons, 0, (np.eye(2), np.eye(2)), "BCC", "100", layer=0
+        )
+        np.testing.assert_array_equal(counts.half_open_available, [True, False])
+        np.testing.assert_array_equal(counts.areas, [4, 5])
+        self.assertEqual(counts.half_open[0, 0], 4)
+        for layer in (-2, 2, 0.5):
+            with self.assertRaises(ValueError):
+                crystal.count_cell_atoms(
+                    polygons, 0, (np.eye(2), np.eye(2)), "BCC", "100", layer=layer
+                )
+
+    def test_fcc22_actual_pair_polygons_not_midpoints(self):
+        midpoints, polygons = fcc22_diamond_pairs()
+        counts = crystal.count_cell_atoms(
+            polygons, 22, (np.eye(2), np.eye(2)), "FCC", "110", layer=1
+        )
+        np.testing.assert_array_equal(counts.interior, [[0, 34], [0, 34]])
+        np.testing.assert_array_equal(counts.boundary, [[0, 14], [0, 14]])
+        np.testing.assert_array_equal(counts.half_open, [[0, 40], [0, 40]])
+        averaged = crystal.count_cell_atoms(
+            midpoints, 22, (np.eye(2), np.eye(2)), "FCC", "110", layer=1
+        )
+        np.testing.assert_array_equal(averaged.half_open, [[0, 36], [0, 36]])
+
     def test_closed_vs_half_open_and_visible_subset(self):
         polygon = np.array([[0, 0], [2, 0], [2, 2], [0, 2]])
         counts = crystal.count_cell_atoms(
@@ -182,9 +242,7 @@ class ManualQtTests(unittest.TestCase):
         w = self.window(lattice="BCC", axis="100", workers=2)
         w.rotation_spin.setValue(37)
         polygon = self.pick_exact_cell(w)
-        np.testing.assert_array_equal(
-            w.manual_counts.half_open.sum(axis=1), w.common_cell.atoms
-        )
+        np.testing.assert_array_equal(w.manual_counts.half_open, [[5, 0], [5, 0]])
         counts = w.manual_counts
         key = w.manual_count_key
         w.view_box.translateBy(x=40, y=-35)
@@ -203,16 +261,99 @@ class ManualQtTests(unittest.TestCase):
         w.selected_points = [np.array([0, -10]), np.array([0, 10])]
         w._set_region_states((True, True, False, False))
         self.wait_for(w, lambda: w.manual_counts is not None)
-        np.testing.assert_array_equal(w.manual_counts.half_open, [[0, 5], [0, 0]])
+        # Displaying B must not change the cell's selected A count layer.
+        np.testing.assert_array_equal(w.manual_counts.half_open, [[5, 0], [0, 0]])
         w.manual_visible_check.setChecked(False)
         self.wait_for(w, lambda: w.manual_counts is not None)
-        np.testing.assert_array_equal(w.manual_counts.half_open.sum(axis=1), [10, 10])
+        np.testing.assert_array_equal(w.manual_counts.half_open.sum(axis=1), [5, 5])
         w._undo_manual_vertex()
         self.assertEqual(len(w.manual_vertices), 3)
         self.assertEqual(w.interaction_mode, "cell")
         self.assertIsNone(w.manual_counts)
         w._clear_manual_cell()
         self.assertEqual(len(w.manual_vertex_item.points()), 0)
+
+    def test_fcc22_gui_uses_two_actual_diamond_polygons(self):
+        midpoints, polygons = fcc22_diamond_pairs()
+        w = self.window(lattice="FCC", axis="110", angle_deg=22, workers=2)
+        w._fit_model_corners(midpoints)
+        w.near_button.setChecked(True)
+        self.wait_for(w, lambda: not w.local_updating and w.parallel_stage is None)
+        w._start_manual_cell()
+        for point in midpoints:
+            w._handle_view_click(w._to_view(point))
+        self.assertEqual(len(w.manual_vertices), 4, w.status_label.text())
+        self.wait_for(w, lambda: w.manual_counts is not None)
+        self.assertTrue(
+            all(v.layer == 1 and v.source == "local" for v in w.manual_vertices)
+        )
+        np.testing.assert_allclose(w._manual_grain_polygons(), polygons, atol=1e-12)
+        np.testing.assert_array_equal(w.manual_counts.interior, [[0, 34], [0, 34]])
+        np.testing.assert_array_equal(w.manual_counts.boundary, [[0, 14], [0, 14]])
+        np.testing.assert_array_equal(w.manual_counts.half_open, [[0, 40], [0, 40]])
+        self.assertIn("Only picked layer B (diamond)", w.manual_info.toPlainText())
+        self.assertIn("40 half-open", w.manual_annotation.toPlainText())
+        mask = w._local_pair_mask()
+        for point, layer in zip(
+            w.local_match_item.points(), w.local_pairs.layers[mask]
+        ):
+            self.assertEqual(point.symbol(), q.LAYER_SYMBOLS[int(layer)])
+        counts = w.manual_counts
+        key = w.manual_count_key
+        w.layer_combo.setCurrentIndex(w.layer_combo.findData(0))
+        w.rotation_spin.setValue(63)
+        w.view_box.translateBy(x=30, y=-24)
+        self.wait_for(
+            w,
+            lambda: not w.local_updating
+            and w.parallel_stage is None
+            and w._buffer_contains_view(),
+        )
+        self.assertIs(w.manual_counts, counts)
+        self.assertEqual(w.manual_count_key, key)
+        np.testing.assert_allclose(w._manual_grain_polygons(), polygons, atol=1e-12)
+        for polygon, item in zip(polygons, w.manual_grain_cell_items):
+            np.testing.assert_allclose(
+                np.column_stack(item.getData()),
+                w._to_view(np.vstack((polygon, polygon[0]))),
+                atol=1e-12,
+            )
+
+    def test_wrong_layer_rejected_before_snapping_for_exact_and_local(self):
+        for angle, source in ((0, "CSL"), (53.12, "local")):
+            w = self.window(lattice="BCC", axis="100", angle_deg=angle)
+            if source == "local":
+                w.near_button.setChecked(True)
+                self.wait_for(
+                    w, lambda: not w.local_updating and w.parallel_stage is None
+                )
+            candidates = [v for v in w._common_site_candidates() if v.source == source]
+            wrong = min(
+                (v for v in candidates if v.layer == 0),
+                key=lambda v: np.linalg.norm(v.position),
+            )
+            same = sorted(
+                (v for v in candidates if v.layer == 1),
+                key=lambda v: np.linalg.norm(v.position - wrong.position),
+            )
+            w._start_manual_cell()
+            w._handle_view_click(w._to_view(same[1].position))
+            self.assertEqual(len(w.manual_vertices), 1)
+            # All visible layers must remain hit-test candidates after C1.
+            self.assertTrue(any(v.layer == 0 for v in w._common_site_candidates()))
+            first = w.manual_vertices[0]
+            # Simulate a zoomed-out view: both the wrong-layer site and an
+            # unselected same-layer neighbor lie within the 14-pixel radius.
+            with patch.object(w.view_box, "viewPixelSize", return_value=(1.0, 1.0)):
+                self.assertLess(np.linalg.norm(same[0].position - wrong.position), 14)
+                w._handle_view_click(w._to_view(wrong.position))
+            self.assertEqual(len(w.manual_vertices), 1)
+            self.assertIs(w.manual_vertices[0], first)
+            self.assertIn("Wrong layer/symbol", w.manual_info.toPlainText())
+            self.assertIn("Point not selected", w.status_label.text())
+            w._handle_view_click(w._to_view(same[0].position))
+            self.assertEqual(len(w.manual_vertices), 2)
+            self.assertNotIn("Wrong layer", w.manual_info.toPlainText())
 
     def test_local_vertices_hidden_sources_and_no_periodicity_claim(self):
         w = self.window(lattice="BCC", axis="100", angle_deg=53.12, workers=2)
@@ -268,7 +409,7 @@ class ManualQtTests(unittest.TestCase):
         self.assertIs(w.manual_vertices[0], first)
         self.assertEqual(len(w.manual_vertices), 4)
         self.wait_for(w, lambda: w.manual_counts is not None)
-        np.testing.assert_array_equal(w.manual_counts.half_open.sum(axis=1), [160, 160])
+        np.testing.assert_array_equal(w.manual_counts.half_open.sum(axis=1), [80, 80])
         # Queue a count and change the physical crystal before its result is polled.
         w.manual_count_key = None
         w._queue_manual_count()
