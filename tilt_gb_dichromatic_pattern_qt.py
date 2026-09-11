@@ -62,6 +62,8 @@ from tilt_gb_crystallography import (
     GeometryLimitError,
     validate_cell_vertices,
     count_cell_atoms,
+    crystal_vector_coordinates,
+    format_direction_components,
 )
 
 
@@ -514,6 +516,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.vector_annotation = self._text_item(
             "", VECTOR_COLOR, font_size=10, bordered=True
         )
+        # Crystal/CSL scatter layers are added later at z=1..3. Keep the
+        # expanded two-frame readout above them so atoms cannot hide its text.
+        for item in (*self.vector_labels, self.vector_annotation):
+            item.setZValue(5)
+        for item in (self.vector_item, self.vector_arrow, self.vector_endpoint_item):
+            item.setZValue(3)
         for item in (
             *self.boundary_labels,
             *self.vector_labels,
@@ -672,6 +680,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         interaction_layout = QtWidgets.QGridLayout(interaction_box)
         self.pick_gb_button = QtWidgets.QPushButton("Pick GB   R")
         self.vector_button = QtWidgets.QPushButton("Measure vector   V")
+        self.vector_button.setToolTip(
+            "Pick P1/P2 in either grain. Cross-grain picks show both G1 and G2 representations. "
+            "Current (polar): actual components / a0 in the grain's polar-rotated orthonormal frame. "
+            "Lattice [uvw]: coefficients in its deformed conventional basis; these can remain unchanged under strain."
+        )
         self.pick_gb_button.setCheckable(True)
         self.vector_button.setCheckable(True)
         self.pick_gb_button.clicked.connect(self._start_new_boundary)
@@ -2985,30 +2998,65 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if len(self.selected_atoms) != 2:
             return ""
         first, second = self.selected_atoms
-        projected = second.position - first.position
-        if first.grain_index != second.grain_index:
-            projected = self._to_view(projected)
-            return (
-                "Cross-grain · no unique [hkl]\n"
-                f"proj/a₀({self.geometry.x_label},{self.geometry.y_label}) = "
-                f"({projected[0]:.4f}, {projected[1]:.4f})"
+        cross_grain = first.grain_index != second.grain_index
+        displacement = self._selected_vector_displacement()
+        vectors = self._selected_crystal_vectors()
+        lines = [
+            f"{'Cross-grain' if cross_grain else 'Crystal'} P1→P2 · "
+            f"{self._atom_name(first)} → {self._atom_name(second)} · axial {self.axial_repeat:+d}"
+        ]
+        for grain, vector in vectors:
+            lines.append(
+                f"G{grain+1} current (polar): {format_direction_components(vector.current)}"
             )
-        delta = second.half_indices - first.half_indices
-        delta = delta + self.axial_repeat * self.geometry.axial_repeat_half_indices
-        vector = self._format_lattice_vector(delta)
-        magnitude = 0.5 * float(np.linalg.norm(delta))
-        strained = ""
-        if self.near_cell is not None:
-            actual = np.sqrt(
-                np.dot(projected, projected)
-                + (0.5 * delta @ self.geometry.frame[:, 2]) ** 2
-            )
-            strained = f"\nStrained |Δr|/a₀ = {actual:.4f} (indices reference lattice)"
-        return (
-            f"Miller vector: {vector}\n"
-            f"G{first.grain_index + 1} · axial {self.axial_repeat:+d} · ref |Δr|/a₀ = {magnitude:.4f}"
-            + strained
+        # Material coordinates can stay integer while current spatial
+        # components change under strain. Keep these notions explicitly apart.
+        if any(vector.strained for _, vector in vectors):
+            for grain, vector in vectors:
+                lines.append(
+                    f"G{grain+1} lattice [uvw]: {format_direction_components(vector.lattice, unit='')}"
+                )
+        lines.append(f"Current |Δr|/a₀ = {np.linalg.norm(displacement):.4f}")
+        if cross_grain:
+            projected = self._to_view(displacement[:2])
+            lines.append(f"View Δxy/a₀ = ({projected[0]:.4f}, {projected[1]:.4f})")
+        return "\n".join(lines)
+
+    def _selected_vector_displacement(self):
+        """Actual 3D displacement, including phase height and the P2 axial image."""
+        first, second = self.selected_atoms
+        axial_half_indices = (
+            second.half_indices
+            - first.half_indices
+            + self.axial_repeat * self.geometry.axial_repeat_half_indices
         )
+        dz = 0.5 * axial_half_indices @ self.geometry.frame[:, 2]
+        # Both grains share the tilt axis, even after their in-plane F and
+        # translations. Only z may be obtained by subtracting cross-grain
+        # reference indices; x/y must come from their actual atom positions.
+        return np.r_[second.position - first.position, dz]
+
+    def _selected_crystal_vectors(self):
+        if len(self.selected_atoms) != 2:
+            return []
+        first, second = self.selected_atoms
+        grains = (
+            (0, 1) if first.grain_index != second.grain_index else (first.grain_index,)
+        )
+        displacement = self._selected_vector_displacement()
+        return [
+            (
+                grain,
+                crystal_vector_coordinates(
+                    displacement,
+                    (1 if grain == 0 else -1) * self.angle_deg / 2,
+                    self.deformations[grain],
+                    self.geometry.lattice,
+                    self.geometry.axis,
+                ),
+            )
+            for grain in grains
+        ]
 
     # ---------- controls and status ----------
 

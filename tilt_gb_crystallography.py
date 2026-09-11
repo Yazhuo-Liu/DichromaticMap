@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from math import gcd
+from fractions import Fraction
+from math import gcd, lcm
 import re
 
 import numpy as np
@@ -219,6 +220,97 @@ class ProjectedGrain:
     layers: np.ndarray
     half_indices: np.ndarray
     layer_count: int = 2
+
+
+@dataclass(frozen=True)
+class CrystalVectorCoordinates:
+    """Two representations of the SAME current spatial vector, in units a0.
+
+    Current components use orthonormal cubic axes transported by the polar
+    rotation. Lattice coordinates use the actual (possibly sheared/stretched)
+    conventional basis; for two atoms in one grain these retain reference
+    lattice indices. Noninteger components are not integer Miller indices.
+    """
+
+    current: np.ndarray
+    lattice: np.ndarray
+    current_frame: np.ndarray
+    lattice_basis: np.ndarray
+    strained: bool
+
+
+def crystal_vector_coordinates(
+    displacement, rotation_deg, deformation=None, lattice="FCC", axis="110"
+):
+    """Express an actual analysis-space (x,y,z)/a0 displacement in one grain.
+
+    Q maps reference cubic axes to analysis axes. The full current basis is
+    B=F3 Q, with polar-transported orthonormal axes O=polar(F3) Q. Therefore
+    current=O.T @ d and lattice=solve(B,d). The input already includes BOTH
+    endpoints' deformations and translations; do not deform d a second time.
+    This concerns direct-lattice directions [uvw], not reciprocal plane (hkl).
+    """
+    displacement = np.asarray(displacement, dtype=float)
+    if displacement.shape != (3,) or not np.all(np.isfinite(displacement)):
+        raise ValueError("Displacement must contain three finite components / a0")
+    if not np.isfinite(rotation_deg):
+        raise ValueError("Grain rotation must be finite")
+    f = np.eye(2) if deformation is None else np.asarray(deformation, dtype=float)
+    if f.shape != (2, 2) or not np.all(np.isfinite(f)):
+        raise ValueError("Deformation must be a finite 2-by-2 matrix")
+    f3 = np.eye(3)
+    f3[:2, :2] = f
+    left, stretches, right = np.linalg.svd(f3)
+    if np.linalg.det(f3) <= 0 or np.min(stretches) <= 1e-12:
+        raise ValueError("Deformation must be nonsingular and orientation-preserving")
+    angle = np.deg2rad(rotation_deg)
+    r = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0],
+            [np.sin(angle), np.cos(angle), 0],
+            [0, 0, 1],
+        ]
+    )
+    reference_frame = r @ get_geometry(lattice, axis).frame.T
+    current_frame = left @ right @ reference_frame
+    basis = f3 @ reference_frame
+    return CrystalVectorCoordinates(
+        current_frame.T @ displacement,
+        np.linalg.solve(basis, displacement),
+        current_frame,
+        basis,
+        bool(np.max(np.abs(stretches - 1)) > 1e-10),
+    )
+
+
+def format_direction_components(components, unit="a₀"):
+    """Keep simple rational vectors exact; never invent high-index directions.
+
+    Preserve magnitude, e.g. a0/2[1 1 2]. Use a rational only if ALL components
+    match within 1e-10, with a common denominator <=48 and indices <=256.
+    Otherwise print approximate real components, not rounded Miller integers.
+    unit='' denotes coefficients in the current deformed conventional basis.
+    """
+    components = np.asarray(components, dtype=float)
+    if components.shape != (3,) or not np.all(np.isfinite(components)):
+        raise ValueError("Direction must contain three finite components")
+    fractions = [Fraction(float(x)).limit_denominator(48) for x in components]
+    denominator = lcm(*(x.denominator for x in fractions))
+    if denominator <= 48 and all(
+        abs(float(x) - value) <= 1e-10 for x, value in zip(fractions, components)
+    ):
+        integers = [x.numerator * (denominator // x.denominator) for x in fractions]
+        common = gcd(*integers) or 1
+        direction = [x // common for x in integers]
+        if max(map(abs, direction)) <= 256:
+            factor = Fraction(common, denominator)
+            scale = (str(factor.numerator) if factor.numerator != 1 else "") + unit
+            if factor.denominator != 1:
+                scale = (scale or "1") + f"/{factor.denominator}"
+            indices = " ".join(map(str, direction))
+            return f"{scale}[{indices}]"
+    values = " ".join("0" if abs(x) < 1e-12 else f"{x:.6g}" for x in components)
+    return f"≈ {unit}[{values}]"
 
 
 def projected_columns(
