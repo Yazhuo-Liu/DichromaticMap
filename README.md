@@ -35,7 +35,9 @@ python tilt_gb_dichromatic_pattern_qt.py --axis "1 -1 3"
 - 简单整数/分数仍写成 `a₀/2[1 1 2]` 等形式，并保留向量长度；一般方向使用 `≈ a₀[...]`
   的实数分量，不把应变或无理数方向强行四舍五入成整数 Miller 指数。
 - 先从两端当前原子位置构造实际位移，因此包含两晶粒各自的应变、旋转及相对平移。
-  三维读数还包含所选层的轴向高度差和 `P2 axial image`；画出的箭头为它的二维投影。
+  三维读数还包含所选层的轴向高度差和 vector 区域中的
+  `P2 axial periodic image`；后者只选择投影原子柱中 P2 所代表的轴向周期像，
+  不增加样品厚度、不复制晶格，默认 `0`。画出的箭头为三维向量的二维投影。
   `Current |Δr|/a₀` 是当前三维长度，跨晶粒时另保留屏幕投影 `View Δxy/a₀`。
   隐藏原子仍不可选，拖动和显示旋转不会改变晶粒坐标下的读数。
 
@@ -43,9 +45,19 @@ python tilt_gb_dichromatic_pattern_qt.py --axis "1 -1 3"
 对于已由当前原子位置得到的位移 `d`，`current = (R_g Q_g)ᵀ d / a₀`，
 `lattice = (F_g Q_g)⁻¹ d / a₀`（面内变形扩展到三维，轴向不变）。不会对 `d` 再重复施加应变。
 
+右侧控制栏按作用范围排列：顶部由并排的 `ORIENTATION` / `LAYERS` 页签共享空间，
+默认打开 Orientation。Layers 按当前观察轴动态列出全部轴向相位，每一层均可独立开关；
+隐藏层会同时从两晶粒原子、精确 CSL、Local Near-CSL 和鼠标拾取中排除。
+手动胞一旦选定后仍只按其顶点所属层计数，不受随后显示层开关影响。
+`Automatic common cell` 默认关闭。
+
+其后是 `GB / VECTOR`。GB 左右侧开关只在 B1/B2 都选完后显示；P2 轴向周期像
+只在 vector 测量期间或测量完成后显示。`VIEW` / `PERFORMANCE` 共用一个默认折叠区；
+`NEAR-CSL` 位于其下且默认折叠，最后的 `MANUAL COMMON CELL` 同样默认折叠。
+
 ## 手动 common cell
 
-自动周期框继续保留，`Show automatic cell` 独立控制它的显示。
+自动周期框继续保留，`Automatic common cell` 独立控制它的显示。
 新增 `MANUAL COMMON CELL` 面板：
 
 1. 点击 `Pick 4 CSL vertices`（快捷键 M）。
@@ -69,7 +81,7 @@ python tilt_gb_dichromatic_pattern_qt.py --axis "1 -1 3"
   定义为 `C1 + u(C2−C1) + v(C4−C1)`，`0 ≤ u,v < 1`；排除两条上界边，
   避免重复平铺时反复计入边界原子。非平行四边形只给胞内/边界/闭合计数。
 - 勾选 `Apply GB side visibility to counts` 后额外按当前 GB 两侧开关过滤。
-  无论该开关状态如何，均只统计顶点所属层，不受显示层下拉框影响，**也不按屏幕视野裁剪**。
+  无论该开关状态如何，均只统计顶点所属层，不受 Layers 页签中的显示层开关影响，**也不按屏幕视野裁剪**。
 - 计数为完整选区重新生成原子，在后台使用现有进程池（单 worker 时使用后台线程），
   不依赖绘图缓存。拖动、缩放和显示旋转不改变计数，不会清除选到一半的顶点。
 - **手动选区和几何平行四边形都不是周期性证明**。尤其是局部 Near-CSL 中点构成的胞，

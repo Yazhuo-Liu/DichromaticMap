@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import unittest
@@ -165,6 +166,31 @@ class VectorQtTests(unittest.TestCase):
             w._to_view([a.position for a in w.selected_atoms]),
             atol=1e-12,
         )
+
+    def test_completing_vector_schedules_visible_annotation_repaint(self):
+        w = self.window(lattice="BCC", axis="100", angle_deg=37)
+        w._start_vector_measurement()
+        self.pick_visible(w, 0, [-1, -1])
+        with patch.object(
+            w,
+            "_repaint_vector_annotation",
+            wraps=w._repaint_vector_annotation,
+        ) as forced_repaint:
+            with patch.object(
+                w,
+                "_request_vector_annotation_repaint",
+                wraps=w._request_vector_annotation_repaint,
+            ) as repaint:
+                self.pick_visible(w, 1, [1, 1])
+            self.app.processEvents()
+        repaint.assert_called_once_with()
+        self.assertTrue(forced_repaint.called)
+        self.assertTrue(w.vector_annotation.isVisible())
+        self.assertTrue(w.vector_annotation.sceneBoundingRect().isValid())
+        x_min, x_max, y_min, y_max = w._view_range()
+        position = w.vector_annotation.pos()
+        self.assertAlmostEqual(position.x(), x_min + 0.025 * (x_max - x_min))
+        self.assertAlmostEqual(position.y(), y_min + 0.035 * (y_max - y_min))
 
     def test_applied_bulk_strain_shows_current_and_lattice_vectors(self):
         w = strain_tests.SelectedStrainQtTests.pick_local(self, workers=2)

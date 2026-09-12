@@ -251,6 +251,12 @@ class ManualQtTests(unittest.TestCase):
         w.rotation_slider.setValue(-920)
         self.assertIs(w.manual_counts, counts)
         self.assertEqual(w.manual_count_key, key)
+        counted_layer = w.manual_vertices[0].layer
+        w.layer_checks[counted_layer].setChecked(False)
+        self.app.processEvents()
+        self.assertIs(w.manual_counts, counts)
+        self.assertEqual(w.manual_count_key, key)
+        w.layer_checks[counted_layer].setChecked(True)
         np.testing.assert_allclose(
             np.column_stack(w.manual_cell_item.getData()),
             w._to_view(np.vstack((polygon, polygon[0]))),

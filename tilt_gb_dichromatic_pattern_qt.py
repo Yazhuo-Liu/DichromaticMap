@@ -115,6 +115,48 @@ class CellVertex:
     grain_positions: np.ndarray | None = None  # (G1 blue, G2 red) actual endpoints
 
 
+class CollapsibleSection(QtWidgets.QWidget):
+    """Compact control-dock section with an explicit expanded state."""
+
+    def __init__(
+        self,
+        title: str,
+        layout_type=QtWidgets.QVBoxLayout,
+        expanded: bool = True,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.toggle = QtWidgets.QToolButton()
+        self.toggle.setObjectName("sectionToggle")
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(expanded)
+        self.toggle.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.body = QtWidgets.QFrame()
+        self.body.setObjectName("sectionBody")
+        self.content_layout = layout_type(self.body)
+        self.toggle.toggled.connect(self._set_expanded)
+        outer.addWidget(self.toggle)
+        outer.addWidget(self.body)
+        self._set_expanded(expanded)
+
+    def _set_expanded(self, expanded: bool) -> None:
+        self.toggle.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow
+            if expanded
+            else QtCore.Qt.ArrowType.RightArrow
+        )
+        self.body.setVisible(expanded)
+
+    def isExpanded(self) -> bool:  # noqa: N802 - match Qt naming
+        return self.toggle.isChecked()
+
+
 def cell_count_worker(*args):
     return os.getpid(), count_cell_atoms(*args)
 
@@ -367,7 +409,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.coincident_points = self._empty_coincidences()
         self.visible_atom_counts = [0, 0]
         self.visible_coincidence_counts = [0] * self.geometry.layer_count
+        # Display filtering is independent for every axial phase. The legacy
+        # selected_layer value is retained only for the hidden compatibility
+        # combo used by older callers/tests.
         self.selected_layer = -1
+        self.visible_layers = set(range(self.geometry.layer_count))
         self.selected_points: list[np.ndarray] = []
         self.selected_atoms: list[SelectedAtom] = []
         self.buffer_bounds: tuple[float, float, float, float] | None = None
@@ -516,6 +562,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.vector_annotation = self._text_item(
             "", VECTOR_COLOR, font_size=10, bordered=True
         )
+        self.vector_annotation.setAnchor((0.0, 1.0))
         # Crystal/CSL scatter layers are added later at z=1..3. Keep the
         # expanded two-frame readout above them so atoms cannot hide its text.
         for item in (*self.vector_labels, self.vector_annotation):
@@ -586,31 +633,35 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _rebuild_legend(self):
         self.legend.clear()
-        layers = (
-            [self.selected_layer]
-            if self.selected_layer >= 0
-            else range(min(self.geometry.layer_count, 6))
-        )
+        layers = sorted(self.visible_layers)[:6]
         for layer in layers:
             name = layer_name(layer)
             self.legend.addItem(self.grain_layer_items[0][layer], f"G1 · {name}")
             self.legend.addItem(self.grain_layer_items[1][layer], f"G2 · {name}")
             self.legend.addItem(self.coincidence_items[layer], f"CSL · {name}–{name}")
-        self.legend.addItem(self.near_cell_item, "Common periodic cell")
+        if not hasattr(self, "cell_check") or self.cell_check.isChecked():
+            self.legend.addItem(self.near_cell_item, "Common periodic cell")
         if self.local_active:
             self.legend.addItem(self.local_match_item, "Local near pair · midpoint")
 
     def _create_control_dock(self) -> None:
         dock = QtWidgets.QDockWidget("Controls", self)
         dock.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-        dock.setMinimumWidth(310)
-        dock.setMaximumWidth(370)
+        dock.setMinimumWidth(320)
+        dock.setMaximumWidth(410)
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         panel = QtWidgets.QWidget()
+        panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
@@ -620,7 +671,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.heading = QtWidgets.QLabel()
         layout.addWidget(self.heading)
 
-        crystal_box = QtWidgets.QGroupBox("CRYSTAL")
+        crystal_box = QtWidgets.QGroupBox("CRYSTAL / AXIS")
         crystal_layout = QtWidgets.QFormLayout(crystal_box)
         self.structure_combo = QtWidgets.QComboBox()
         for lattice in ("FCC", "BCC"):
@@ -662,7 +713,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         crystal_layout.addRow(self.layer_info)
         self.layer_combo = QtWidgets.QComboBox()
         self._populate_layer_combo()
-        crystal_layout.addRow("Visible axial layers", self.layer_combo)
+        self.axial_layer_label = QtWidgets.QLabel("Visible axial layers")
+        crystal_layout.addRow(self.axial_layer_label, self.layer_combo)
         self.layer_combo.currentIndexChanged.connect(self._on_layer_changed)
         self.axis_combo.currentIndexChanged.connect(self._on_geometry_changed)
         self.structure_combo.currentIndexChanged.connect(
@@ -676,8 +728,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         layout.addWidget(crystal_box)
 
-        interaction_box = QtWidgets.QGroupBox("INTERACTION")
-        interaction_layout = QtWidgets.QGridLayout(interaction_box)
+        self.interaction_section = CollapsibleSection(
+            "GB / VECTOR", QtWidgets.QGridLayout, expanded=True
+        )
+        interaction_box = self.interaction_section
+        interaction_layout = interaction_box.content_layout
         self.pick_gb_button = QtWidgets.QPushButton("Pick GB   R")
         self.vector_button = QtWidgets.QPushButton("Measure vector   V")
         self.vector_button.setToolTip(
@@ -712,8 +767,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         interaction_layout.addWidget(self.second_bicrystal_button, 2, 1)
         layout.addWidget(interaction_box)
 
-        visibility_box = QtWidgets.QGroupBox("VISIBLE REGIONS")
-        visibility_layout = QtWidgets.QGridLayout(visibility_box)
+        self.layers_section = CollapsibleSection(
+            "LAYERS", QtWidgets.QGridLayout, expanded=True
+        )
+        visibility_box = self.layers_section
+        visibility_layout = visibility_box.content_layout
         self.region_checks: list[QtWidgets.QCheckBox] = []
         check_specs = (
             ("G1 · Left", GRAIN_1_COLOR),
@@ -730,8 +788,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.region_checks.append(check)
         layout.addWidget(visibility_box)
 
-        orientation_box = QtWidgets.QGroupBox("ORIENTATION")
-        orientation_layout = QtWidgets.QVBoxLayout(orientation_box)
+        self.orientation_section = CollapsibleSection(
+            "ORIENTATION", QtWidgets.QVBoxLayout, expanded=True
+        )
+        orientation_box = self.orientation_section
+        orientation_layout = orientation_box.content_layout
         orientation_layout.addWidget(QtWidgets.QLabel("CSL preset"))
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItem("Custom angle", None)
@@ -793,8 +854,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         orientation_layout.addWidget(self.rotation_slider)
         layout.addWidget(orientation_box)
 
-        display_box = QtWidgets.QGroupBox("DISPLAY")
-        display_layout = QtWidgets.QGridLayout(display_box)
+        self.view_section = CollapsibleSection(
+            "VIEW", QtWidgets.QGridLayout, expanded=False
+        )
+        display_box = self.view_section
+        display_layout = display_box.content_layout
         display_layout.addWidget(QtWidgets.QLabel("Field size"), 0, 0)
         self.view_scale_label = QtWidgets.QLabel(f"{self.parameters.view_scale:.2f}×")
         self.view_scale_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -811,10 +875,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.view_slider.valueChanged.connect(self._on_field_size_changed)
         display_layout.addWidget(self.view_slider, 1, 0, 1, 2)
 
-        scale_stops_layout = QtWidgets.QHBoxLayout()
+        scale_stops_layout = QtWidgets.QGridLayout()
         scale_stops_layout.setSpacing(3)
         self.scale_stop_buttons: list[QtWidgets.QToolButton] = []
-        for scale in VIEW_SCALE_STOPS:
+        for index, scale in enumerate(VIEW_SCALE_STOPS):
             button = QtWidgets.QToolButton()
             button.setText(f"{scale:g}×")
             button.setToolTip(f"Set field size to {scale:g}×")
@@ -823,18 +887,20 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     round(value * 100.0)
                 )
             )
-            scale_stops_layout.addWidget(button)
+            scale_stops_layout.addWidget(button, index // 3, index % 3)
             self.scale_stop_buttons.append(button)
         display_layout.addLayout(scale_stops_layout, 2, 0, 1, 2)
 
-        display_layout.addWidget(QtWidgets.QLabel("P2 axial image"), 3, 0)
+        self.axial_image_label = QtWidgets.QLabel("P2 axial image")
+        display_layout.addWidget(self.axial_image_label, 3, 0)
         self.axial_spin = QtWidgets.QSpinBox()
         self.axial_spin.setRange(-4, 4)
         self.axial_spin.setPrefix("+")
         self.axial_spin.setValue(0)
         self.axial_spin.valueChanged.connect(self._on_axial_repeat_changed)
         display_layout.addWidget(self.axial_spin, 3, 1)
-        display_layout.addWidget(QtWidgets.QLabel("CPU workers"), 4, 0)
+        self.worker_label = QtWidgets.QLabel("CPU workers")
+        display_layout.addWidget(self.worker_label, 4, 0)
         self.worker_spin = QtWidgets.QSpinBox()
         self.worker_spin.setRange(1, max(1, os.cpu_count() or 1))
         self.worker_spin.setValue(self.worker_count)
@@ -849,6 +915,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "Layer-preserving CSL / Near-CSL periodic cell, not a GB structural unit"
         )
         self.cell_check.toggled.connect(self._update_common_cell)
+        self.cell_check.toggled.connect(self._rebuild_legend)
         display_layout.addWidget(self.cell_check, 5, 0)
         self.cell_fit_button = QtWidgets.QPushButton("Fit cell")
         self.cell_fit_button.setToolTip("Fit the exact or strained common cell in view")
@@ -856,8 +923,146 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         display_layout.addWidget(self.cell_fit_button, 5, 1)
         layout.addWidget(display_box)
 
-        manual_box = QtWidgets.QGroupBox("MANUAL COMMON CELL")
-        manual_layout = QtWidgets.QVBoxLayout(manual_box)
+        # Keep crystallographic controls together at the top. Layer visibility,
+        # GB-side clipping, vector-only options, and view scaling each have a
+        # separate scope and should not share a generic display panel.
+        layout.removeWidget(crystal_box)
+        orientation_layout.insertWidget(0, crystal_box)
+
+        crystal_layout.removeWidget(self.layer_info)
+        crystal_layout.removeWidget(self.axial_layer_label)
+        crystal_layout.removeWidget(self.layer_combo)
+        self.axial_layer_label.hide()
+        self.layer_combo.hide()
+        visibility_layout.addWidget(self.layer_info, 0, 0, 1, 2)
+        layer_buttons = QtWidgets.QHBoxLayout()
+        self.all_layers_button = QtWidgets.QPushButton("All layers")
+        self.no_layers_button = QtWidgets.QPushButton("No layers")
+        self.all_layers_button.clicked.connect(lambda: self._set_all_layers_visible(True))
+        self.no_layers_button.clicked.connect(lambda: self._set_all_layers_visible(False))
+        layer_buttons.addWidget(self.all_layers_button)
+        layer_buttons.addWidget(self.no_layers_button)
+        visibility_layout.addLayout(layer_buttons, 1, 0, 1, 2)
+        self.axial_layer_checks_widget = QtWidgets.QWidget()
+        self.axial_layer_checks_layout = QtWidgets.QGridLayout(
+            self.axial_layer_checks_widget
+        )
+        self.axial_layer_checks_layout.setContentsMargins(0, 0, 0, 0)
+        self.axial_layer_scroll = QtWidgets.QScrollArea()
+        self.axial_layer_scroll.setWidgetResizable(True)
+        self.axial_layer_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.axial_layer_scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.axial_layer_scroll.setMaximumHeight(150)
+        self.axial_layer_scroll.setWidget(self.axial_layer_checks_widget)
+        visibility_layout.addWidget(self.axial_layer_scroll, 2, 0, 1, 2)
+        self.layer_checks: list[QtWidgets.QCheckBox] = []
+        self._rebuild_layer_checks()
+
+        self.gb_region_widget = QtWidgets.QWidget()
+        gb_region_layout = QtWidgets.QVBoxLayout(self.gb_region_widget)
+        gb_region_layout.setContentsMargins(0, 7, 0, 0)
+        gb_region_layout.setSpacing(6)
+        gb_region_layout.addWidget(QtWidgets.QLabel("GB side visibility"))
+        gb_checks_layout = QtWidgets.QGridLayout()
+        for index, check in enumerate(self.region_checks):
+            visibility_layout.removeWidget(check)
+            gb_checks_layout.addWidget(check, index // 2, index % 2)
+        gb_region_layout.addLayout(gb_checks_layout)
+        gb_presets_layout = QtWidgets.QGridLayout()
+        for button in (
+            self.full_button,
+            self.first_bicrystal_button,
+            self.second_bicrystal_button,
+        ):
+            interaction_layout.removeWidget(button)
+        self.full_button.setText("Show all sides   F")
+        gb_presets_layout.addWidget(self.full_button, 0, 0, 1, 2)
+        gb_presets_layout.addWidget(self.first_bicrystal_button, 1, 0)
+        gb_presets_layout.addWidget(self.second_bicrystal_button, 1, 1)
+        gb_region_layout.addLayout(gb_presets_layout)
+        interaction_layout.addWidget(self.gb_region_widget, 1, 0, 1, 2)
+
+        self.vector_options_widget = QtWidgets.QWidget()
+        vector_options_layout = QtWidgets.QFormLayout(self.vector_options_widget)
+        vector_options_layout.setContentsMargins(0, 7, 0, 0)
+        display_layout.removeWidget(self.axial_image_label)
+        display_layout.removeWidget(self.axial_spin)
+        self.axial_image_label.setText("P2 axial periodic image")
+        axial_help = (
+            "Vector readout only: choose which periodic atom along the viewing axis "
+            "the projected P2 column represents. This does not add thickness, duplicate "
+            "the structure, or change plotted atoms."
+        )
+        self.axial_image_label.setToolTip(axial_help)
+        self.axial_spin.setToolTip(axial_help)
+        vector_options_layout.addRow(self.axial_image_label, self.axial_spin)
+        interaction_layout.addWidget(self.vector_options_widget, 2, 0, 1, 2)
+
+        interaction_layout.removeWidget(self.center_button)
+        display_layout.addWidget(self.center_button, 3, 0, 1, 2)
+        display_layout.removeWidget(self.cell_check)
+        display_layout.removeWidget(self.cell_fit_button)
+        self.cell_check.setText("Automatic common cell")
+        self.cell_check.setChecked(False)
+        self._rebuild_legend()
+        visibility_layout.addWidget(self.cell_check, 3, 0)
+        visibility_layout.addWidget(self.cell_fit_button, 3, 1)
+
+        display_layout.removeWidget(self.worker_label)
+        display_layout.removeWidget(self.worker_spin)
+        self.performance_section = CollapsibleSection(
+            "PERFORMANCE", QtWidgets.QFormLayout, expanded=False
+        )
+        self.performance_section.content_layout.addRow(
+            self.worker_label, self.worker_spin
+        )
+        layout.addWidget(self.performance_section)
+
+        # Orientation and layer visibility share one tabbed card because they
+        # are normally adjusted at different times. Orientation is active by
+        # default, so the layer page starts folded behind its neighboring tab.
+        for section in (
+            orientation_box,
+            visibility_box,
+            interaction_box,
+            display_box,
+            self.performance_section,
+        ):
+            layout.removeWidget(section)
+        self.orientation_layers_tabs = QtWidgets.QTabWidget()
+        self.orientation_layers_tabs.setObjectName("controlTabs")
+        self.orientation_layers_tabs.addTab(orientation_box.body, "ORIENTATION")
+        self.orientation_layers_tabs.addTab(visibility_box.body, "LAYERS")
+        self.orientation_layers_tabs.setCurrentIndex(0)
+        layout.insertWidget(1, self.orientation_layers_tabs)
+        layout.insertWidget(2, interaction_box)
+
+        self.view_performance_section = CollapsibleSection(
+            "VIEW / PERFORMANCE", QtWidgets.QVBoxLayout, expanded=False
+        )
+        self.view_performance_tabs = QtWidgets.QTabWidget()
+        self.view_performance_tabs.setObjectName("controlTabs")
+        self.view_performance_tabs.addTab(display_box.body, "VIEW")
+        self.view_performance_tabs.addTab(
+            self.performance_section.body, "PERFORMANCE"
+        )
+        self.view_performance_section.content_layout.addWidget(
+            self.view_performance_tabs
+        )
+        layout.insertWidget(3, self.view_performance_section)
+        orientation_box.deleteLater()
+        visibility_box.deleteLater()
+        display_box.deleteLater()
+        self.performance_section.deleteLater()
+        self._sync_context_controls()
+
+        self.manual_section = CollapsibleSection(
+            "MANUAL COMMON CELL", QtWidgets.QVBoxLayout, expanded=False
+        )
+        manual_box = self.manual_section
+        manual_layout = manual_box.content_layout
         self.manual_pick_button = QtWidgets.QPushButton("Pick 4 CSL vertices   M")
         self.manual_pick_button.setCheckable(True)
         self.manual_pick_button.clicked.connect(self._start_manual_cell)
@@ -887,7 +1092,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "Apply GB side visibility to counts"
         )
         self.manual_visible_check.setToolTip(
-            "Counts always use the vertices' layer. Optionally apply G1/G2 side switches; the visible-layer selector never changes the counted layer."
+            "Counts always use the vertices' layer. Optionally apply G1/G2 side switches; the Layers display checkboxes never change the counted layer."
         )
         self.manual_visible_check.toggled.connect(self._queue_manual_count)
         manual_layout.addWidget(self.manual_visible_check)
@@ -940,9 +1145,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         manual_layout.addWidget(self.manual_strain_note)
         layout.addWidget(manual_box)
 
-        near_box = QtWidgets.QGroupBox("NEAR-CSL · METHOD")
-        near_layout = QtWidgets.QVBoxLayout(near_box)
+        self.near_section = CollapsibleSection(
+            "NEAR-CSL", QtWidgets.QVBoxLayout, expanded=False
+        )
+        near_box = self.near_section
+        near_layout = near_box.content_layout
+        near_layout.addWidget(QtWidgets.QLabel("Method"))
         self.near_method_combo = QtWidgets.QComboBox()
+        self.near_method_combo.setToolTip("Choose a Near-CSL method")
+        combo_arrow = Path(__file__).with_name("assets") / "chevron-down.svg"
+        self.near_method_combo.setStyleSheet(
+            "QComboBox { padding-right: 28px; }"
+            "QComboBox::down-arrow {"
+            f"image: url({combo_arrow.as_posix()}); width: 12px; height: 8px;"
+            "}"
+        )
         self.near_method_combo.addItem("Local matching · no bulk strain", "local")
         self.near_method_combo.addItem("Homogeneous strain + periodic cell", "strain")
         self.near_method_combo.currentIndexChanged.connect(self._on_near_method_changed)
@@ -997,6 +1214,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         near_layout.addWidget(self.near_info)
         layout.addWidget(near_box)
+
+        # Near-CSL precedes the manual-cell workflow; both start collapsed.
+        layout.removeWidget(near_box)
+        layout.removeWidget(manual_box)
+        layout.insertWidget(4, near_box)
+        layout.insertWidget(5, manual_box)
 
         self.status_label = QtWidgets.QLabel()
         self.status_label.setObjectName("statusCard")
@@ -1308,7 +1531,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         states = self._region_states()
         if not self.csl_updating:
             for layer, points in enumerate(self.coincident_points):
-                if self.selected_layer >= 0 and layer != self.selected_layer:
+                if layer not in self.visible_layers:
                     continue
                 keep = np.ones(len(points), dtype=bool)
                 if len(self.selected_points) == 2:
@@ -1401,7 +1624,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         }
         if len(hit_layers) > 1:
             self._manual_pick_warning(
-                "Overlapping markers from different layers; isolate one layer with Visible axial layers, then pick again. Point not selected."
+                "Overlapping markers from different layers; isolate one layer in the Layers tab, then pick again. Point not selected."
             )
             return
         if self.manual_vertices and candidate.layer != self.manual_vertices[0].layer:
@@ -1640,10 +1863,64 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             self.layer_combo.setCurrentIndex(self.selected_layer + 1)
 
-    def _on_layer_changed(self, *_args):
-        self.selected_layer = self.layer_combo.currentData()
+    def _rebuild_layer_checks(self) -> None:
+        if not hasattr(self, "axial_layer_checks_layout"):
+            return
+        while self.axial_layer_checks_layout.count():
+            item = self.axial_layer_checks_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self.layer_checks = []
+        for layer in range(self.geometry.layer_count):
+            check = QtWidgets.QCheckBox(
+                f"{layer_name(layer)} · z/a₀={layer*self.geometry.layer_spacing:.6g}"
+            )
+            check.setChecked(layer in self.visible_layers)
+            check.toggled.connect(
+                lambda checked, index=layer: self._on_axial_layer_toggled(
+                    index, checked
+                )
+            )
+            self.axial_layer_checks_layout.addWidget(check, layer // 2, layer % 2)
+            self.layer_checks.append(check)
+
+    def _set_all_layers_visible(self, visible: bool) -> None:
+        self.visible_layers = (
+            set(range(self.geometry.layer_count)) if visible else set()
+        )
+        for check in self.layer_checks:
+            with QtCore.QSignalBlocker(check):
+                check.setChecked(visible)
+        self.selected_layer = -1
+        with QtCore.QSignalBlocker(self.layer_combo):
+            self.layer_combo.setCurrentIndex(0)
+        self._apply_layer_visibility()
+
+    def _on_axial_layer_toggled(self, layer: int, visible: bool) -> None:
+        if visible:
+            self.visible_layers.add(layer)
+        else:
+            self.visible_layers.discard(layer)
+        self.selected_layer = (
+            next(iter(self.visible_layers)) if len(self.visible_layers) == 1 else -1
+        )
+        self._apply_layer_visibility()
+
+    def _apply_layer_visibility(self) -> None:
         self._rebuild_legend()
         self._update_visible_points()
+
+    def _on_layer_changed(self, *_args):
+        self.selected_layer = self.layer_combo.currentData()
+        self.visible_layers = (
+            set(range(self.geometry.layer_count))
+            if self.selected_layer < 0
+            else {self.selected_layer}
+        )
+        for layer, check in enumerate(self.layer_checks):
+            with QtCore.QSignalBlocker(check):
+                check.setChecked(layer in self.visible_layers)
+        self._apply_layer_visibility()
 
     def _geometry_signature(self):
         """Identify physical positions independently of the view rectangle."""
@@ -1670,15 +1947,17 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             f"{model.layer_count} axial layers · spacing = {model.layer_spacing:.6g} a₀\n"
             f"Axial repeat = {model.axial_period:.6g} a₀"
             + (
-                "\nLegend shows first 6 layers; use the layer selector to inspect others."
+                "\nLegend shows the first 6 enabled layers; use the layer checkboxes to inspect others."
                 if model.layer_count > 6
                 else ""
             )
         )
         self.axial_spin.setToolTip(
-            "P2 shifts by "
+            "Vector readout only: P2 shifts by "
             + self._format_lattice_vector(model.axial_repeat_half_indices)
-            + f" per step along {model.axis_label}"
+            + f" per step along {model.axis_label}. This selects a periodic atom "
+            "represented by the same projected column; it does not add thickness, "
+            "duplicate the structure, or change plotted atoms."
         )
 
     def _on_geometry_changed(self, *_args, apply_custom=False):
@@ -1745,7 +2024,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.visible_coincidence_counts = [0] * geometry.layer_count
         self.coincident_points = self._empty_coincidences()
         self.selected_layer = -1
+        self.visible_layers = set(range(geometry.layer_count))
         self._populate_layer_combo()
+        self._rebuild_layer_checks()
         self._create_layer_items()
         self._update_marker_sizes()
         self.buffer_bounds = None
@@ -2016,8 +2297,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         mask = np.full(len(pairs.layers), self.local_active, dtype=bool)
         if self.grain_signature != self._geometry_signature():
             mask[:] = False
-        if self.selected_layer >= 0:
-            mask &= pairs.layers == self.selected_layer
+        mask &= np.isin(pairs.layers, tuple(self.visible_layers))
         if len(self.selected_points) == 2:
             states = self._region_states()
             for grain, points in enumerate((pairs.first, pairs.second)):
@@ -2536,8 +2816,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             else:
                 mask = np.ones(len(grain.positions), dtype=bool)
-            if self.selected_layer >= 0:
-                mask &= grain.layers == self.selected_layer
+            mask &= np.isin(grain.layers, tuple(self.visible_layers))
             self.visible_atom_masks.append(mask)
             for layer, item in enumerate(self.grain_layer_items[grain_index]):
                 layer_mask = grain.layers == layer
@@ -2564,7 +2843,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 visible_points = points[first_mask & second_mask]
             else:
                 visible_points = points
-            if self.selected_layer >= 0 and self.selected_layer != layer:
+            if layer not in self.visible_layers:
                 visible_points = np.empty((0, 2))
             self._set_scatter(item, visible_points)
         self._refresh_visible_counts()
@@ -2596,7 +2875,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         boundary_ready = len(self.selected_points) == 2
         for layer, points in enumerate(self.coincident_points):
             mask = in_view(points)
-            if self.selected_layer >= 0 and self.selected_layer != layer:
+            if layer not in self.visible_layers:
                 mask[:] = False
             if boundary_ready:
                 mask &= selected_region_mask(
@@ -2719,6 +2998,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     # ---------- picking and annotations ----------
 
+    def _sync_context_controls(self) -> None:
+        if hasattr(self, "gb_region_widget"):
+            self.gb_region_widget.setVisible(len(self.selected_points) == 2)
+        if hasattr(self, "vector_options_widget"):
+            self.vector_options_widget.setVisible(
+                self.interaction_mode == "vector" or bool(self.selected_atoms)
+            )
+
     def _set_mode(self, mode: str) -> None:
         self.interaction_mode = mode
         gb_blocker = QtCore.QSignalBlocker(self.pick_gb_button)
@@ -2734,6 +3021,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             else QtCore.Qt.CursorShape.OpenHandCursor
         )
         self.plot_widget.viewport().setCursor(cursor)
+        self._sync_context_controls()
         self._update_status()
 
     def _start_new_boundary(self, *_args) -> None:
@@ -2925,17 +3213,40 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.vector_arrow.setStyle(angle=angle)
         self.vector_arrow.setPos(*second)
         self.vector_arrow.show()
-        normal = np.array([-direction[1], direction[0]])
-        normal_length = float(np.linalg.norm(normal))
-        if normal_length:
-            normal /= normal_length
-        _center, width, height = self._view_geometry()
-        text_position = self._clamp_to_view(
-            0.5 * (first + second) + normal * 0.10 * min(width, height)
+        x_min, x_max, y_min, y_max = self._view_range()
+        text_position = np.array(
+            [
+                x_min + 0.025 * (x_max - x_min),
+                y_min + 0.035 * (y_max - y_min),
+            ]
         )
         self.vector_annotation.setText(self._selected_vector_readout())
         self.vector_annotation.setPos(*text_position)
         self.vector_annotation.show()
+        self._request_vector_annotation_repaint()
+
+    def _request_vector_annotation_repaint(self) -> None:
+        """Schedule a full viewport paint after revealing the vector readout.
+
+        TextItem is a parent graphics item with its text stored in a child item.
+        When its text, position, and visibility all change inside the scene's
+        mouse-release callback, Qt can occasionally retain only the old dirty
+        region.  A later zoom repaints the whole viewport and makes the already
+        visible annotation appear.  Updating the viewport here provides that
+        paint immediately after the click event returns.
+        """
+
+        self.vector_annotation.update()
+        self.plot_widget.scene().update()
+        self.plot_widget.viewport().update()
+        # Run once after the mouse-release callback. This prevents the newly
+        # shown child text item from being lost in Qt's stale dirty region.
+        QtCore.QTimer.singleShot(0, self._repaint_vector_annotation)
+
+    def _repaint_vector_annotation(self) -> None:
+        if self.vector_annotation.isVisible():
+            self.vector_annotation.update()
+            self.plot_widget.viewport().repaint()
 
     def _line_box_intersections(
         self, first: np.ndarray, second: np.ndarray
@@ -3023,7 +3334,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         return "\n".join(lines)
 
     def _selected_vector_displacement(self):
-        """Actual 3D displacement, including phase height and the P2 axial image."""
+        """Actual 3D displacement, including phase height and P2's periodic image."""
         first, second = self.selected_atoms
         axial_half_indices = (
             second.half_indices
@@ -3107,21 +3418,19 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             else:
                 message = "Ready · choose an interaction tool"
+        visible_status_layers = sorted(self.visible_layers)
         csl_state = (
             "updating…"
             if self.csl_updating
             else f"{sum(self.visible_coincidence_counts)} total · "
             + ", ".join(
                 f"{layer_name(layer)}: {count}"
-                for layer, count in enumerate(self.visible_coincidence_counts)
-                if layer == self.selected_layer
-                or (self.selected_layer < 0 and layer < 6)
+                for layer, count in (
+                    (layer, self.visible_coincidence_counts[layer])
+                    for layer in visible_status_layers[:6]
+                )
             )
-            + (
-                ", …"
-                if self.selected_layer < 0 and self.geometry.layer_count > 6
-                else ""
-            )
+            + (", …" if len(visible_status_layers) > 6 else "")
         )
         compute_state = (
             f"{self.worker_count} workers · {self.parallel_stage} running"
@@ -3195,6 +3504,46 @@ QGroupBox::title {
     padding: 0 4px;
     color: #64748b;
     font-size: 8pt;
+}
+QToolButton#sectionToggle {
+    background: #ffffff;
+    border: 1px solid #d8e0ea;
+    border-radius: 8px;
+    min-height: 31px;
+    padding: 1px 9px;
+    color: #526174;
+    font-size: 8pt;
+    font-weight: 700;
+    text-align: left;
+}
+QToolButton#sectionToggle:checked {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+QFrame#sectionBody {
+    background: #ffffff;
+    border: 1px solid #d8e0ea;
+    border-top: 0;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+}
+QTabWidget#controlTabs::pane {
+    background: #ffffff;
+    border: 1px solid #d8e0ea;
+    border-radius: 7px;
+    top: -1px;
+}
+QTabWidget#controlTabs QTabBar::tab {
+    background: #e9eff6;
+    border: 1px solid #d8e0ea;
+    padding: 7px 12px;
+    color: #64748b;
+    font-size: 8pt;
+    font-weight: 700;
+}
+QTabWidget#controlTabs QTabBar::tab:selected {
+    background: #ffffff;
+    color: #31445b;
 }
 QPushButton {
     background: #ffffff;

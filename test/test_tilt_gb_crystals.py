@@ -328,6 +328,52 @@ class QtCrystalTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertTrue(predicate(), window.near_info.toPlainText())
 
+    def test_control_sections_are_ordered_and_contextual(self):
+        q = self.q
+        w = q.DichromaticPatternWindow(q.PatternParameters(), worker_count=1)
+        w.show()
+        self.app.processEvents()
+        try:
+            self.assertEqual(w.orientation_layers_tabs.currentIndex(), 0)
+            self.assertTrue(w.interaction_section.isExpanded())
+            self.assertFalse(w.view_performance_section.isExpanded())
+            self.assertFalse(w.near_section.isExpanded())
+            self.assertFalse(w.manual_section.isExpanded())
+            self.assertTrue(all(check.isChecked() for check in w.layer_checks))
+            self.assertFalse(w.cell_check.isChecked())
+            self.assertLess(w.orientation_layers_tabs.y(), w.interaction_section.y())
+
+            hidden_layer = 0
+            w.layer_checks[hidden_layer].setChecked(False)
+            for grain, mask in zip(w.grains, w.visible_atom_masks, strict=True):
+                self.assertFalse(np.any(mask & (grain.layers == hidden_layer)))
+            self.assertEqual(len(w.coincidence_items[hidden_layer].points()), 0)
+            target = w.grains[0].positions[w.grains[0].layers == hidden_layer][0]
+            atom, _distance = w._nearest_atom(target)
+            self.assertTrue(atom is None or atom.layer != hidden_layer)
+            w.layer_checks[hidden_layer].setChecked(True)
+            self.assertTrue(w.gb_region_widget.isHidden())
+            self.assertTrue(w.vector_options_widget.isHidden())
+
+            w._start_new_boundary()
+            w._handle_view_click(np.zeros(2))
+            self.assertTrue(w.gb_region_widget.isHidden())
+            first = w.selected_points[0]
+            second = w.grains[0].positions[
+                np.argmax(np.linalg.norm(w.grains[0].positions - first, axis=1))
+            ]
+            w._handle_view_click(w._to_view(second))
+            self.assertEqual(len(w.selected_points), 2)
+            self.assertFalse(w.gb_region_widget.isHidden())
+
+            w._clear_lattice_selections()
+            w._start_vector_measurement()
+            self.assertFalse(w.vector_options_widget.isHidden())
+            self.assertEqual(w.axial_spin.value(), 0)
+            self.assertIn("does not add thickness", w.axial_spin.toolTip())
+        finally:
+            w.close()
+
     def test_local_matching_no_strain_parallel_threshold_pan_and_visibility(self):
         q = self.q
         w = q.DichromaticPatternWindow(
@@ -359,6 +405,13 @@ class QtCrystalTests(unittest.TestCase):
             reference = near.local_near_pairs(*w.grains, w.local_distance_spin.value())
             np.testing.assert_array_equal(w.local_pairs.first, reference.first)
             np.testing.assert_array_equal(w.local_pairs.second, reference.second)
+            hidden_layer = int(w.local_pairs.layers[0])
+            w.layer_checks[hidden_layer].setChecked(False)
+            self.assertFalse(np.any(w._local_pair_mask() & (w.local_pairs.layers == hidden_layer)))
+            self.assertEqual(
+                len(w.local_match_item.points()), np.count_nonzero(w._local_pair_mask())
+            )
+            w.layer_checks[hidden_layer].setChecked(True)
             w.local_distance_spin.setValue(0.0005)
             self.assertEqual(
                 len(w.local_pairs.layers), 0
@@ -513,6 +566,8 @@ class QtCrystalTests(unittest.TestCase):
                 w.axis_combo.setCurrentIndex(w.axis_combo.findData(axis))
                 self.wait_for(w, lambda: w.parallel_stage is None)
                 self.assertEqual(w.geometry.layer_count, count)
+                self.assertEqual(len(w.layer_checks), count)
+                self.assertTrue(all(check.isChecked() for check in w.layer_checks))
                 self.assertEqual(len(w.coincident_points), count)
                 self.assertEqual(len(w.grain_layer_items[0]), count)
             w.axis_combo.setCurrentIndex(w.axis_combo.findData(None))
@@ -526,17 +581,19 @@ class QtCrystalTests(unittest.TestCase):
             )
             for actual, reference in zip(w.coincident_points, expected, strict=True):
                 np.testing.assert_allclose(actual, reference, atol=1e-12)
-            w.layer_combo.setCurrentIndex(w.layer_combo.findData(10))
+            w.layer_checks[0].setChecked(False)
+            w.layer_checks[5].setChecked(False)
+            self.assertEqual(w.visible_layers, set(range(11)) - {0, 5})
             for grain, mask in zip(w.grains, w.visible_atom_masks):
                 self.assertTrue(np.any(mask))
-                self.assertTrue(np.all(grain.layers[mask] == 10))
+                self.assertFalse(np.any(np.isin(grain.layers[mask], (0, 5))))
             for layer, item in enumerate(w.grain_layer_items[0]):
-                self.assertEqual(len(item.points()) == 0, layer != 10)
+                self.assertEqual(len(item.points()) == 0, layer in (0, 5))
             # Even clicking a hidden phase can only pick a visible phase.
             hidden_position = w.grains[0].positions[w.grains[0].layers == 0][0]
             atom, _ = w._nearest_atom(hidden_position)
             self.assertIsNotNone(atom)
-            self.assertEqual(atom.layer, 10)
+            self.assertNotIn(atom.layer, (0, 5))
             w._start_vector_measurement()
             positions = w.grains[0].positions[w.grains[0].layers == 10]
             selected_position = positions[np.argmin(np.linalg.norm(positions, axis=1))]

@@ -291,11 +291,14 @@ class ViewerTests(unittest.TestCase):
         try:
             self.assertIsNone(w.near_search)
             self.assertIsNone(w.near_cell)
-            self.assertTrue(w.near_cell_item.isVisible())
+            self.assertFalse(w.cell_check.isChecked())
+            self.assertFalse(w.near_cell_item.isVisible())
             np.testing.assert_array_equal(w.deformations[0], np.eye(2))
             x, y = w.near_cell_item.getData()
             self.assertEqual(len(x), 5)
             self.assertEqual((x[0], y[0]), (x[-1], y[-1]))
+            w.cell_check.setChecked(True)
+            self.assertTrue(w.near_cell_item.isVisible())
             w._start_vector_measurement()
             w._handle_view_click(np.zeros(2))
             picked = w.selected_atoms[0]
