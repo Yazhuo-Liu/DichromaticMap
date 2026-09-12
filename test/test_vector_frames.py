@@ -154,6 +154,15 @@ class VectorQtTests(unittest.TestCase):
             w.vector_annotation.zValue(),
             max(item.zValue() for item in w.coincidence_items),
         )
+        self.assertGreater(w.vector_arrow.zValue(), w.manual_cell_item.zValue())
+        self.assertTrue(w.vector_arrow.isVisible())
+        arrow = np.array(
+            [[point.x(), point.y()] for point in w.vector_arrow.polygon()]
+        )
+        self.assertEqual(arrow.shape, (3, 2))
+        line = np.column_stack(w.vector_item.getData())
+        arrow_direction = arrow[0] - arrow[1:].mean(axis=0)
+        self.assertGreater(np.dot(arrow_direction, line[1] - line[0]), 0)
         w.rotation_spin.setValue(47)
         for (_, new), (_, old) in zip(w._selected_crystal_vectors(), values):
             np.testing.assert_allclose(new.current, old.current, atol=1e-12)

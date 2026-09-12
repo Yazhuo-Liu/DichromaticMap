@@ -77,6 +77,8 @@ class CountingTests(unittest.TestCase):
         np.testing.assert_array_equal(counts.interior, [[0, 34], [0, 34]])
         np.testing.assert_array_equal(counts.boundary, [[0, 14], [0, 14]])
         np.testing.assert_array_equal(counts.half_open, [[0, 40], [0, 40]])
+        np.testing.assert_array_equal(counts.half_open_edges, [[0, 5], [0, 5]])
+        np.testing.assert_array_equal(counts.half_open_corners, [[0, 1], [0, 1]])
         averaged = crystal.count_cell_atoms(
             midpoints, 22, (np.eye(2), np.eye(2)), "FCC", "110", layer=1
         )
@@ -297,8 +299,11 @@ class ManualQtTests(unittest.TestCase):
         np.testing.assert_array_equal(w.manual_counts.interior, [[0, 34], [0, 34]])
         np.testing.assert_array_equal(w.manual_counts.boundary, [[0, 14], [0, 14]])
         np.testing.assert_array_equal(w.manual_counts.half_open, [[0, 40], [0, 40]])
-        self.assertIn("Only picked layer B (diamond)", w.manual_info.toPlainText())
-        self.assertIn("40 half-open", w.manual_annotation.toPlainText())
+        self.assertIn("Only the picked ◇ layer", w.manual_info.toPlainText())
+        self.assertIn(
+            "40 atoms · 34 inside + 5 edge + 1 corner",
+            w.manual_annotation.toPlainText(),
+        )
         mask = w._local_pair_mask()
         for point, layer in zip(
             w.local_match_item.points(), w.local_pairs.layers[mask]

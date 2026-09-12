@@ -469,6 +469,8 @@ class CellAtomCounts:
     half_open: np.ndarray | None
     areas: np.ndarray  # one actual polygon area per grain, a0 squared
     half_open_available: np.ndarray  # parallelogram test per grain
+    half_open_edges: np.ndarray | None  # unique edge atoms retained
+    half_open_corners: np.ndarray | None  # unique corner atoms retained
 
     @property
     def area(self):
@@ -520,6 +522,8 @@ def count_cell_atoms(
         raise ValueError("Provide two finite grain translations")
     edge_counts = np.zeros_like(inside_counts)
     half_counts = np.zeros_like(inside_counts)
+    half_edge_counts = np.zeros_like(inside_counts)
+    half_corner_counts = np.zeros_like(inside_counts)
     is_parallelogram = np.zeros(2, dtype=bool)
     areas = np.zeros(2)
     for grain_index, sign in enumerate((1, -1)):
@@ -545,6 +549,19 @@ def count_cell_atoms(
                 "View zoom does not affect counting."
             ) from error
         inside, boundary, half_open = cell_membership(grain.positions, polygon)
+        half_open_edges = None
+        half_open_corners = None
+        if half_open is not None:
+            corner_tolerance = 1e-8 * max(1.0, float(np.max(high - low)))
+            at_corner = np.any(
+                np.linalg.norm(
+                    grain.positions[:, None, :] - polygon[None, :, :], axis=2
+                )
+                <= corner_tolerance,
+                axis=1,
+            )
+            half_open_corners = half_open & at_corner
+            half_open_edges = half_open & boundary & ~at_corner
         visible = np.ones(len(grain.positions), dtype=bool)
         if layer >= 0:
             visible &= grain.layers == layer
@@ -561,6 +578,8 @@ def count_cell_atoms(
             (inside, inside_counts),
             (boundary, edge_counts),
             (half_open, half_counts),
+            (half_open_edges, half_edge_counts),
+            (half_open_corners, half_corner_counts),
         ):
             if mask is not None:
                 counts[grain_index] = np.bincount(
@@ -578,12 +597,15 @@ def count_cell_atoms(
             )
             / 2
         )
+    half_open_result = np.any(is_parallelogram)
     return CellAtomCounts(
-        inside_counts,
-        edge_counts,
-        half_counts if np.any(is_parallelogram) else None,
-        areas,
-        is_parallelogram,
+        interior=inside_counts,
+        boundary=edge_counts,
+        half_open=half_counts if half_open_result else None,
+        areas=areas,
+        half_open_available=is_parallelogram,
+        half_open_edges=half_edge_counts if half_open_result else None,
+        half_open_corners=half_corner_counts if half_open_result else None,
     )
 
 

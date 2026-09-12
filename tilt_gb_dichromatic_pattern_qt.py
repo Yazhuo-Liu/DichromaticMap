@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Standalone cubic FCC/BCC tilt-GB viewer, with coordinates in units of a0.
 
 This Qt/PyQtGraph application is independent of GBClaw. The older Matplotlib
@@ -26,6 +25,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import html
+import math
 import multiprocessing
 import os
 import sys
@@ -155,6 +155,145 @@ class CollapsibleSection(QtWidgets.QWidget):
 
     def isExpanded(self) -> bool:  # noqa: N802 - match Qt naming
         return self.toggle.isChecked()
+
+
+class CurrentPageTabWidget(QtWidgets.QTabWidget):
+    """A tab widget whose height follows the page that is currently visible."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.currentChanged.connect(self._current_page_changed)
+
+    def _height_for_current_page(self, base: QtCore.QSize, minimum=False):
+        if self.count() == 0 or self.currentWidget() is None:
+            return base
+        hint_name = "minimumSizeHint" if minimum else "sizeHint"
+        page_heights = [
+            max(0, getattr(self.widget(index), hint_name)().height())
+            for index in range(self.count())
+        ]
+        current_height = page_heights[self.currentIndex()]
+        chrome_height = max(0, base.height() - max(page_heights, default=0))
+        result = QtCore.QSize(base)
+        result.setHeight(chrome_height + current_height)
+        return result
+
+    def sizeHint(self):  # noqa: N802 - Qt override
+        return self._height_for_current_page(super().sizeHint())
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt override
+        return self._height_for_current_page(super().minimumSizeHint(), minimum=True)
+
+    def syncCurrentPageGeometry(self) -> None:  # noqa: N802 - Qt-style helper
+        self._current_page_changed(self.currentIndex())
+
+    def _current_page_changed(self, current_index: int) -> None:
+        for index in range(self.count()):
+            page = self.widget(index)
+            policy = page.sizePolicy()
+            policy.setVerticalPolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred
+                if index == current_index
+                else QtWidgets.QSizePolicy.Policy.Ignored
+            )
+            page.setSizePolicy(policy)
+        self.updateGeometry()
+        QtCore.QTimer.singleShot(0, self._refresh_parent_layout)
+
+    def _refresh_parent_layout(self) -> None:
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None and parent.layout() is not None:
+            parent.layout().invalidate()
+            parent.layout().activate()
+            parent.updateGeometry()
+
+
+def layer_marker_icon(grain: int, layer: int, size: int = 18) -> QtGui.QIcon:
+    """Return a small marker matching the grain color and plotted layer shape."""
+
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+    edge = QtGui.QColor(GRAIN_1_EDGE if grain == 0 else GRAIN_2_COLOR)
+    fill = QtGui.QColor(GRAIN_1_COLOR)
+    fill.setAlpha(190)
+    painter.setPen(QtGui.QPen(edge, 1.5))
+    painter.setBrush(
+        QtGui.QBrush(fill) if grain == 0 else QtCore.Qt.BrushStyle.NoBrush
+    )
+
+    center = QtCore.QPointF(size / 2, size / 2)
+    radius = size * 0.31
+    symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
+
+    def polygon(sides: int, rotation: float) -> QtGui.QPolygonF:
+        return QtGui.QPolygonF(
+            [
+                QtCore.QPointF(
+                    center.x() + radius * math.cos(rotation + 2 * math.pi * i / sides),
+                    center.y() + radius * math.sin(rotation + 2 * math.pi * i / sides),
+                )
+                for i in range(sides)
+            ]
+        )
+
+    if symbol == "o":
+        painter.drawEllipse(center, radius, radius)
+    elif symbol == "d":
+        painter.drawPolygon(polygon(4, 0.0))
+    elif symbol in {"t", "t1", "t2", "t3"}:
+        rotations = {
+            "t": -math.pi / 2,
+            "t1": math.pi / 2,
+            "t2": 0.0,
+            "t3": math.pi,
+        }
+        painter.drawPolygon(polygon(3, rotations[symbol]))
+    elif symbol == "s":
+        painter.drawPolygon(polygon(4, math.pi / 4))
+    elif symbol in {"p", "h"}:
+        painter.drawPolygon(polygon(5 if symbol == "p" else 6, -math.pi / 2))
+    elif symbol == "star":
+        points = []
+        for index in range(10):
+            point_radius = radius if index % 2 == 0 else radius * 0.43
+            angle = -math.pi / 2 + index * math.pi / 5
+            points.append(
+                QtCore.QPointF(
+                    center.x() + point_radius * math.cos(angle),
+                    center.y() + point_radius * math.sin(angle),
+                )
+            )
+        painter.drawPolygon(QtGui.QPolygonF(points))
+    else:
+        diagonal = symbol == "x"
+        offset = radius / math.sqrt(2) if diagonal else radius
+        if diagonal:
+            painter.drawLine(
+                QtCore.QPointF(center.x() - offset, center.y() - offset),
+                QtCore.QPointF(center.x() + offset, center.y() + offset),
+            )
+            painter.drawLine(
+                QtCore.QPointF(center.x() - offset, center.y() + offset),
+                QtCore.QPointF(center.x() + offset, center.y() - offset),
+            )
+        else:
+            painter.drawLine(
+                QtCore.QPointF(center.x() - radius, center.y()),
+                QtCore.QPointF(center.x() + radius, center.y()),
+            )
+            painter.drawLine(
+                QtCore.QPointF(center.x(), center.y() - radius),
+                QtCore.QPointF(center.x(), center.y() + radius),
+            )
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 def cell_count_worker(*args):
@@ -409,11 +548,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.coincident_points = self._empty_coincidences()
         self.visible_atom_counts = [0, 0]
         self.visible_coincidence_counts = [0] * self.geometry.layer_count
-        # Display filtering is independent for every axial phase. The legacy
-        # selected_layer value is retained only for the hidden compatibility
-        # combo used by older callers/tests.
+        # Display filtering is independent for every grain and axial phase.
+        # visible_layers and selected_layer retain the intersection view used
+        # by older callers and by same-layer CSL overlays.
         self.selected_layer = -1
-        self.visible_layers = set(range(self.geometry.layer_count))
+        all_layers = set(range(self.geometry.layer_count))
+        self.visible_grain_layers = [set(all_layers), set(all_layers)]
+        self.visible_layers = set(all_layers)
         self.selected_points: list[np.ndarray] = []
         self.selected_atoms: list[SelectedAtom] = []
         self.buffer_bounds: tuple[float, float, float, float] | None = None
@@ -526,6 +667,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.manual_annotation = self._text_item(
             "", MANUAL_CELL_COLOR, font_size=10, bordered=True
         )
+        self.manual_annotation.setAnchor((1.0, 1.0))
         for item in (
             *self.manual_grain_cell_items,
             self.manual_vertex_item,
@@ -542,14 +684,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot_item.addItem(self.boundary_endpoint_item)
         self.plot_item.addItem(self.vector_endpoint_item)
 
-        self.vector_arrow = pg.ArrowItem(
-            angle=0,
-            headLen=15,
-            tipAngle=28,
-            brush=pg.mkBrush(VECTOR_COLOR),
-            pen=pg.mkPen(VECTOR_COLOR),
-            pxMode=True,
-        )
+        arrow_pen = pg.mkPen(VECTOR_COLOR, width=1.2)
+        arrow_pen.setCosmetic(True)
+        self.vector_arrow = QtWidgets.QGraphicsPolygonItem()
+        self.vector_arrow.setPen(arrow_pen)
+        self.vector_arrow.setBrush(pg.mkBrush(VECTOR_COLOR))
         self.vector_arrow.hide()
         self.plot_item.addItem(self.vector_arrow)
 
@@ -563,12 +702,16 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "", VECTOR_COLOR, font_size=10, bordered=True
         )
         self.vector_annotation.setAnchor((0.0, 1.0))
-        # Crystal/CSL scatter layers are added later at z=1..3. Keep the
-        # expanded two-frame readout above them so atoms cannot hide its text.
-        for item in (*self.vector_labels, self.vector_annotation):
-            item.setZValue(5)
-        for item in (self.vector_item, self.vector_arrow, self.vector_endpoint_item):
-            item.setZValue(3)
+        # Keep the complete measured arrow above atoms and manual-cell
+        # outlines, especially when the vector lies along a selected cell edge.
+        for item in (
+            *self.vector_labels,
+            self.vector_annotation,
+            self.vector_endpoint_item,
+        ):
+            item.setZValue(7)
+        for item in (self.vector_item, self.vector_arrow):
+            item.setZValue(6)
         for item in (
             *self.boundary_labels,
             *self.vector_labels,
@@ -633,12 +776,17 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _rebuild_legend(self):
         self.legend.clear()
-        layers = sorted(self.visible_layers)[:6]
+        layers = sorted(set().union(*self.visible_grain_layers))[:6]
         for layer in layers:
             name = layer_name(layer)
-            self.legend.addItem(self.grain_layer_items[0][layer], f"G1 · {name}")
-            self.legend.addItem(self.grain_layer_items[1][layer], f"G2 · {name}")
-            self.legend.addItem(self.coincidence_items[layer], f"CSL · {name}–{name}")
+            if layer in self.visible_grain_layers[0]:
+                self.legend.addItem(self.grain_layer_items[0][layer], f"G1 · {name}")
+            if layer in self.visible_grain_layers[1]:
+                self.legend.addItem(self.grain_layer_items[1][layer], f"G2 · {name}")
+            if layer in self.visible_layers:
+                self.legend.addItem(
+                    self.coincidence_items[layer], f"CSL · {name}–{name}"
+                )
         if not hasattr(self, "cell_check") or self.cell_check.isChecked():
             self.legend.addItem(self.near_cell_item, "Common periodic cell")
         if self.local_active:
@@ -954,9 +1102,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.axial_layer_scroll.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.axial_layer_scroll.setMaximumHeight(150)
+        self.axial_layer_scroll.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.axial_layer_scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
         self.axial_layer_scroll.setWidget(self.axial_layer_checks_widget)
         visibility_layout.addWidget(self.axial_layer_scroll, 2, 0, 1, 2)
+        self.grain_layer_checks: list[list[QtWidgets.QCheckBox]] = [[], []]
+        # Compatibility toggles preserve the former one-checkbox-per-layer
+        # programmatic interface. The visible controls below are per grain.
         self.layer_checks: list[QtWidgets.QCheckBox] = []
         self._rebuild_layer_checks()
 
@@ -1031,23 +1188,25 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.performance_section,
         ):
             layout.removeWidget(section)
-        self.orientation_layers_tabs = QtWidgets.QTabWidget()
+        self.orientation_layers_tabs = CurrentPageTabWidget()
         self.orientation_layers_tabs.setObjectName("controlTabs")
         self.orientation_layers_tabs.addTab(orientation_box.body, "ORIENTATION")
         self.orientation_layers_tabs.addTab(visibility_box.body, "LAYERS")
         self.orientation_layers_tabs.setCurrentIndex(0)
+        self.orientation_layers_tabs.syncCurrentPageGeometry()
         layout.insertWidget(1, self.orientation_layers_tabs)
         layout.insertWidget(2, interaction_box)
 
         self.view_performance_section = CollapsibleSection(
             "VIEW / PERFORMANCE", QtWidgets.QVBoxLayout, expanded=False
         )
-        self.view_performance_tabs = QtWidgets.QTabWidget()
+        self.view_performance_tabs = CurrentPageTabWidget()
         self.view_performance_tabs.setObjectName("controlTabs")
         self.view_performance_tabs.addTab(display_box.body, "VIEW")
         self.view_performance_tabs.addTab(
             self.performance_section.body, "PERFORMANCE"
         )
+        self.view_performance_tabs.syncCurrentPageGeometry()
         self.view_performance_section.content_layout.addWidget(
             self.view_performance_tabs
         )
@@ -1153,13 +1312,6 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         near_layout.addWidget(QtWidgets.QLabel("Method"))
         self.near_method_combo = QtWidgets.QComboBox()
         self.near_method_combo.setToolTip("Choose a Near-CSL method")
-        combo_arrow = Path(__file__).with_name("assets") / "chevron-down.svg"
-        self.near_method_combo.setStyleSheet(
-            "QComboBox { padding-right: 28px; }"
-            "QComboBox::down-arrow {"
-            f"image: url({combo_arrow.as_posix()}); width: 12px; height: 8px;"
-            "}"
-        )
         self.near_method_combo.addItem("Local matching · no bulk strain", "local")
         self.near_method_combo.addItem("Homogeneous strain + periodic cell", "strain")
         self.near_method_combo.currentIndexChanged.connect(self._on_near_method_changed)
@@ -1561,10 +1713,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     @staticmethod
     def _cell_layer_label(layer):
         symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
-        name = {"o": "circle", "d": "diamond", "t": "triangle", "s": "square"}.get(
-            symbol, symbol
-        )
-        return f"{layer_name(layer)} ({name})"
+        glyph = {
+            "o": "○",
+            "d": "◇",
+            "t": "△",
+            "s": "□",
+            "p": "⬠",
+            "h": "⬡",
+            "star": "☆",
+            "+": "+",
+            "x": "×",
+            "t1": "▽",
+            "t2": "▷",
+            "t3": "◁",
+        }.get(symbol, symbol)
+        return f"{glyph} layer"
 
     def _resolve_cell_vertex(self, candidate):
         if candidate.grain_positions is not None:
@@ -1665,7 +1828,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._queue_manual_count()
         else:
             self.manual_info.setPlainText(
-                f"Selected {len(trial)}/4 vertices in layer {self._cell_layer_label(candidate.layer)}. "
+                f"Selected {len(trial)}/4 vertices in {self._cell_layer_label(candidate.layer)}. "
                 "Continue around the perimeter in the same layer."
             )
             self._update_status()
@@ -1695,7 +1858,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if index < len(points):
                 vertex = self.manual_vertices[index]
                 label.setText(
-                    f"C{index+1} · {layer_name(vertex.layer)} · {vertex.source}"
+                    f"C{index+1} · {self._cell_layer_label(vertex.layer).split()[0]} · "
+                    f"{vertex.source}"
                 )
                 label.setPos(*displayed[index])
         self.manual_annotation.setVisible(len(points) == 4)
@@ -1709,21 +1873,30 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             else:
                 counts = self.manual_counts
                 layer = self.manual_vertices[0].layer
-                lines = [f"Manual cell · layer {self._cell_layer_label(layer)} only"]
+                lines = [f"Manual cell · {self._cell_layer_label(layer)} only"]
                 for grain in (0, 1):
-                    half_open = counts.half_open_available[grain]
-                    value = (
-                        counts.half_open[grain, layer]
-                        if half_open
-                        else (counts.interior + counts.boundary)[grain, layer]
-                    )
-                    convention = "half-open" if half_open else "closed"
-                    lines.append(
-                        f"G{grain+1}: {value} {convention} · {counts.interior[grain,layer]} interior"
-                    )
+                    interior = counts.interior[grain, layer]
+                    if counts.half_open_available[grain]:
+                        total = counts.half_open[grain, layer]
+                        edge = counts.half_open_edges[grain, layer]
+                        corner = counts.half_open_corners[grain, layer]
+                        lines.append(
+                            f"G{grain+1}: {total} atoms · {interior} inside + "
+                            f"{edge} edge + {corner} corner"
+                        )
+                    else:
+                        boundary = counts.boundary[grain, layer]
+                        lines.append(
+                            f"G{grain+1}: {interior+boundary} atoms · "
+                            f"{interior} inside + {boundary} boundary"
+                        )
                 label = "\n".join(lines)
             self.manual_annotation.setText(label)
-            self.manual_annotation.setPos(*displayed.mean(axis=0))
+            x_min, x_max, y_min, y_max = self._view_range()
+            self.manual_annotation.setPos(
+                x_max - 0.025 * (x_max - x_min),
+                y_min + 0.035 * (y_max - y_min),
+            )
 
     def _queue_manual_count(self, *_args):
         if len(self.manual_vertices) != 4:
@@ -1816,7 +1989,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 if self.manual_strain_fit is not None
                 else "Manual region; periodicity not verified."
             ),
-            f"Only picked layer {self._cell_layer_label(layer)}; not an all-layer total.",
+            f"Only the picked {self._cell_layer_label(layer)} is counted; not an all-layer total.",
             "Each grain uses its own four current atom vertices.",
             (
                 "GB side visibility applied."
@@ -1830,16 +2003,26 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             lines.append(
                 f"G{grain+1} ({'blue' if grain == 0 else 'red'}): area {counts.areas[grain]:.6g} a₀²"
             )
-            lines.append(
-                f"  Layer {layer_name(layer)}: interior {interior}, boundary {boundary}, closed {interior+boundary}"
-            )
             if counts.half_open_available[grain]:
+                total = counts.half_open[grain, layer]
+                edge = counts.half_open_edges[grain, layer]
+                corner = counts.half_open_corners[grain, layer]
                 lines.append(
-                    f"  Half-open count: {counts.half_open[grain,layer]} (upper edges excluded)"
+                    f"  {self._cell_layer_label(layer)}: {total} atoms = "
+                    f"{interior} inside + {edge} edge + {corner} corner"
+                )
+                lines.append(
+                    f"  Closed outline would show {interior+boundary} point instances "
+                    f"({boundary} on the boundary); opposite-edge copies are duplicates."
                 )
             else:
                 lines.append(
-                    "  Not a parallelogram: no half-open count for this grain."
+                    f"  {self._cell_layer_label(layer)}: {interior+boundary} atoms "
+                    f"in the closed polygon = {interior} inside + {boundary} boundary"
+                )
+                lines.append(
+                    "  The selected quadrilateral is not a parallelogram, so no "
+                    "periodic unique-cell count is defined."
                 )
         lines.append("G1/G2 counted separately; overlapping atoms are not merged.")
         self.manual_info.setPlainText("\n".join(lines))
@@ -1866,41 +2049,101 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _rebuild_layer_checks(self) -> None:
         if not hasattr(self, "axial_layer_checks_layout"):
             return
+        for check in getattr(self, "layer_checks", []):
+            check.deleteLater()
         while self.axial_layer_checks_layout.count():
             item = self.axial_layer_checks_layout.takeAt(0)
             if item.widget() is not None:
                 item.widget().deleteLater()
+        self.grain_layer_checks = [[], []]
         self.layer_checks = []
         for layer in range(self.geometry.layer_count):
-            check = QtWidgets.QCheckBox(
-                f"{layer_name(layer)} · z/a₀={layer*self.geometry.layer_spacing:.6g}"
-            )
-            check.setChecked(layer in self.visible_layers)
-            check.toggled.connect(
+            for grain in (0, 1):
+                check = QtWidgets.QCheckBox(f"G{grain + 1} {layer_name(layer)}")
+                check.setIcon(layer_marker_icon(grain, layer))
+                check.setIconSize(QtCore.QSize(18, 18))
+                check.setToolTip(
+                    f"Show G{grain + 1} layer {layer_name(layer)} atoms · "
+                    f"z/a₀ = {layer*self.geometry.layer_spacing:.6g}"
+                )
+                check.setChecked(layer in self.visible_grain_layers[grain])
+                check.toggled.connect(
+                    lambda checked, grain_index=grain, layer_index=layer: (
+                        self._on_grain_layer_toggled(
+                            grain_index, layer_index, checked
+                        )
+                    )
+                )
+                self.axial_layer_checks_layout.addWidget(check, layer, grain)
+                self.grain_layer_checks[grain].append(check)
+
+            compatibility_check = QtWidgets.QCheckBox(self)
+            compatibility_check.hide()
+            compatibility_check.setChecked(layer in self.visible_layers)
+            compatibility_check.toggled.connect(
                 lambda checked, index=layer: self._on_axial_layer_toggled(
                     index, checked
                 )
             )
-            self.axial_layer_checks_layout.addWidget(check, layer // 2, layer % 2)
-            self.layer_checks.append(check)
+            self.layer_checks.append(compatibility_check)
+
+        self.axial_layer_checks_layout.setColumnStretch(0, 1)
+        self.axial_layer_checks_layout.setColumnStretch(1, 1)
+        self.axial_layer_checks_layout.activate()
+        content_height = self.axial_layer_checks_layout.sizeHint().height()
+        scroll_height = min(150, max(34, content_height + 2))
+        self.axial_layer_scroll.setFixedHeight(scroll_height)
+        if hasattr(self, "orientation_layers_tabs"):
+            self.orientation_layers_tabs.updateGeometry()
 
     def _set_all_layers_visible(self, visible: bool) -> None:
-        self.visible_layers = (
-            set(range(self.geometry.layer_count)) if visible else set()
-        )
-        for check in self.layer_checks:
-            with QtCore.QSignalBlocker(check):
-                check.setChecked(visible)
+        layers = set(range(self.geometry.layer_count)) if visible else set()
+        self.visible_grain_layers = [set(layers), set(layers)]
+        self._sync_shared_visible_layers()
+        for checks in self.grain_layer_checks:
+            for check in checks:
+                with QtCore.QSignalBlocker(check):
+                    check.setChecked(visible)
+        self._sync_compatibility_layer_checks()
         self.selected_layer = -1
         with QtCore.QSignalBlocker(self.layer_combo):
             self.layer_combo.setCurrentIndex(0)
         self._apply_layer_visibility()
 
-    def _on_axial_layer_toggled(self, layer: int, visible: bool) -> None:
+    def _sync_shared_visible_layers(self) -> None:
+        self.visible_layers = set.intersection(*self.visible_grain_layers)
+
+    def _sync_compatibility_layer_checks(self) -> None:
+        for layer, check in enumerate(self.layer_checks):
+            with QtCore.QSignalBlocker(check):
+                check.setChecked(layer in self.visible_layers)
+
+    def _on_grain_layer_toggled(
+        self, grain: int, layer: int, visible: bool
+    ) -> None:
         if visible:
-            self.visible_layers.add(layer)
+            self.visible_grain_layers[grain].add(layer)
         else:
-            self.visible_layers.discard(layer)
+            self.visible_grain_layers[grain].discard(layer)
+        self._sync_shared_visible_layers()
+        self._sync_compatibility_layer_checks()
+        equal_selections = self.visible_grain_layers[0] == self.visible_grain_layers[1]
+        self.selected_layer = (
+            next(iter(self.visible_layers))
+            if equal_selections and len(self.visible_layers) == 1
+            else -1
+        )
+        self._apply_layer_visibility()
+
+    def _on_axial_layer_toggled(self, layer: int, visible: bool) -> None:
+        for grain in (0, 1):
+            if visible:
+                self.visible_grain_layers[grain].add(layer)
+            else:
+                self.visible_grain_layers[grain].discard(layer)
+            with QtCore.QSignalBlocker(self.grain_layer_checks[grain][layer]):
+                self.grain_layer_checks[grain][layer].setChecked(visible)
+        self._sync_shared_visible_layers()
         self.selected_layer = (
             next(iter(self.visible_layers)) if len(self.visible_layers) == 1 else -1
         )
@@ -1912,14 +2155,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _on_layer_changed(self, *_args):
         self.selected_layer = self.layer_combo.currentData()
-        self.visible_layers = (
+        layers = (
             set(range(self.geometry.layer_count))
             if self.selected_layer < 0
             else {self.selected_layer}
         )
-        for layer, check in enumerate(self.layer_checks):
-            with QtCore.QSignalBlocker(check):
-                check.setChecked(layer in self.visible_layers)
+        self.visible_grain_layers = [set(layers), set(layers)]
+        self._sync_shared_visible_layers()
+        for grain, checks in enumerate(self.grain_layer_checks):
+            for layer, check in enumerate(checks):
+                with QtCore.QSignalBlocker(check):
+                    check.setChecked(layer in self.visible_grain_layers[grain])
+        self._sync_compatibility_layer_checks()
         self._apply_layer_visibility()
 
     def _geometry_signature(self):
@@ -1944,13 +2191,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot_item.setLabel("bottom", f"{model.x_label} / a₀", units="")
         self.plot_item.setLabel("left", f"{model.y_label} / a₀", units="")
         self.layer_info.setText(
-            f"{model.layer_count} axial layers · spacing = {model.layer_spacing:.6g} a₀\n"
+            f"{model.layer_count} axial layers per grain · spacing = {model.layer_spacing:.6g} a₀\n"
             f"Axial repeat = {model.axial_period:.6g} a₀"
             + (
-                "\nLegend shows the first 6 enabled layers; use the layer checkboxes to inspect others."
+                "\nLegend shows the first 6 enabled layers; use the grain/layer checkboxes to inspect others."
                 if model.layer_count > 6
                 else ""
             )
+            + "\nCSL and near-pair markers require the layer to be visible in both grains."
         )
         self.axial_spin.setToolTip(
             "Vector readout only: P2 shifts by "
@@ -2024,7 +2272,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.visible_coincidence_counts = [0] * geometry.layer_count
         self.coincident_points = self._empty_coincidences()
         self.selected_layer = -1
-        self.visible_layers = set(range(geometry.layer_count))
+        all_layers = set(range(geometry.layer_count))
+        self.visible_grain_layers = [set(all_layers), set(all_layers)]
+        self.visible_layers = set(all_layers)
         self._populate_layer_combo()
         self._rebuild_layer_checks()
         self._create_layer_items()
@@ -2816,7 +3066,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             else:
                 mask = np.ones(len(grain.positions), dtype=bool)
-            mask &= np.isin(grain.layers, tuple(self.visible_layers))
+            mask &= np.isin(
+                grain.layers, tuple(self.visible_grain_layers[grain_index])
+            )
             self.visible_atom_masks.append(mask)
             for layer, item in enumerate(self.grain_layer_items[grain_index]):
                 layer_mask = grain.layers == layer
@@ -3209,9 +3461,32 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         second = self._to_view(self.selected_atoms[1].position)
         self.vector_item.setData([first[0], second[0]], [first[1], second[1]])
         direction = second - first
-        angle = float(np.degrees(np.arctan2(direction[1], direction[0])) - 180.0)
-        self.vector_arrow.setStyle(angle=angle)
-        self.vector_arrow.setPos(*second)
+        pixel_size = np.maximum(np.abs(self.view_box.viewPixelSize()), 1e-12)
+        pixel_direction = direction / pixel_size
+        pixel_length = float(np.linalg.norm(pixel_direction))
+        if pixel_length <= 1e-12:
+            self.vector_arrow.hide()
+            return
+        unit = pixel_direction / pixel_length
+        _center, width, _height = self._view_geometry()
+        scale = max(VIEW_SCALE_MIN, width / self.parameters.width)
+        marker_diameter = max(
+            3.5, self._base_marker_diameter() / scale**0.22
+        )
+        # Put the tip just outside the P2 selection ring. Building the triangle
+        # in pixel coordinates keeps it clear and equally legible at every zoom.
+        tip = second - unit * pixel_size * (0.5 * 2.35 * marker_diameter + 2.0)
+        base = tip - unit * pixel_size * 18.0
+        perpendicular = np.array([-unit[1], unit[0]])
+        half_width = perpendicular * pixel_size * 7.0
+        polygon = QtGui.QPolygonF(
+            [
+                QtCore.QPointF(*tip),
+                QtCore.QPointF(*(base + half_width)),
+                QtCore.QPointF(*(base - half_width)),
+            ]
+        )
+        self.vector_arrow.setPolygon(polygon)
         self.vector_arrow.show()
         x_min, x_max, y_min, y_max = self._view_range()
         text_position = np.array(
@@ -3405,7 +3680,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             elif self.interaction_mode == "cell":
                 layer = (
-                    f" · layer {layer_name(self.manual_vertices[0].layer)}"
+                    f" · {self._cell_layer_label(self.manual_vertices[0].layer)}"
                     if self.manual_vertices
                     else ""
                 )
@@ -3576,7 +3851,49 @@ QComboBox, QDoubleSpinBox, QSpinBox, QLineEdit {
     min-height: 27px;
     padding: 1px 7px;
 }
-QComboBox::drop-down { border: none; width: 24px; }
+QComboBox { padding-right: 27px; }
+QComboBox::drop-down {
+    subcontrol-origin: border;
+    subcontrol-position: center right;
+    border: none;
+    width: 25px;
+}
+QComboBox::down-arrow {
+    image: url(__CHEVRON_DOWN__);
+    width: 12px;
+    height: 8px;
+}
+QDoubleSpinBox, QSpinBox { padding-right: 23px; }
+QDoubleSpinBox::up-button, QSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 20px;
+    border-left: 1px solid #d8e0ea;
+    border-bottom: 1px solid #e2e8f0;
+    border-top-right-radius: 5px;
+}
+QDoubleSpinBox::down-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 20px;
+    border-left: 1px solid #d8e0ea;
+    border-top: 1px solid #e2e8f0;
+    border-bottom-right-radius: 5px;
+}
+QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover,
+QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {
+    background: #e0edff;
+}
+QDoubleSpinBox::up-arrow, QSpinBox::up-arrow {
+    image: url(__CHEVRON_UP__);
+    width: 9px;
+    height: 6px;
+}
+QDoubleSpinBox::down-arrow, QSpinBox::down-arrow {
+    image: url(__CHEVRON_DOWN__);
+    width: 9px;
+    height: 6px;
+}
 QPushButton:disabled, QComboBox:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled {
     color: #94a3b8;
     background: #f1f5f9;
@@ -3662,7 +3979,11 @@ def create_application() -> QtWidgets.QApplication:
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     application.setApplicationName("Tilt GB Dichromatic Pattern")
     application.setStyle("Fusion")
-    application.setStyleSheet(APPLICATION_STYLESHEET)
+    assets = Path(__file__).with_name("assets")
+    stylesheet = APPLICATION_STYLESHEET.replace(
+        "__CHEVRON_DOWN__", (assets / "chevron-down.svg").as_posix()
+    ).replace("__CHEVRON_UP__", (assets / "chevron-up.svg").as_posix())
+    application.setStyleSheet(stylesheet)
     return application
 
 
