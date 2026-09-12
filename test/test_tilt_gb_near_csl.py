@@ -9,19 +9,27 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/tilt-test-mpl")
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.append(str(Path(__file__).resolve().parents[1] / "legacy"))
 import time
 import unittest
 import math
 import numpy as np
-import tilt_gb_near_csl as n
-import tilt_gb_crystallography as crystal
+import dichromatic_map.cells as cell_ops
+import dichromatic_map.compute as compute
+import dichromatic_map.crystal as crystal
+import dichromatic_map.matching as matching
+import dichromatic_map.state as state
+import dichromatic_map.strain as strain_ops
+import dichromatic_map.ui.controls as view_controls
+import dichromatic_map.ui.window as view_window
 
 
 def solve(angle, percent=2.0, extent=12):
-    i, j = n.candidate_vectors(angle, percent, extent)
-    return n.pareto_cells(n.solve_cells_chunk(angle, percent, i, j, 0, len(i))[1])
+    i, j = strain_ops.candidate_vectors(angle, percent, extent)
+    return strain_ops.pareto_cells(
+        strain_ops.solve_cells_chunk(angle, percent, i, j, 0, len(i))[1]
+    )
 
 
 class LocalMatchingTests(unittest.TestCase):
@@ -39,7 +47,7 @@ class LocalMatchingTests(unittest.TestCase):
         for radius in (0.01, 0.05, 0.3, 0.5):
             first = rng.uniform(-1, 1, (180, 2))
             second = rng.uniform(-1, 1, (190, 2))
-            forward = n._nearest_in_radius(first, second, radius)
+            forward = matching._nearest_in_radius(first, second, radius)
             d2 = np.sum((first[:, None] - second[None, :]) ** 2, axis=2)
             expected = np.argmin(d2, axis=1)
             expected[d2[np.arange(len(first)), expected] > radius**2] = -1
@@ -47,33 +55,37 @@ class LocalMatchingTests(unittest.TestCase):
         # Multiple occupants in one bin: first stored site is not a match.
         first = self.grain([[0, 0]])
         second = self.grain([[0.49, 0.49], [0.01, 0]])
-        pairs = n.local_near_pairs(first, second, 0.5)
+        pairs = matching.local_near_pairs(first, second, 0.5)
         np.testing.assert_array_equal(pairs.second, [[0.01, 0]])
 
     def test_mutual_assignment_layers_cutoff_and_exact_exclusion(self):
         first = self.grain([[0, 0], [0.02, 0], [1, 0], [2, 0], [3, 0]], [0, 0, 1, 2, 3])
         second = self.grain([[0.005, 0], [1, 0], [2.01, 0], [3, 0]], [0, 0, 2, 3])
-        pairs = n.local_near_pairs(first, second, 0.05)
+        pairs = matching.local_near_pairs(first, second, 0.05)
         np.testing.assert_array_equal(pairs.first, [[0, 0], [2, 0]])
         np.testing.assert_array_equal(pairs.layers, [0, 2])
         self.assertEqual(len(set(map(tuple, pairs.second))), len(pairs.second))
         # The wrong layer at [1,0] never matches; exact [3,0] stays gold only.
-        self.assertEqual(len(n.local_near_pairs(first, second, 0.001).layers), 0)
-        self.assertEqual(len(n.local_near_pairs(first, self.grain([]), 0.05).layers), 0)
+        self.assertEqual(len(matching.local_near_pairs(first, second, 0.001).layers), 0)
+        self.assertEqual(
+            len(matching.local_near_pairs(first, self.grain([]), 0.05).layers), 0
+        )
         np.testing.assert_array_equal(first.positions[1], [0.02, 0])
         for invalid in (0, -0.1, 0.51, np.nan, np.inf):
             with self.assertRaises(ValueError):
-                n.local_near_pairs(first, second, invalid)
+                matching.local_near_pairs(first, second, invalid)
 
     def test_ties_and_translation_are_deterministic(self):
         first = self.grain([[0, 0]])
         second = self.grain([[0.125, 0], [-0.125, 0]])
-        reference = n.local_near_pairs(first, second, 0.25)
+        reference = matching.local_near_pairs(first, second, 0.25)
         np.testing.assert_array_equal(reference.second, [[-0.125, 0]])
-        permuted = n.local_near_pairs(first, self.grain(second.positions[::-1]), 0.25)
+        permuted = matching.local_near_pairs(
+            first, self.grain(second.positions[::-1]), 0.25
+        )
         np.testing.assert_array_equal(reference.second, permuted.second)
         shift = np.array([123456.0, -234567.0])
-        translated = n.local_near_pairs(
+        translated = matching.local_near_pairs(
             self.grain(first.positions + shift),
             self.grain(second.positions + shift),
             0.25,
@@ -89,7 +101,7 @@ class LocalMatchingTests(unittest.TestCase):
                 original = first.positions.copy(), second.positions.copy()
                 previous = 0
                 for radius in (0.02, 0.05, 0.2):
-                    pairs = n.local_near_pairs(first, second, radius)
+                    pairs = matching.local_near_pairs(first, second, radius)
                     self.assertGreaterEqual(len(pairs.layers), previous)
                     previous = len(pairs.layers)
                     expected = []
@@ -122,17 +134,16 @@ class LocalMatchingTests(unittest.TestCase):
 
 class PhysicsTests(unittest.TestCase):
     def test_exact_cells_presets_and_layer_corners(self):
-        import tilt_gb_dichromatic_pattern_qt as q
 
-        for preset in q.CSL_PRESETS:
+        for preset in state.CSL_PRESETS:
             with self.subTest(preset=preset.label):
-                cell = n.exact_csl_cell(preset.angle_deg)
+                cell = matching.exact_csl_cell(preset.angle_deg)
                 self.assertIsNotNone(cell)
-                self.assertEqual(abs(n.determinant(cell.m1)), preset.sigma)
-                self.assertEqual(abs(n.determinant(cell.m2)), preset.sigma)
+                self.assertEqual(abs(cell_ops.determinant(cell.m1)), preset.sigma)
+                self.assertEqual(abs(cell_ops.determinant(cell.m2)), preset.sigma)
                 self.assertEqual(cell.max_strain, 0)
                 for sign in (1, -1):
-                    grain = q.fcc_110_projected_columns(
+                    grain = crystal.fcc_110_projected_columns(
                         3.52, 140, 140, sign * preset.angle_deg / 2
                     )
                     for coeff in ((0, 0), (1, 0), (1, 1), (0, 1)):
@@ -149,25 +160,24 @@ class PhysicsTests(unittest.TestCase):
                 if math.gcd(m, k) != 1:
                     continue
                 angle = float(np.degrees(2 * np.arctan2(np.sqrt(2) * k, m)))
-                cell = n.exact_csl_cell(angle)
+                cell = matching.exact_csl_cell(angle)
                 self.assertIsNotNone(cell, (m, k))
                 sigma = m * m + 2 * k * k
                 while sigma % 2 == 0:
                     sigma //= 2
-                self.assertEqual(abs(n.determinant(cell.m1)), sigma)
-                b1, b2 = n.bases(angle)
+                self.assertEqual(abs(cell_ops.determinant(cell.m1)), sigma)
+                b1, b2 = cell_ops.bases(angle)
                 np.testing.assert_allclose(b1 @ cell.m1, b2 @ cell.m2, atol=1e-8)
         for angle in (13.25, 39.5, 58.5, 90.0):
-            self.assertIsNone(n.exact_csl_cell(angle))
+            self.assertIsNone(matching.exact_csl_cell(angle))
 
     def test_common_cell_strain_and_phase(self):
-        import tilt_gb_dichromatic_pattern_qt as q
 
         a, angle = 3.52, 39.5
         cells = solve(angle)
         self.assertTrue(cells)
         for cell in cells:
-            b1, b2 = n.bases(angle)
+            b1, b2 = cell_ops.bases(angle)
             np.testing.assert_allclose(cell.f1 @ b1 @ cell.m1, cell.cell, atol=1e-9)
             np.testing.assert_allclose(cell.f2 @ b2 @ cell.m2, cell.cell, atol=1e-9)
             self.assertLessEqual(cell.max_strain, 0.02 + 1e-12)
@@ -175,11 +185,11 @@ class PhysicsTests(unittest.TestCase):
                 np.testing.assert_allclose(f, f.T, atol=1e-12)
                 self.assertGreater(np.min(np.linalg.eigvalsh(f)), 0)
             # Reported cubic-frame tensors reproduce physical deformed lengths.
-            for g, e in enumerate(n.strain_tensors(cell, angle)):
+            for g, e in enumerate(strain_ops.strain_tensors(cell, angle)):
                 np.testing.assert_allclose(e, e.T, atol=1e-12)
                 np.testing.assert_allclose(e @ [1, 1, 0], 0, atol=1e-12)
                 f = (cell.f1, cell.f2)[g]
-                rot = q.rotation_matrix_2d((1 if g == 0 else -1) * angle / 2)
+                rot = crystal.rotation_matrix_2d((1 if g == 0 else -1) * angle / 2)
                 for vector in np.array([[1, 2, 3], [-2, 1, 0], [1, 1, 0]], float):
                     x, y, z = vector
                     projected = f @ rot @ [(y - x) / np.sqrt(2), z]
@@ -191,7 +201,7 @@ class PhysicsTests(unittest.TestCase):
                     )
             # Actual atoms at all four common-cell corners in both crystals.
             for g, (f, sign) in enumerate(((cell.f1, 1), (cell.f2, -1))):
-                grain = q.fcc_110_projected_columns(
+                grain = crystal.fcc_110_projected_columns(
                     a, 140, 140, sign * angle / 2, deformation=f
                 )
                 for vector in (
@@ -221,16 +231,15 @@ class PhysicsTests(unittest.TestCase):
         self.assertEqual(best.atoms, (18, 18))
 
     def test_cross_layer_overlap_is_not_a_common_site(self):
-        import tilt_gb_dichromatic_pattern_qt as q
         import tilt_gb_dichromatic_pattern as m
 
-        first = q.ProjectedGrain(
+        first = crystal.ProjectedGrain(
             np.array([[0.0, 0.0], [1.0, 1.0]]), np.array([0, 1]), np.zeros((2, 3), int)
         )
-        wrong_phase = q.ProjectedGrain(
+        wrong_phase = crystal.ProjectedGrain(
             first.positions, 1 - first.layers, first.half_indices
         )
-        for viewer in (m, q):
+        for viewer in (m, matching):
             self.assertEqual(
                 [
                     len(p)
@@ -252,7 +261,7 @@ class PhysicsTests(unittest.TestCase):
         self.assertEqual(solve(13.25, 0.001, 3), [])
 
     def test_parallel_latest_request_and_off(self):
-        search = n.NearSearch(workers=3)
+        search = compute.NearSearch(workers=3)
         try:
             search.request(39.5, 2, 12)
             search.poll()
@@ -268,7 +277,12 @@ class PhysicsTests(unittest.TestCase):
             self.assertEqual([c.atoms for c in result], [c.atoms for c in expected])
             for c, e in zip(result, expected):
                 np.testing.assert_allclose(c.f1, e.f1, atol=1e-9)
-            self.assertGreaterEqual(len(search.process_ids), 2)
+            # A process pool need not distribute a short request across all
+            # workers: one ready worker may finish before others start. Test
+            # off-process execution and the configured bound, not scheduling.
+            self.assertTrue(search.process_ids)
+            self.assertNotIn(os.getpid(), search.process_ids)
+            self.assertLessEqual(len(search.process_ids), 3)
             search.request(20.0, 2, 12)
             search.poll()
             search.cancel()
@@ -282,10 +296,11 @@ class PhysicsTests(unittest.TestCase):
 
 class ViewerTests(unittest.TestCase):
     def test_qt_exact_cell_controls(self):
-        import tilt_gb_dichromatic_pattern_qt as q
 
-        app = q.create_application()
-        w = q.DichromaticPatternWindow(q.PatternParameters(), worker_count=1)
+        app = view_controls.create_application()
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(), worker_count=1
+        )
         w.show()
         app.processEvents()
         try:
@@ -308,7 +323,7 @@ class ViewerTests(unittest.TestCase):
             w.cell_check.setChecked(True)
             self.assertIs(w.selected_atoms[0], picked)
             self.assertIsNone(w.near_search)
-            for preset in (q.CSL_PRESETS[0], q.CSL_PRESETS[5]):
+            for preset in (state.CSL_PRESETS[0], state.CSL_PRESETS[5]):
                 w._queue_angle_update(preset.angle_deg)
                 w._finish_angle_update()
                 self.assertEqual(w.common_cell.atoms, (66, 66))
@@ -319,7 +334,7 @@ class ViewerTests(unittest.TestCase):
             self.assertFalse(w.cell_fit_button.isEnabled())
             self.assertFalse(w.near_cell_item.isVisible())
             # Disabling an active Near-CSL returns the exact outline at a preset.
-            w._queue_angle_update(q.DEFAULT_ANGLE_DEG)
+            w._queue_angle_update(state.DEFAULT_ANGLE_DEG)
             w._finish_angle_update()
             w.near_button.setChecked(True)
             w.near_button.setChecked(False)
@@ -364,11 +379,10 @@ class ViewerTests(unittest.TestCase):
             m.plt.close(w.figure)
 
     def test_qt_apply_pan_switch_and_disable(self):
-        import tilt_gb_dichromatic_pattern_qt as q
 
-        app = q.create_application()
-        w = q.DichromaticPatternWindow(
-            q.PatternParameters(angle_deg=39.5), worker_count=2
+        app = view_controls.create_application()
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(angle_deg=39.5), worker_count=2
         )
         w.show()
 
@@ -402,7 +416,7 @@ class ViewerTests(unittest.TestCase):
                 and w.near_cell is not None
                 and w.parallel_stage is None
             )
-            b1, b2 = n.bases(58.5)
+            b1, b2 = cell_ops.bases(58.5)
             np.testing.assert_allclose(
                 w.near_cell.f1 @ b1 @ w.near_cell.m1,
                 w.near_cell.f2 @ b2 @ w.near_cell.m2,

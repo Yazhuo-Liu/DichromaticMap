@@ -1,160 +1,67 @@
 # DichromaticMap
 
-独立的 FCC/BCC tilt-GB 双色图 Qt 查看器，不依赖 GBClaw。
-主程序为 `tilt_gb_dichromatic_pattern_qt.py`，计算模块为
-`tilt_gb_crystallography.py` 和 `tilt_gb_near_csl.py`。
-`legacy/` 中的 Matplotlib 版本仅保留兼容，不再增加功能。
+[中文文档](docs/zh/README.md) · [English guide](docs/en/README.md) · [Development](docs/en/development.md)
 
-## 启动
+A standalone Qt viewer for layer-resolved FCC/BCC tilt grain-boundary
+dichromatic patterns. Numerical calculations can be used independently of Qt;
+the project does not depend on GBClaw.
 
-依赖：NumPy、PySide6、PyQtGraph。在安装好依赖的 conda base 环境中：
+## Quick start
+
+Use Python 3.10+ in a conda environment with NumPy, PySide6 and PyQtGraph.
+On the current development machine, these GUI dependencies are in `base`:
 
 ```bash
 conda activate base
-python tilt_gb_dichromatic_pattern_qt.py --workers 4
-python tilt_gb_dichromatic_pattern_qt.py --lattice BCC --axis 100
-python tilt_gb_dichromatic_pattern_qt.py --axis "1 -1 3"
+python main.py
+python main.py --lattice BCC --axis 100 --workers 4
+python main.py --axis "1 -1 3"
+python main.py --help
 ```
 
-坐标、尺寸和局部匹配距离均以 a₀ 为单位。支持 FCC/BCC、预定义
-⟨100⟩/⟨110⟩/⟨111⟩/⟨112⟩ 及自定义整数轴，层数与轴向周期自动计算。
-拖动平移、滚轮缩放；选择第一个点后可以拖动再选第二个点。
+Run these commands from the project root. If dependencies are missing, install
+them in the active environment with `python -m pip install numpy PySide6 pyqtgraph`.
+Launching from the checkout does not require installing or building this project.
+`main.py` is the only root-level Python launcher; the old root compatibility
+scripts have been removed.
 
-## 向量测量与两晶粒坐标
+To import the package from other projects, optionally run
+`python -m pip install -e .` from the root, or use `".[gui]"` to include GUI
+dependencies. Installed entry points are `python -m dichromatic_map` and
+`dichromatic-map`.
 
-点击 `Measure vector`（V）后选择 P1、P2，图中保留一根真实的 P1→P2 箭头：
+## Features
 
-- 同晶粒选点显示该晶粒的方向；跨晶粒选点同时显示 **G1、G2** 两套表示。
-  实际空间向量本身是唯一的，不同的是它在两个晶粒中的坐标，而不是两根不同的物理箭头。
-- `G1/G2 current (polar)` 是当前实际位移在各晶粒正交立方参考框架中的分量，
-  单位为原始晶格常数 a₀；框架通过极分解跟随该晶粒的刚体旋转。
-  **该读数包含应变对方向与长度的影响**，不再只输出旧原子索引。
-- 有应变时，另列 `G1/G2 lattice [uvw]`：同一实际向量在各自**变形后的常规晶格基矢**中的系数。
-  对同晶粒同一对原子，这些系数可以保持不变，这是随晶格变形的索引定义，不能与上面的实际分量混为一谈。
-  这里表示直接晶格方向 `[uvw]`，不是晶面法向的倒易指标 `(hkl)`。
-- 简单整数/分数仍写成 `a₀/2[1 1 2]` 等形式，并保留向量长度；一般方向使用 `≈ a₀[...]`
-  的实数分量，不把应变或无理数方向强行四舍五入成整数 Miller 指数。
-- 先从两端当前原子位置构造实际位移，因此包含两晶粒各自的应变、旋转及相对平移。
-  三维读数还包含所选层的轴向高度差和 vector 区域中的
-  `P2 axial periodic image`；后者只选择投影原子柱中 P2 所代表的轴向周期像，
-  不增加样品厚度、不复制晶格，默认 `0`。画出的箭头为三维向量的二维投影。
-  `Current |Δr|/a₀` 是当前三维长度，跨晶粒时另保留屏幕投影 `View Δxy/a₀`。
-  隐藏原子仍不可选，拖动和显示旋转不会改变晶粒坐标下的读数。
+- FCC/BCC geometry for preset and custom integer tilt axes, in normalized a₀ units.
+- Independent visibility for each grain and axial layer, with matching marker icons.
+- Exact same-layer CSL, local near-pair matching and homogeneous-strain cell search.
+- GB-side filtering and P1→P2 vector measurements in both grain coordinate frames.
+- Manual same-layer cells, separate G1/G2 atom counts and selected-cell bulk-strain fitting.
+- Display-only rotation, background computation and PNG export.
 
-计算约定：令 `Q_g` 为晶粒未变形时从立方坐标到分析坐标的旋转，`F_g = R_g U_g` 为现有均匀变形。
-对于已由当前原子位置得到的位移 `d`，`current = (R_g Q_g)ᵀ d / a₀`，
-`lattice = (F_g Q_g)⁻¹ d / a₀`（面内变形扩展到三维，轴向不变）。不会对 `d` 再重复施加应变。
+A geometric selection is not automatically a periodic cell. Local matching does
+not move atoms; applying bulk strain is an explicit geometric transformation,
+not an energy relaxation. See the guides for counting and strain conventions.
 
-右侧控制栏按作用范围排列：顶部由并排的 `ORIENTATION` / `LAYERS` 页签共享空间，
-默认打开 Orientation。Layers 按当前观察轴动态列出全部轴向相位，每一层均可独立开关；
-隐藏层会同时从两晶粒原子、精确 CSL、Local Near-CSL 和鼠标拾取中排除。
-手动胞一旦选定后仍只按其顶点所属层计数，不受随后显示层开关影响。
-`Automatic common cell` 默认关闭。
+## Documentation
 
-其后是 `GB / VECTOR`。GB 左右侧开关只在 B1/B2 都选完后显示；P2 轴向周期像
-只在 vector 测量期间或测量完成后显示。`VIEW` / `PERFORMANCE` 共用一个默认折叠区；
-`NEAR-CSL` 位于其下且默认折叠，最后的 `MANUAL COMMON CELL` 同样默认折叠。
+| Topic | English | 中文 |
+| --- | --- | --- |
+| Installation, controls and scientific conventions | [User guide](docs/en/README.md) | [使用手册](docs/zh/README.md) |
+| Structure, Python API, tests and packaging | [Development](docs/en/development.md) | [开发与维护](docs/zh/development.md) |
 
-## 手动 common cell
+Documentation is plain Markdown under `docs/en/` and `docs/zh/`; no documentation
+build step is required. The application lives in `src/dichromatic_map/`.
+`legacy/` is retained only for historical reference and regression comparisons.
 
-自动周期框继续保留，`Automatic common cell` 独立控制它的显示。
-新增 `MANUAL COMMON CELL` 面板：
+## Tests
 
-1. 点击 `Pick 4 CSL vertices`（快捷键 M）。
-2. 沿边界顺时针或逆时针依次选择四个**同一轴向层**的顶点。
-   可选择金色精确 CSL 标记，也可选择局部 Near-CSL 的紫色配对中点；不吸附普通原子。
-   第一顶点确定层，后续必须同层、同符号（如全圆形或全菱形）。点击不同层会在面板中提示并拒绝，
-   不会改选附近的同层点；隐藏点不可选。两晶粒各自的四点均须构成不自交、非退化的凸四边形。
-3. 第四点选定后自动闭合，蓝/红轮廓分别连接 G1/G2 的实际原子顶点。
-   图上显示所选层的 G1/G2 计数，面板列出两晶粒的详细统计。
-   `Undo vertex` 撤销最后一点，`Clear` 清除，`Fit` 缩放到手动胞；Esc 暂停选择。
-
-计数约定：
-
-- **只统计四个顶点所属的轴向层**，不累加其他层。菱形顶点只计菱形层，圆形顶点只计圆形层。
-  G1/G2 分开计数，重合原子不会被合并；统计的是该层所有原子，不只是 CSL 标记的数量。
-- 对局部 Near-CSL，每个顶点保存配对的两个原始原子：G1 用四个蓝色原子围框，G2 用四个红色原子围框。
-  紫色中点仅用于选点，不作为两晶粒共享的计数边界。精确 CSL 也按各晶粒实际顶点计数。
-  两个框的面积和是否为平行四边形分别判断；框线采用蓝色虚线、红色点线。
-- `Interior` 为严格胞内原子，`Boundary` 为边和顶点上的原子，`Closed` 为两者之和。
-- 四点形成平行四边形时，另给出 `Half-open` 计数，并在图中优先显示它。
-  定义为 `C1 + u(C2−C1) + v(C4−C1)`，`0 ≤ u,v < 1`；排除两条上界边，
-  避免重复平铺时反复计入边界原子。非平行四边形只给胞内/边界/闭合计数。
-- 勾选 `Apply GB side visibility to counts` 后额外按当前 GB 两侧开关过滤。
-  无论该开关状态如何，均只统计顶点所属层，不受 Layers 页签中的显示层开关影响，**也不按屏幕视野裁剪**。
-- 计数为完整选区重新生成原子，在后台使用现有进程池（单 worker 时使用后台线程），
-  不依赖绘图缓存。拖动、缩放和显示旋转不改变计数，不会清除选到一半的顶点。
-- **手动选区和几何平行四边形都不是周期性证明**。尤其是局部 Near-CSL 中点构成的胞，
-  可能只是近似重复区域，不能据此宣称得到了严格 CSL 原胞或 Σ 值。
-- 晶格、tilt axis、misorientation 或实际应变改变时旧手动胞会清除。
-  若使用了局部 Near-CSL 顶点，改变距离阈值或退出局部方法也会清除它，避免使用失效标记。
-
-## 将选中的 local near-CSL 胞变为精确重合
-
-在 Local matching 中选好四个同层顶点后，`Apply bulk strain to selected cell`
-才可用（至少包含一个紫色 near-pair，允许混选该层的精确 CSL 顶点）。这一步需要再次点击，
-不会随着选胞自动改变原子。它与原有的自动 `Homogeneous strain + periodic cell` 搜索独立。
-
-- 两晶粒各自使用四个真实原子，以胞中心为参考，求最小化
-  `||F1 − I||²_F + ||F2 − I||²_F` 的均匀变换；整个晶粒应用同一组变换，不逐个吸附原子。
-  两晶粒胞中心用均匀平移对齐到原来两个中心的中点，保证远离原点、非 A 层的四个顶点也能真正重合。
-- 允许微小旋转，通过极分解 `F = R U` 分别给出 G1/G2 的刚体旋转角、主应变
-  （`U` 的本征值减 1）以及参考晶粒坐标下的 Green–Lagrange 应变张量。
-  `Selected-cell strain limit` 默认 **2%**；`Rotation limit / grain` 默认每晶粒 **1°**。
-  两者独立限制，旋转不会被误报成应变；旋转上限设为 **0°** 时切换为纯对称应变求解。
-- 这是一组最小改变量解，再检查上限；不是对所有满足上限的解进行全局搜索。
-  四对顶点不相容、变换退化或超过任一上限时，显示原因并保持原构型及选择不变。
-- 成功后重新生成**全部晶格原子**并按原有精确容差、逐层重算 CSL，而不是只将四个顶点标成重合。
-  现有多进程池用于大规模原子生成和重合检测；手动胞计数仍只统计所选层。
-  共同平移胞放在对齐后的 C1 上，不能假设其原点仍是 `(0,0)`，也不假设它一定为最小原胞。
-- 标题和结果面板分别显示应变和旋转。Orientation 的 misorientation 保留**参考角度**，
-  面板另外给出 `polar-frame θ = reference θ + rotation(G1) − rotation(G2)`；
-  `Display rotation` 仍只是绘图变换，与这些物理旋转不同。
-- 再次点击 `Restore original local structure` 恢复原始原子及四个 local 顶点。
-  应用期间需先恢复才能修改顶点或 local 距离阈值；拖动、缩放、显示旋转和更换 CPU 数不会撤销应变。
-  应用/恢复会清除旧 GB 线与向量测量；切换晶格、轴、参考角或退出该方法会清除此应变状态。
-
-这是对选定几何关系的人工均匀变形，**不再是 stress-free 构型**，也不是弛豫或弹性能最小化。
-例如 FCC ⟨110⟩、22° 的四个 B 层菱形顶点（约 `(0,±5.6013)`、`(±2.5248,0)`），
-这组解的最大主应变约 **0.444310%**，G1/G2 旋转约 **+0.168543° / −0.168543°**；
-变形前后该层每晶粒半开胞计数均为 **40**。
-
-## 整体显示旋转
-
-`ORIENTATION` 内的 `Display rotation` 滑条与数值框范围为 −180° 到 +180°，
-`0°` 按钮复位。旋转的是图中两晶粒、CSL 点、自动/手动胞、GB 线及测量箭头，
-网格与屏幕 x/y 坐标轴保持固定；当前视野中心跟随所查看的构型一起转动。
-
-这是显示变换，不改变 misorientation、晶粒应变、原始坐标或参考 Miller 指数。
-旋转后鼠标吸附和隐藏侧判定仍在正确的物理坐标中执行。跨晶粒向量的 x/y 分量
-随显示方向更新；应变面板的共同胞矢量明确标为未做显示旋转的分析坐标。
-PNG 导出包含当前旋转和手动胞标注。
-
-## Near-CSL 两种方法
-
-功能默认关闭，选择方法后点击 `Enable Near-CSL`：
-
-- `Local matching · no bulk strain`：默认方法，不改变原子坐标。
-  同层且互为最近邻的两原子，在可调距离阈值内配对，默认 `0.05 a₀`。
-  紫色中点是候选对齐位置，形状与配对原子所属层一致（圆形、菱形等）；紫色连线连接原始原子，金色仅表示精确 CSL。
-  本方法不实际移动原子、不求整体应变、不推断周期晶胞，也不是 stress-free 弛豫计算。
-- `Homogeneous strain + periodic cell`：保留均匀应变方法，对两晶粒求对称正定的面内变形，
-  不增加额外刚体旋转，寻找共同周期胞。默认主应变上限 2%、整数搜索上限 ±12。
-  下拉框给出胞大小与应变的折中解；这不是弹性能最小化或全局最优证明。
-
-局部搜索和精确检测保留全部层相位；当前局部方法不跨层找三维近邻。
-多个 worker 使用共享进程池，局部查询不构造全原子两两距离矩阵。
-交互资源限制：约分后的轴指标绝对值不超过 64、最多 256 层，每个晶粒最多枚举
-250,000 个候选列。手动选区过大时不报告部分计数，应选更小的胞。
-
-## 测试
+The full suite additionally needs Matplotlib for the historical viewer comparisons.
+Run from the project root in an environment with the test dependencies:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m unittest discover -s test -v
+PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m unittest discover -s test -v
 ```
 
-测试使用无窗口 Qt 后端，覆盖独立三维晶格枚举、精确/均匀应变 CSL、局部匹配、
-多进程取消、隐藏点选择、手动胞边界计数、超出视野的完整计数与旋转后的交互。
-还覆盖所选胞四角的均匀变形兼容性、旋转/应变分离、非 A 层和平移参考、全点阵 CSL 重算与恢复。
-向量测试覆盖双晶粒坐标、当前/变形基矢分量、两侧不同应变与平移、跨层高度以及旋转后的图上标注。
-旧 Matplotlib 兼容测试另需要 Matplotlib；Qt 主程序不需要它。
+Tests use an offscreen Qt backend. Normal Python execution may recreate
+`__pycache__/`; this is bytecode caching, not a required project build.

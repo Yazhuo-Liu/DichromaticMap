@@ -7,11 +7,12 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import unittest
 import numpy as np
-import tilt_gb_crystallography as c
-import tilt_gb_dichromatic_pattern_qt as q
+import dichromatic_map.crystal as crystal
+import dichromatic_map.state as state
+import dichromatic_map.ui.controls as view_controls
 import test_manual_cell_rotation as manual
 import test_selected_cell_strain as strain_tests
 
@@ -24,15 +25,15 @@ def rotation(angle):
 def basis(angle, f, lattice, axis):
     transform = np.eye(3)
     transform[:2, :2] = f @ rotation(angle)
-    return transform @ c.get_geometry(lattice, axis).frame.T
+    return transform @ crystal.get_geometry(lattice, axis).frame.T
 
 
 class VectorPhysicsTests(unittest.TestCase):
     def test_unstrained_vector_has_two_crystal_representations(self):
         value = np.array([0.5, 0.5, 1.0])
         d = basis(30, np.eye(2), "BCC", "100") @ value
-        first = c.crystal_vector_coordinates(d, 30, lattice="BCC", axis="100")
-        second = c.crystal_vector_coordinates(d, -30, lattice="BCC", axis="100")
+        first = crystal.crystal_vector_coordinates(d, 30, lattice="BCC", axis="100")
+        second = crystal.crystal_vector_coordinates(d, -30, lattice="BCC", axis="100")
         np.testing.assert_allclose(first.current, value, atol=1e-12)
         self.assertGreater(np.linalg.norm(first.current - second.current), 0.1)
         for v in (first, second):
@@ -40,7 +41,9 @@ class VectorPhysicsTests(unittest.TestCase):
             np.testing.assert_allclose(v.lattice_basis @ v.lattice, d, atol=1e-12)
             np.testing.assert_allclose(v.current, v.lattice, atol=1e-12)
             self.assertFalse(v.strained)
-        self.assertEqual(c.format_direction_components(first.current), "a₀/2[1 1 2]")
+        self.assertEqual(
+            crystal.format_direction_components(first.current), "a₀/2[1 1 2]"
+        )
 
     def test_strain_changes_current_components_not_material_indices(self):
         for lattice in ("FCC", "BCC"):
@@ -50,7 +53,7 @@ class VectorPhysicsTests(unittest.TestCase):
                 f = r @ u
                 ref = np.array([0.5, 1.0, 1.5])
                 d = basis(19, f, lattice, axis) @ ref
-                v = c.crystal_vector_coordinates(d, 19, f, lattice, axis)
+                v = crystal.crystal_vector_coordinates(d, 19, f, lattice, axis)
                 np.testing.assert_allclose(v.lattice, ref, atol=1e-12)
                 u3 = np.eye(3)
                 u3[:2, :2] = u
@@ -68,7 +71,7 @@ class VectorPhysicsTests(unittest.TestCase):
         for angle in (0, 19, -25):
             f = rotation(1.1)
             d = basis(angle, f, "FCC", "110") @ ref
-            v = c.crystal_vector_coordinates(d, angle, f)
+            v = crystal.crystal_vector_coordinates(d, angle, f)
             np.testing.assert_allclose(v.current, ref, atol=1e-12)
             np.testing.assert_allclose(v.lattice, ref, atol=1e-12)
             self.assertFalse(v.strained)
@@ -83,7 +86,7 @@ class VectorPhysicsTests(unittest.TestCase):
         bs = [basis(a, f, "FCC", "112") for a, f in zip((17, -17), fs)]
         d = bs[1] @ refs[1] + shifts[1] - (bs[0] @ refs[0] + shifts[0])
         for g, angle in enumerate((17, -17)):
-            v = c.crystal_vector_coordinates(d, angle, fs[g], "FCC", "112")
+            v = crystal.crystal_vector_coordinates(d, angle, fs[g], "FCC", "112")
             np.testing.assert_allclose(v.lattice, np.linalg.solve(bs[g], d), atol=1e-12)
             np.testing.assert_allclose(v.current_frame @ v.current, d, atol=1e-12)
             self.assertGreater(np.linalg.norm(v.lattice - (refs[1] - refs[0])), 0.1)
@@ -97,9 +100,9 @@ class VectorPhysicsTests(unittest.TestCase):
             ([0, 0, 0], "a₀[0 0 0]"),
             ([1 / 3, 2 / 3, 0], "a₀/3[1 2 0]"),
         ):
-            self.assertEqual(c.format_direction_components(vector), expected)
+            self.assertEqual(crystal.format_direction_components(vector), expected)
         self.assertEqual(
-            c.format_direction_components([0.5, 0.5, 1], unit=""), "1/2[1 1 2]"
+            crystal.format_direction_components([0.5, 0.5, 1], unit=""), "1/2[1 1 2]"
         )
         for vector in (
             [0.500001, 0.5, 1],
@@ -107,16 +110,18 @@ class VectorPhysicsTests(unittest.TestCase):
             [1 / 37, 1 / 41, 0],
             [257, 1, 0],
         ):
-            self.assertTrue(c.format_direction_components(vector).startswith("≈ "))
+            self.assertTrue(
+                crystal.format_direction_components(vector).startswith("≈ ")
+            )
         for deformation in (np.zeros((2, 2)), np.diag([-1, 1]), [[1, 0], [0, np.nan]]):
             with self.assertRaises(ValueError):
-                c.crystal_vector_coordinates([1, 2, 3], 0, deformation)
+                crystal.crystal_vector_coordinates([1, 2, 3], 0, deformation)
 
 
 class VectorQtTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = q.create_application()
+        cls.app = view_controls.create_application()
 
     window = manual.ManualQtTests.window
     wait_for = manual.ManualQtTests.wait_for
@@ -156,9 +161,7 @@ class VectorQtTests(unittest.TestCase):
         )
         self.assertGreater(w.vector_arrow.zValue(), w.manual_cell_item.zValue())
         self.assertTrue(w.vector_arrow.isVisible())
-        arrow = np.array(
-            [[point.x(), point.y()] for point in w.vector_arrow.polygon()]
-        )
+        arrow = np.array([[point.x(), point.y()] for point in w.vector_arrow.polygon()])
         self.assertEqual(arrow.shape, (3, 2))
         line = np.column_stack(w.vector_item.getData())
         arrow_direction = arrow[0] - arrow[1:].mean(axis=0)
@@ -240,7 +243,7 @@ class VectorQtTests(unittest.TestCase):
                     np.argmin(np.linalg.norm(w.grains[g].positions[candidates], axis=1))
                 ]
                 atoms.append(
-                    q.SelectedAtom(
+                    state.SelectedAtom(
                         w.grains[g].positions[i].copy(),
                         g,
                         g,
@@ -279,7 +282,8 @@ class VectorQtTests(unittest.TestCase):
         self.assertGreater(np.linalg.norm(v.current - delta), 0.01)
         self.assertIn("G1 lattice [uvw]", w.vector_annotation.toPlainText())
         self.assertIn(
-            c.format_direction_components(v.current), w.vector_annotation.toPlainText()
+            crystal.format_direction_components(v.current),
+            w.vector_annotation.toPlainText(),
         )
 
 

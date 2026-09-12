@@ -8,14 +8,19 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import time
 import unittest
 from unittest.mock import patch
 import numpy as np
-import tilt_gb_crystallography as crystal
-import tilt_gb_near_csl as near
-import tilt_gb_dichromatic_pattern_qt as q
+import dichromatic_map.cells as cell_ops
+import dichromatic_map.crystal as crystal
+import dichromatic_map.matching as matching
+import dichromatic_map.state as state
+import dichromatic_map.strain as strain_ops
+import dichromatic_map.ui as appearance
+import dichromatic_map.ui.controls as view_controls
+import dichromatic_map.ui.window as view_window
 
 
 def corners(cell):
@@ -26,7 +31,7 @@ def fcc22_diamond_pairs():
     """The user's FCC <110>, 22-degree B-layer diamond selection."""
     first = crystal.projected_columns(25, 20, 11, lattice="FCC", axis="110")
     second = crystal.projected_columns(25, 20, -11, lattice="FCC", axis="110")
-    pairs = near.local_near_pairs(first, second, 0.05)
+    pairs = matching.local_near_pairs(first, second, 0.05)
     ids = np.flatnonzero(pairs.layers == 1)
     picked = [
         ids[np.argmin(np.linalg.norm(pairs.midpoints[ids] - target, axis=1))]
@@ -46,7 +51,7 @@ class CountingTests(unittest.TestCase):
             ],
             dtype=float,
         )
-        counts = crystal.count_cell_atoms(
+        counts = cell_ops.count_cell_atoms(
             polygons, 0, (np.eye(2), np.eye(2)), "BCC", "100", layer=0
         )
         np.testing.assert_array_equal(counts.interior, [[1, 0], [2, 0]])
@@ -57,7 +62,7 @@ class CountingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = counts.area  # No averaging two different grain areas.
         polygons[1, 2] = [2, 2]
-        counts = crystal.count_cell_atoms(
+        counts = cell_ops.count_cell_atoms(
             polygons, 0, (np.eye(2), np.eye(2)), "BCC", "100", layer=0
         )
         np.testing.assert_array_equal(counts.half_open_available, [True, False])
@@ -65,13 +70,13 @@ class CountingTests(unittest.TestCase):
         self.assertEqual(counts.half_open[0, 0], 4)
         for layer in (-2, 2, 0.5):
             with self.assertRaises(ValueError):
-                crystal.count_cell_atoms(
+                cell_ops.count_cell_atoms(
                     polygons, 0, (np.eye(2), np.eye(2)), "BCC", "100", layer=layer
                 )
 
     def test_fcc22_actual_pair_polygons_not_midpoints(self):
         midpoints, polygons = fcc22_diamond_pairs()
-        counts = crystal.count_cell_atoms(
+        counts = cell_ops.count_cell_atoms(
             polygons, 22, (np.eye(2), np.eye(2)), "FCC", "110", layer=1
         )
         np.testing.assert_array_equal(counts.interior, [[0, 34], [0, 34]])
@@ -79,20 +84,20 @@ class CountingTests(unittest.TestCase):
         np.testing.assert_array_equal(counts.half_open, [[0, 40], [0, 40]])
         np.testing.assert_array_equal(counts.half_open_edges, [[0, 5], [0, 5]])
         np.testing.assert_array_equal(counts.half_open_corners, [[0, 1], [0, 1]])
-        averaged = crystal.count_cell_atoms(
+        averaged = cell_ops.count_cell_atoms(
             midpoints, 22, (np.eye(2), np.eye(2)), "FCC", "110", layer=1
         )
         np.testing.assert_array_equal(averaged.half_open, [[0, 36], [0, 36]])
 
     def test_closed_vs_half_open_and_visible_subset(self):
         polygon = np.array([[0, 0], [2, 0], [2, 2], [0, 2]])
-        counts = crystal.count_cell_atoms(
+        counts = cell_ops.count_cell_atoms(
             polygon, 0, (np.eye(2), np.eye(2)), "BCC", "100"
         )
         np.testing.assert_array_equal(counts.interior, [[1, 4], [1, 4]])
         np.testing.assert_array_equal(counts.boundary, [[8, 0], [8, 0]])
         np.testing.assert_array_equal(counts.half_open, [[4, 4], [4, 4]])
-        filtered = crystal.count_cell_atoms(
+        filtered = cell_ops.count_cell_atoms(
             polygon,
             0,
             (np.eye(2), np.eye(2)),
@@ -103,7 +108,7 @@ class CountingTests(unittest.TestCase):
             1,
         )
         np.testing.assert_array_equal(filtered.half_open, [[0, 4], [0, 0]])
-        reverse = crystal.count_cell_atoms(
+        reverse = cell_ops.count_cell_atoms(
             polygon[::-1], 0, (np.eye(2), np.eye(2)), "BCC", "100"
         )
         np.testing.assert_array_equal(reverse.half_open, counts.half_open)
@@ -115,14 +120,16 @@ class CountingTests(unittest.TestCase):
                 preset = min(
                     crystal.csl_presets(axis), key=lambda p: (p.sigma, p.angle_deg)
                 )
-                cell = near.exact_csl_cell(preset.angle_deg, lattice=lattice, axis=axis)
-                result = crystal.count_cell_atoms(
+                cell = matching.exact_csl_cell(
+                    preset.angle_deg, lattice=lattice, axis=axis
+                )
+                result = cell_ops.count_cell_atoms(
                     corners(cell), preset.angle_deg, (cell.f1, cell.f2), lattice, axis
                 )
                 np.testing.assert_array_equal(result.half_open.sum(axis=1), cell.atoms)
                 # Enlarging a cell multiplies its physical contents, not by a
                 # number inferred from currently generated / displayed atoms.
-                larger = crystal.count_cell_atoms(
+                larger = cell_ops.count_cell_atoms(
                     2 * corners(cell),
                     preset.angle_deg,
                     (cell.f1, cell.f2),
@@ -132,9 +139,11 @@ class CountingTests(unittest.TestCase):
                 np.testing.assert_array_equal(
                     larger.half_open.sum(axis=1), 4 * np.array(cell.atoms)
                 )
-        i, j = near.candidate_vectors(39.5, 2, 12)
-        cell = near.pareto_cells(near.solve_cells_chunk(39.5, 2, i, j, 0, len(i))[1])[0]
-        result = crystal.count_cell_atoms(corners(cell), 39.5, (cell.f1, cell.f2))
+        i, j = strain_ops.candidate_vectors(39.5, 2, 12)
+        cell = strain_ops.pareto_cells(
+            strain_ops.solve_cells_chunk(39.5, 2, i, j, 0, len(i))[1]
+        )[0]
+        result = cell_ops.count_cell_atoms(corners(cell), 39.5, (cell.f1, cell.f2))
         np.testing.assert_array_equal(result.half_open.sum(axis=1), cell.atoms)
 
     def test_polygon_validation_and_no_invented_periodic_count(self):
@@ -145,15 +154,15 @@ class CountingTests(unittest.TestCase):
             [[0, 0], [2, 0], [0.3, 0.2], [0, 2]],
         ):
             with self.assertRaises(ValueError):
-                crystal.validate_cell_vertices(polygon)
+                cell_ops.validate_cell_vertices(polygon)
         polygon = [[0, 0], [2, 0], [1.8, 1.8], [0, 2]]
-        result = crystal.count_cell_atoms(
+        result = cell_ops.count_cell_atoms(
             polygon, 0, (np.eye(2), np.eye(2)), "BCC", "100"
         )
         self.assertIsNone(result.half_open)
         self.assertGreater(result.interior.sum(), 0)
         with self.assertRaises(crystal.GeometryLimitError):
-            crystal.count_cell_atoms(
+            cell_ops.count_cell_atoms(
                 np.array([[0, 0], [1000, 0], [1000, 1000], [0, 1000]]),
                 0,
                 (np.eye(2), np.eye(2)),
@@ -163,7 +172,7 @@ class CountingTests(unittest.TestCase):
 class ManualQtTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = q.create_application()
+        cls.app = view_controls.create_application()
 
     def wait_for(self, w, predicate, timeout=30):
         until = time.monotonic() + timeout
@@ -176,8 +185,8 @@ class ManualQtTests(unittest.TestCase):
 
     def window(self, **kwargs):
         workers = kwargs.pop("workers", 1)
-        w = q.DichromaticPatternWindow(
-            q.PatternParameters(**kwargs), worker_count=workers
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(**kwargs), worker_count=workers
         )
         w.show()
         self.app.processEvents()
@@ -308,7 +317,7 @@ class ManualQtTests(unittest.TestCase):
         for point, layer in zip(
             w.local_match_item.points(), w.local_pairs.layers[mask]
         ):
-            self.assertEqual(point.symbol(), q.LAYER_SYMBOLS[int(layer)])
+            self.assertEqual(point.symbol(), appearance.LAYER_SYMBOLS[int(layer)])
         counts = w.manual_counts
         key = w.manual_count_key
         w.layer_combo.setCurrentIndex(w.layer_combo.findData(0))

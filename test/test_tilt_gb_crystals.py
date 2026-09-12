@@ -17,12 +17,17 @@ import sys
 import time
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
-
-import tilt_gb_crystallography as crystal
-import tilt_gb_near_csl as near
+import dichromatic_map.cells as cell_ops
+import dichromatic_map.compute as compute
+import dichromatic_map.crystal as crystal
+import dichromatic_map.matching as matching
+import dichromatic_map.state as state
+import dichromatic_map.strain as strain_ops
+import dichromatic_map.ui.controls as view_controls
+import dichromatic_map.ui.window as view_window
 
 
 MODELS = tuple(product(("FCC", "BCC"), ("110", "100")))
@@ -39,9 +44,9 @@ def rotation(angle):
 @lru_cache(maxsize=8)
 def solve(lattice, axis, angle):
     options = dict(lattice=lattice, axis=axis)
-    i, j = near.candidate_vectors(angle, 2.0, 12, **options)
-    return near.pareto_cells(
-        near.solve_cells_chunk(angle, 2.0, i, j, 0, len(i), **options)[1]
+    i, j = strain_ops.candidate_vectors(angle, 2.0, 12, **options)
+    return strain_ops.pareto_cells(
+        strain_ops.solve_cells_chunk(angle, 2.0, i, j, 0, len(i), **options)[1]
     )
 
 
@@ -148,14 +153,14 @@ class CrystalPhysicsTests(unittest.TestCase):
             )[:3]
             for preset in presets:
                 with self.subTest(lattice=lattice, axis=axis, angle=preset.angle_deg):
-                    cell = near.exact_csl_cell(preset.angle_deg, **options)
+                    cell = matching.exact_csl_cell(preset.angle_deg, **options)
                     self.assertIsNotNone(cell)
-                    b1, b2 = near.bases(preset.angle_deg, **options)
+                    b1, b2 = cell_ops.bases(preset.angle_deg, **options)
                     np.testing.assert_allclose(b1 @ cell.m1, b2 @ cell.m2, atol=1e-9)
                     self.assertEqual(
                         cell.atoms,
                         tuple(
-                            geometry.layer_count * abs(near.determinant(m))
+                            geometry.layer_count * abs(cell_ops.determinant(m))
                             for m in (cell.m1, cell.m2)
                         ),
                     )
@@ -177,12 +182,14 @@ class CrystalPhysicsTests(unittest.TestCase):
             angle = 21.4 if axis == "111" else presets[0].angle_deg + 0.4
             cells = solve(lattice, axis, angle)
             self.assertTrue(cells, (lattice, axis))
-            b1, b2 = near.bases(angle, **options)
+            b1, b2 = cell_ops.bases(angle, **options)
             for cell in cells:
                 np.testing.assert_allclose(
                     cell.f1 @ b1 @ cell.m1, cell.f2 @ b2 @ cell.m2, atol=1e-9
                 )
-                for f, e in zip((cell.f1, cell.f2), near.strain_tensors(cell, angle)):
+                for f, e in zip(
+                    (cell.f1, cell.f2), strain_ops.strain_tensors(cell, angle)
+                ):
                     np.testing.assert_allclose(f, f.T, atol=1e-12)
                     self.assertGreater(np.linalg.eigvalsh(f).min(), 0)
                     self.assertLessEqual(
@@ -191,10 +198,8 @@ class CrystalPhysicsTests(unittest.TestCase):
                     np.testing.assert_allclose(e @ geometry.frame[:, 2], 0, atol=1e-12)
 
     def test_coincidences_never_mix_computed_axial_phases(self):
-        from tilt_gb_dichromatic_pattern_qt import (
-            same_layer_coincidence_sites,
-            coincidence_layers_worker,
-        )
+        from dichromatic_map.matching import same_layer_coincidence_sites
+        from dichromatic_map.compute import coincidence_layers_worker
 
         for count in (3, 6, 11, 38):
             positions = np.column_stack((np.arange(count), np.zeros(count)))
@@ -218,11 +223,11 @@ class CrystalPhysicsTests(unittest.TestCase):
             options = dict(lattice=lattice, axis=axis)
             for preset in crystal.csl_presets(axis):
                 with self.subTest(lattice=lattice, axis=axis, preset=preset.label):
-                    cell = near.exact_csl_cell(preset.angle_deg, **options)
+                    cell = matching.exact_csl_cell(preset.angle_deg, **options)
                     self.assertIsNotNone(cell)
                     self.assertEqual((cell.lattice, cell.axis), (lattice, axis))
                     self.assertEqual(cell.max_strain, 0)
-                    b1, b2 = near.bases(preset.angle_deg, **options)
+                    b1, b2 = cell_ops.bases(preset.angle_deg, **options)
                     np.testing.assert_allclose(b1 @ cell.m1, cell.cell, atol=1e-9)
                     np.testing.assert_allclose(b2 @ cell.m2, cell.cell, atol=1e-9)
                     corners = np.array([[0, 0], [1, 0], [0, 1], [1, 1]]) @ cell.cell.T
@@ -259,7 +264,7 @@ class CrystalPhysicsTests(unittest.TestCase):
             for cell in cells:
                 with self.subTest(lattice=lattice, axis=axis, atoms=cell.atoms):
                     self.assertEqual((cell.lattice, cell.axis), (lattice, axis))
-                    b1, b2 = near.bases(angle, **options)
+                    b1, b2 = cell_ops.bases(angle, **options)
                     np.testing.assert_allclose(
                         cell.f1 @ b1 @ cell.m1, cell.cell, atol=1e-9
                     )
@@ -268,7 +273,9 @@ class CrystalPhysicsTests(unittest.TestCase):
                     )
                     self.assertLessEqual(cell.max_strain, 0.02 + 1e-10)
                     for sign, f, e in zip(
-                        (1, -1), (cell.f1, cell.f2), near.strain_tensors(cell, angle)
+                        (1, -1),
+                        (cell.f1, cell.f2),
+                        strain_ops.strain_tensors(cell, angle),
                     ):
                         np.testing.assert_allclose(f, f.T, atol=1e-12)
                         self.assertGreater(np.min(np.linalg.eigvalsh(f)), 0)
@@ -287,7 +294,7 @@ class CrystalPhysicsTests(unittest.TestCase):
                             )
 
     def test_parallel_latest_crystal_request_wins(self):
-        search = near.NearSearch(workers=2)
+        search = compute.NearSearch(workers=2)
         try:
             search.request(39.5, 2.0, 12, lattice="FCC", axis="110")
             search.poll()
@@ -316,10 +323,8 @@ class CrystalPhysicsTests(unittest.TestCase):
 class QtCrystalTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import tilt_gb_dichromatic_pattern_qt as q
 
-        cls.q = q
-        cls.app = q.create_application()
+        cls.app = view_controls.create_application()
 
     def wait_for(self, window, predicate, timeout=30):
         deadline = time.monotonic() + timeout
@@ -329,8 +334,9 @@ class QtCrystalTests(unittest.TestCase):
         self.assertTrue(predicate(), window.near_info.toPlainText())
 
     def test_control_sections_are_ordered_and_contextual(self):
-        q = self.q
-        w = q.DichromaticPatternWindow(q.PatternParameters(), worker_count=1)
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(), worker_count=1
+        )
         w.show()
         self.app.processEvents()
         try:
@@ -375,9 +381,8 @@ class QtCrystalTests(unittest.TestCase):
             w.close()
 
     def test_local_matching_no_strain_parallel_threshold_pan_and_visibility(self):
-        q = self.q
-        w = q.DichromaticPatternWindow(
-            q.PatternParameters(lattice="BCC", axis="100", angle_deg=53.12),
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(lattice="BCC", axis="100", angle_deg=53.12),
             worker_count=2,
         )
         w.show()
@@ -402,12 +407,16 @@ class QtCrystalTests(unittest.TestCase):
                 np.testing.assert_array_equal(grain.positions, positions)
                 np.testing.assert_array_equal(f, np.eye(2))
             self.assertIs(w.selected_atoms[0], picked)
-            reference = near.local_near_pairs(*w.grains, w.local_distance_spin.value())
+            reference = matching.local_near_pairs(
+                *w.grains, w.local_distance_spin.value()
+            )
             np.testing.assert_array_equal(w.local_pairs.first, reference.first)
             np.testing.assert_array_equal(w.local_pairs.second, reference.second)
             hidden_layer = int(w.local_pairs.layers[0])
             w.layer_checks[hidden_layer].setChecked(False)
-            self.assertFalse(np.any(w._local_pair_mask() & (w.local_pairs.layers == hidden_layer)))
+            self.assertFalse(
+                np.any(w._local_pair_mask() & (w.local_pairs.layers == hidden_layer))
+            )
             self.assertEqual(
                 len(w.local_match_item.points()), np.count_nonzero(w._local_pair_mask())
             )
@@ -434,12 +443,12 @@ class QtCrystalTests(unittest.TestCase):
             w.worker_spin.setValue(1)
             self.wait_for(w, lambda: not w.local_updating and w.parallel_stage is None)
             self.assertIsNotNone(w.local_thread_executor)
-            reference = near.local_near_pairs(*w.grains, 0.05)
+            reference = matching.local_near_pairs(*w.grains, 0.05)
             np.testing.assert_array_equal(w.local_pairs.first, reference.first)
             # Both original endpoints must be visible; testing just their
             # midpoint on the boundary would incorrectly keep this pair.
             center = w._view_geometry()[0]
-            w.local_pairs = near.LocalPairs(
+            w.local_pairs = matching.LocalPairs(
                 np.array([center + [-0.02, 0]]),
                 np.array([center + [0.02, 0]]),
                 np.array([0]),
@@ -465,9 +474,8 @@ class QtCrystalTests(unittest.TestCase):
             w.close()
 
     def test_local_strain_method_switch_stale_jobs_and_custom_axis(self):
-        q = self.q
-        w = q.DichromaticPatternWindow(
-            q.PatternParameters(angle_deg=39.5), worker_count=2
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(angle_deg=39.5), worker_count=2
         )
         w.show()
         self.app.processEvents()
@@ -501,7 +509,9 @@ class QtCrystalTests(unittest.TestCase):
             self.wait_for(w, lambda: not w.local_updating and w.parallel_stage is None)
             self.assertEqual(w.geometry.layer_count, 11)
             self.assertIsNone(w.near_cell)
-            reference = near.local_near_pairs(*w.grains, w.local_distance_spin.value())
+            reference = matching.local_near_pairs(
+                *w.grains, w.local_distance_spin.value()
+            )
             np.testing.assert_array_equal(w.local_pairs.layers, reference.layers)
             np.testing.assert_array_equal(w.local_pairs.first, reference.first)
             # At the narrowest view and largest cutoff, keep a 2*d query halo.
@@ -522,13 +532,12 @@ class QtCrystalTests(unittest.TestCase):
             w.close()
 
     def test_lattice_constant_does_not_rescale_coordinates_or_cells(self):
-        q = self.q
         for lattice, axis in MODELS:
             windows = []
             try:
                 for a0 in (2.8, 4.0):
-                    w = q.DichromaticPatternWindow(
-                        q.PatternParameters(
+                    w = view_window.DichromaticPatternWindow(
+                        state.PatternParameters(
                             lattice_constant=a0, lattice=lattice, axis=axis
                         ),
                         worker_count=1,
@@ -555,8 +564,9 @@ class QtCrystalTests(unittest.TestCase):
                     w.close()
 
     def test_custom_axis_multilayer_parallel_filter_and_invalid_input(self):
-        q = self.q
-        w = q.DichromaticPatternWindow(q.PatternParameters(), worker_count=2)
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(), worker_count=2
+        )
         w.show()
         self.app.processEvents()
         try:
@@ -576,8 +586,8 @@ class QtCrystalTests(unittest.TestCase):
             self.wait_for(w, lambda: w.parallel_stage is None)
             self.assertEqual(w.geometry.axis, "1 -1 3")
             self.assertEqual(w.geometry.layer_count, 11)
-            expected = q.same_layer_coincidence_sites(
-                *w.grains, q.COINCIDENCE_TOLERANCE_FACTOR
+            expected = matching.same_layer_coincidence_sites(
+                *w.grains, matching.COINCIDENCE_TOLERANCE_FACTOR
             )
             for actual, reference in zip(w.coincident_points, expected, strict=True):
                 np.testing.assert_allclose(actual, reference, atol=1e-12)
@@ -634,7 +644,6 @@ class QtCrystalTests(unittest.TestCase):
             w.close()
 
     def test_axial_vector_readout_uses_the_selected_crystal_repeat(self):
-        q = self.q
         expected = {
             ("FCC", "110"): ("[1 1 2]", np.sqrt(1.5)),
             ("BCC", "110"): ("[1 1 1]", np.sqrt(3)),
@@ -642,21 +651,21 @@ class QtCrystalTests(unittest.TestCase):
             ("BCC", "100"): ("[1 0 1]", np.sqrt(2)),
         }
         for lattice, axis in MODELS:
-            w = q.DichromaticPatternWindow(
-                q.PatternParameters(angle_deg=0, lattice=lattice, axis=axis),
+            w = view_window.DichromaticPatternWindow(
+                state.PatternParameters(angle_deg=0, lattice=lattice, axis=axis),
                 worker_count=1,
             )
             try:
                 w.selected_atoms = [
-                    q.SelectedAtom(np.array([0.0, 0.0]), 0, 0, np.array([0, 0, 0])),
-                    q.SelectedAtom(np.array([0.0, 1.0]), 0, 0, np.array([0, 0, 2])),
+                    state.SelectedAtom(np.array([0.0, 0.0]), 0, 0, np.array([0, 0, 0])),
+                    state.SelectedAtom(np.array([0.0, 1.0]), 0, 0, np.array([0, 0, 2])),
                 ]
                 w.axial_repeat = 1
                 readout = w._selected_vector_readout()
                 indices, magnitude = expected[lattice, axis]
                 self.assertIn(indices, readout)
                 self.assertIn(f"{magnitude:.4f}", readout)
-                w.selected_atoms[1] = q.SelectedAtom(
+                w.selected_atoms[1] = state.SelectedAtom(
                     np.array([1.0, 0.0]), 1, 0, np.array([0, 0, 0])
                 )
                 self.assertIn("(1.0000, 0.0000)", w._selected_vector_readout())
@@ -664,9 +673,8 @@ class QtCrystalTests(unittest.TestCase):
                 w.close()
 
     def test_live_model_switch_stale_jobs_hidden_atoms_and_pan(self):
-        q = self.q
-        w = q.DichromaticPatternWindow(
-            q.PatternParameters(angle_deg=39.5), worker_count=2
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(angle_deg=39.5), worker_count=2
         )
         w.show()
         self.app.processEvents()
@@ -719,9 +727,8 @@ class QtCrystalTests(unittest.TestCase):
             w.close()
 
     def test_strain_change_rejects_old_positions_but_pan_remains_pickable(self):
-        q = self.q
-        w = q.DichromaticPatternWindow(
-            q.PatternParameters(angle_deg=39.5), worker_count=2
+        w = view_window.DichromaticPatternWindow(
+            state.PatternParameters(angle_deg=39.5), worker_count=2
         )
         w.show()
         self.app.processEvents()

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dichromatic-map"
+version = "0.1.0"
+description = "Layer-resolved cubic tilt grain-boundary dichromatic patterns"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+gui = ["PySide6", "pyqtgraph"]
+test = ["PySide6", "pyqtgraph", "matplotlib"]
+
+[project.scripts]
+dichromatic-map = "dichromatic_map.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"dichromatic_map.ui" = ["resources/*.qss", "resources/icons/*.svg"]

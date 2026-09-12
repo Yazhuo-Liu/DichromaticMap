@@ -3,7 +3,7 @@
 
 DEPRECATED: retained as the legacy FCC [110] Matplotlib viewer. New crystal,
 axis and a0-coordinate features are maintained only in the Qt viewer
-``tilt_gb_dichromatic_pattern_qt.py``.
+``dichromatic_map.ui.window`` (launch with ``python main.py``).
 
 This file is intentionally standalone: it imports no code from GBClaw.  It
 projects FCC atomic columns along [110] onto the [-110]-[001] plane and rotates
@@ -23,7 +23,7 @@ Interaction
    which periodic copy of P2 is used along [110]; adjacent values differ by
    (a/2)[110], which is invisible in this projection.
 6. "Near-CSL" (off by default) opens strain limits and periodic-cell results.
-   Its shared solver lives in the sibling file ``tilt_gb_near_csl.py``.
+   Its shared solver lives in ``dichromatic_map.strain`` and ``dichromatic_map.matching``.
 7. "Show cell" / "Fit cell" also display the unstrained exact CSL periodic cell.
 
 Blue/orange identifies the grain, while circles/diamonds identify the A/B
@@ -47,14 +47,14 @@ import numpy as np
 from matplotlib.backend_bases import MouseButton
 from matplotlib.patches import FancyArrowPatch
 from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider
-from tilt_gb_near_csl import (
-    NearSearch,
+from dichromatic_map.compute import NearSearch
+from dichromatic_map.strain import (
     DEFAULT_STRAIN_PERCENT,
     DEFAULT_SEARCH_INDEX,
-    NEAR_COLOR,
     tensor_readout,
-    exact_csl_cell,
 )
+from dichromatic_map.ui import NEAR_COLOR
+from dichromatic_map.matching import exact_csl_cell
 
 
 SIDE_TOLERANCE = 1.0e-9
