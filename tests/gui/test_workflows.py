@@ -196,6 +196,11 @@ def test_exact_manual_count_navigation_filters_and_editing(gui):
     )
     controls.manual_fit_button.click()
     gui.settle(window)
+    # Check the fitted model range separately from the scene's pixel mapping.
+    displayed_corners = plot._to_view(corners)
+    view_limits = np.asarray(plot.view_box.viewRange())
+    assert np.all(displayed_corners >= view_limits[:, 0])
+    assert np.all(displayed_corners <= view_limits[:, 1])
     gui.select_layer(window, 0)
     controls.pick_gb_button.click()
     gui.click_plot(window, corners[0])
@@ -219,6 +224,22 @@ def test_exact_manual_count_navigation_filters_and_editing(gui):
     controls.manual_clear_button.click()
     assert state.manual_vertices == []
     assert not plot.manual_annotation.isVisible()
+
+
+def test_plot_picking_waits_for_queued_view_navigation(gui):
+    window = gui.window(lattice="BCC", axis="100", angle_deg=0)
+    gui.select_layer(window, 0)
+    window.controls.pick_gb_button.click()
+    window.plot.view_box.translateBy(x=30, y=-20)
+
+    # Queue the fit before the panned atom buffer is regenerated. The click
+    # must wait for view/layout events and use the resulting pixel coordinates.
+    navigation = QtCore.QTimer(window)
+    navigation.setSingleShot(True)
+    navigation.timeout.connect(window.controls.cell_fit_button.click)
+    navigation.start(25)
+    gui.click_plot(window, [0, 0])
+    np.testing.assert_allclose(window.state.selected_points, [[0, 0]], atol=1e-12)
 
 
 def test_wrong_layer_manual_vertex_is_rejected_without_losing_first(gui):

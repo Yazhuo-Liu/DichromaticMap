@@ -33,7 +33,7 @@ class GuiHarness:
         self.QtCore = QtCore
         self.QtTest = QtTest.QTest
 
-    def wait_for(self, window, predicate, timeout=30):
+    def wait_for(self, window, predicate, timeout=30, *, diagnostics=None):
         deadline = time.monotonic() + timeout
         while True:
             self.app.processEvents(self.QtCore.QEventLoop.AllEvents, 10)
@@ -48,6 +48,7 @@ class GuiHarness:
                     + window.controls.manual_info.toPlainText()
                     + "\n"
                     + window.controls.near_info.toPlainText()
+                    + ("\n" + diagnostics() if diagnostics is not None else "")
                 )
             time.sleep(0.005)
 
@@ -102,13 +103,34 @@ class GuiHarness:
 
     def click_plot(self, window, point):
         """Deliver a real viewport click through the scene's picking route."""
-        coordinates = window.plot._to_view(point)
-        scene_point = window.plot.view_box.mapViewToScene(
-            self.QtCore.QPointF(float(coordinates[0]), float(coordinates[1]))
+        plot = window.plot
+        viewport = plot.plot_widget.viewport()
+        pixel = None
+
+        def target_in_viewport():
+            nonlocal pixel
+            coordinates = plot._to_view(point)
+            scene_point = plot.view_box.mapViewToScene(
+                self.QtCore.QPointF(float(coordinates[0]), float(coordinates[1]))
+            )
+            pixel = plot.plot_widget.mapFromScene(scene_point)
+            return (
+                plot.view_box.sceneBoundingRect().contains(scene_point)
+                and viewport.rect().contains(pixel)
+            )
+
+        # Idle calculation workers do not imply that Qt's queued layout and
+        # viewport updates have finished. Map the target after processing them;
+        # never pan the view or clamp an out-of-view target to make a click pass.
+        self.wait_for(
+            window, target_in_viewport, timeout=5,
+            diagnostics=lambda: (
+                f"Point outside viewport after waiting: {point}; pixel={pixel}; "
+                f"viewport={viewport.rect()}; viewRange={plot.view_box.viewRange()}; "
+                f"scene={plot.view_box.sceneBoundingRect()}; "
+                f"viewportTransform={plot.plot_widget.viewportTransform()}"
+            ),
         )
-        pixel = window.plot.plot_widget.mapFromScene(scene_point)
-        viewport = window.plot.plot_widget.viewport()
-        assert viewport.rect().contains(pixel), f"Point outside viewport: {point}"
         self.QtTest.mouseClick(
             viewport, self.QtCore.Qt.LeftButton, self.QtCore.Qt.NoModifier, pixel
         )
