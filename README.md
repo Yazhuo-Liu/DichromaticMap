@@ -155,3 +155,7 @@ supplied projected columns and preserves their layer labels.
 | --- | --- | --- |
 | Installation, viewer workflows and Python API | [User guide](docs/en/README.md) | [使用手册](docs/zh/README.md) |
 | Algorithms, numerical conventions and implementation | [Implementation details](docs/en/development.md) | [开发细节](docs/zh/development.md) |
+
+## License
+
+DichromaticMap is distributed under the [MIT License](LICENSE).
