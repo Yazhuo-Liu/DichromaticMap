@@ -148,28 +148,31 @@ def count_cell_atoms(
                 "Manual cell exceeds the atom enumeration limit; select a smaller cell. "
                 "View zoom does not affect counting."
             ) from error
-        inside, boundary, half_open = cell_membership(grain.positions, polygon)
+        # A manual cell belongs to one axial layer. Filter before polygon and
+        # corner distance calculations, which otherwise process every layer.
+        selected = grain.layers == layer if layer >= 0 else slice(None)
+        positions = grain.positions[selected]
+        layers = grain.layers[selected]
+        inside, boundary, half_open = cell_membership(positions, polygon)
         half_open_edges = None
         half_open_corners = None
         if half_open is not None:
             corner_tolerance = 1e-8 * max(1.0, float(np.max(high - low)))
             at_corner = np.any(
                 np.linalg.norm(
-                    grain.positions[:, None, :] - polygon[None, :, :], axis=2
+                    positions[:, None, :] - polygon[None, :, :], axis=2
                 )
                 <= corner_tolerance,
                 axis=1,
             )
             half_open_corners = half_open & at_corner
             half_open_edges = half_open & boundary & ~at_corner
-        visible = np.ones(len(grain.positions), dtype=bool)
-        if layer >= 0:
-            visible &= grain.layers == layer
+        visible = np.ones(len(positions), dtype=bool)
         if boundary_points is not None and len(boundary_points) == 2:
             start, end = np.asarray(boundary_points)
             direction = end - start
-            cross = direction[0] * (grain.positions[:, 1] - start[1]) - direction[1] * (
-                grain.positions[:, 0] - start[0]
+            cross = direction[0] * (positions[:, 1] - start[1]) - direction[1] * (
+                positions[:, 0] - start[0]
             )
             visible &= (region_states[2 * grain_index] & (cross >= -1e-9)) | (
                 region_states[2 * grain_index + 1] & (cross <= 1e-9)
@@ -183,7 +186,7 @@ def count_cell_atoms(
         ):
             if mask is not None:
                 counts[grain_index] = np.bincount(
-                    grain.layers[mask & visible], minlength=geometry.layer_count
+                    layers[mask & visible], minlength=geometry.layer_count
                 )
         is_parallelogram[grain_index] = half_open is not None
         # Translation-stable area of this grain's actual polygon.

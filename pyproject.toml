@@ -12,7 +12,6 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 gui = ["PySide6", "pyqtgraph"]
-test = ["PySide6", "pyqtgraph", "matplotlib"]
 
 [project.scripts]
 dichromatic-map = "dichromatic_map.__main__:main"

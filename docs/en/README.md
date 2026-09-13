@@ -1,38 +1,32 @@
 # DichromaticMap user guide
 
-[中文](../zh/README.md) · [Development](development.md) · [Project home](../../README.md)
+[中文](../zh/README.md) · [Project home](../../README.md)
 
 DichromaticMap is a standalone FCC/BCC tilt grain-boundary viewer using Qt and
-PyQtGraph. It does not depend on GBClaw. Implementation lives in
-`src/dichromatic_map/`; numerical calculations can be imported without Qt.
-`main.py` is the only root-level source launcher. The three old root compatibility
-modules have been removed. The Matplotlib implementation in `legacy/` is retained
-for historical reference and regression comparisons, not active development.
+PyQtGraph. It does not depend on GBClaw. Numerical calculations can be imported
+independently of Qt.
 
 ## Launching
 
-Use Python 3.10+, NumPy, PySide6 and PyQtGraph in a conda environment. On the
-current development machine, the GUI dependencies are installed in `base`:
+Use Python 3.10+ in your chosen conda environment. Activate that environment,
+then install the GUI dependencies and launch from the project root:
 
 ```bash
-conda activate base
+python -m pip install numpy PySide6 pyqtgraph
 python main.py --workers 4
 python main.py --lattice BCC --axis 100
 python main.py --axis "1 -1 3"
 python main.py --help
 ```
 
-Run these commands from the project root. With dependencies installed, no project
-installation or build is needed. To install missing GUI dependencies in the
-active environment, use `python -m pip install numpy PySide6 pyqtgraph`.
-Do not assume that another conda environment contains the same dependencies.
+With dependencies installed, no project installation or build is needed to run
+from the source directory. No C compiler is required.
 
-To import the numerical package from other projects, optionally run
-`python -m pip install -e .` from the project root. Use
-`python -m pip install -e ".[gui]"` to include GUI dependencies. After installation,
-`python -m dichromatic_map` and `dichromatic-map` are also available, without
-editing `sys.path`. Numerical use requires only NumPy; `python main.py --help`
-does not load Qt. See [Development](development.md) for details.
+To install the package for use outside the source directory, run
+`python -m pip install ".[gui]"` from the project root. After installation,
+`python -m dichromatic_map` and `dichromatic-map` are also available.
+For numerical use only, `python -m pip install .` installs the NumPy-based core
+without GUI dependencies. `python main.py --help` does not load Qt.
 
 All plot coordinates, view dimensions and local matching distances are expressed
 in a₀. A coordinate of 1 means one reference lattice constant. FCC/BCC and preset
@@ -289,27 +283,16 @@ at most 256 axial layers and 250,000 candidate columns per grain. Oversized
 manual selections report an error rather than a partial count. Reduce the
 selection or view size, or use a lower-index axis.
 
-## Tests and troubleshooting
+## Troubleshooting
 
-Run from the project root in an environment with GUI dependencies and Matplotlib:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m unittest discover -s test -v
-```
-
-Tests use offscreen Qt. Coverage includes independent 3D lattice enumeration,
-exact and strained CSL, local matching, cancellation/stale results, hidden-point
-picking, whole-selection counting, display rotation, selected-cell strain and
-restore, and current/material vector components. Package tests cover GUI-free
-imports, the source launcher and export, isolated state and spawned workers.
-Matplotlib is required only for historical comparison tests, not the Qt viewer.
-
-If PySide6 or PyQtGraph cannot be imported, check that the active conda
-environment is the one where dependencies were installed. If importing
-`dichromatic_map` fails, use the root launcher or perform an editable installation.
-Use the offscreen export command without a display server, or `--workers 1` when
-process creation is restricted. Do not treat a partial view as a complete count.
-
-`build/` and `__pycache__/` are generated artifacts, not source requirements.
-See [Development](development.md) for their roles and cleanup cautions. This
-manual is Markdown and does not need an HTML build to be read.
+- **Missing PySide6 or PyQtGraph:** activate the conda environment where the GUI
+  dependencies are installed, or install them with
+  `python -m pip install numpy PySide6 pyqtgraph` in the active environment.
+- **Cannot import `dichromatic_map`:** use `python main.py` from the project root,
+  or install the package with `python -m pip install ".[gui]"` to use it from other
+  directories.
+- **No display server:** use the offscreen PNG export command above.
+- **Process creation is restricted:** launch with `--workers 1`.
+- **View, axis or selection exceeds the resource limit:** reduce the view or
+  selection size, or choose a lower-index axis. Manual counts cover the complete
+  selected cell; a partial view does not represent a complete count.

@@ -43,6 +43,11 @@ class PatternPlot:
 
     def __init__(self, owner: DichromaticPatternWindow):
         self.owner = owner
+        self._marker_diameter = None
+        self._local_overlay_pairs = None
+        self._local_overlay_key = None
+        self._local_midpoints_view = np.empty((0, 2))
+        self._local_distances = np.empty(0)
 
     def _create_plot(self) -> None:
         self.view_box = PatternViewBox()
@@ -175,6 +180,8 @@ class PatternPlot:
         self.view_box.sigRangeChanged.connect(self.owner._on_view_range_changed)
 
     def _create_layer_items(self):
+        # Newly created items need sizing even if the view scale is unchanged.
+        self._marker_diameter = None
         self.legend.clear()
         for item in [
             *self.grain_layer_items[0],
@@ -378,29 +385,49 @@ class PatternPlot:
     def _update_local_overlay(self):
         """Filter both original endpoints, never just the proposed midpoint."""
         pairs = self.owner.state.local_pairs
-        mask = self.owner._local_pair_mask()
-        midpoints = pairs.midpoints
-        self.local_match_item.setData(
-            pos=self._to_view(midpoints[mask]),
-            symbol=[
-                LAYER_SYMBOLS[int(layer) % len(LAYER_SYMBOLS)]
-                for layer in pairs.layers[mask]
-            ],
+        session = self.owner.state
+        # Pan/zoom changes the viewport, not the buffered pair geometry. Keep
+        # the rendered points and distances until a physical/display filter
+        # changes; setData rebuilds every scatter symbol's cached rendering.
+        key = (
+            self.owner.local_active,
+            session.display_rotation_deg,
+            tuple(sorted(session.visible_layers)),
+            tuple(np.asarray(session.selected_points).ravel()),
+            self.owner._region_states(),
+            session.grain_signature == self.owner._geometry_signature(),
+            session.buffer_bounds,
+            self.owner.controls.local_distance_spin.value(),
         )
-        links = np.stack((pairs.first[mask], pairs.second[mask]), axis=1).reshape(-1, 2)
-        links = self._to_view(links)
-        self.local_link_item.setData(links[:, 0], links[:, 1], connect="pairs")
+        if pairs is not self._local_overlay_pairs or key != self._local_overlay_key:
+            mask = self.owner._local_pair_mask()
+            self._local_midpoints_view = self._to_view(pairs.midpoints[mask])
+            self._local_distances = pairs.distances[mask]
+            self.local_match_item.setData(
+                pos=self._local_midpoints_view,
+                symbol=[
+                    LAYER_SYMBOLS[int(layer) % len(LAYER_SYMBOLS)]
+                    for layer in pairs.layers[mask]
+                ],
+            )
+            links = np.stack(
+                (pairs.first[mask], pairs.second[mask]), axis=1
+            ).reshape(-1, 2)
+            links = self._to_view(links)
+            self.local_link_item.setData(links[:, 0], links[:, 1], connect="pairs")
+            self._local_overlay_pairs = pairs
+            self._local_overlay_key = key
         if not self.owner.local_active:
             return
         x0, x1, y0, y1 = self._view_range()
-        midpoints = self._to_view(midpoints)
-        visible = mask & (
+        midpoints = self._local_midpoints_view
+        visible = (
             (midpoints[:, 0] >= x0)
             & (midpoints[:, 0] <= x1)
             & (midpoints[:, 1] >= y0)
             & (midpoints[:, 1] <= y1)
         )
-        distances = pairs.distances[visible]
+        distances = self._local_distances[visible]
         if self.owner.state.local_error:
             state = "Local matching failed: " + self.owner.state.local_error
         elif self.owner.state.local_updating:
@@ -409,7 +436,7 @@ class PatternPlot:
             state = f"Visible near pairs: {len(distances)} (exact CSL excluded)"
             if len(distances):
                 state += f"\nd/a₀ min / mean / max: {distances.min():.5f} / {distances.mean():.5f} / {distances.max():.5f}"
-        self.owner.controls.near_info.setPlainText(
+        text = (
             state
             + f"\nPair cutoff: {self.owner.controls.local_distance_spin.value():.4f} a₀."
             "\nSame-layer mutual nearest pairs; no atoms moved."
@@ -418,6 +445,8 @@ class PatternPlot:
             "\nNo bulk strain, relaxation or stress calculation."
             "\nLocal matches do not define a periodic common cell."
         )
+        if text != self.owner.controls.near_info.toPlainText():
+            self.owner.controls.near_info.setPlainText(text)
 
     def _fit_model_corners(self, corners):
         corners = self._to_view(corners)
@@ -508,6 +537,12 @@ class PatternPlot:
         _center, width, _height = self._view_geometry()
         scale = max(VIEW_SCALE_MIN, width / self.owner.state.parameters.width)
         diameter = max(3.5, self._base_marker_diameter() / scale**0.22)
+        if (
+            self._marker_diameter is not None
+            and abs(diameter - self._marker_diameter) <= 1e-12 * diameter
+        ):
+            return
+        self._marker_diameter = diameter
         for grain, grain_items in enumerate(self.grain_layer_items):
             for layer, item in enumerate(grain_items):
                 item.setSize(diameter * (1 + 0.12 * grain + 0.05 * (layer % 2)))

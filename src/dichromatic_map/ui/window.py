@@ -1713,44 +1713,23 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             return
         x_min, x_max, y_min, y_max = self.plot._view_range()
 
-        def in_view(points: np.ndarray) -> np.ndarray:
-            points = self.plot._to_view(points)
-            return (
-                (points[:, 0] >= x_min)
-                & (points[:, 0] <= x_max)
-                & (points[:, 1] >= y_min)
-                & (points[:, 1] <= y_max)
-            )
-
-        for index, grain in enumerate(self.state.grains):
-            self.state.visible_atom_counts[index] = int(
+        def count_in_view(item) -> int:
+            # Scatter data already includes rotation and layer/region filters.
+            # Reuse those coordinates instead of rotating and filtering all
+            # buffered model points again on every mouse movement.
+            x, y = item.getData()
+            return int(
                 np.count_nonzero(
-                    self.state.visible_atom_masks[index] & in_view(grain.positions)
+                    (x >= x_min) & (x <= x_max) & (y >= y_min) & (y <= y_max)
                 )
             )
 
-        states = self._region_states()
-        boundary_ready = len(self.state.selected_points) == 2
-        for layer, points in enumerate(self.state.coincident_points):
-            mask = in_view(points)
-            if layer not in self.state.visible_layers:
-                mask[:] = False
-            if boundary_ready:
-                mask &= selected_region_mask(
-                    points,
-                    self.state.selected_points[0],
-                    self.state.selected_points[1],
-                    states[0],
-                    states[1],
-                )
-                mask &= selected_region_mask(
-                    points,
-                    self.state.selected_points[0],
-                    self.state.selected_points[1],
-                    states[2],
-                    states[3],
-                )
-            self.state.visible_coincidence_counts[layer] = int(np.count_nonzero(mask))
+        for index, items in enumerate(self.plot.grain_layer_items):
+            self.state.visible_atom_counts[index] = sum(
+                count_in_view(item) for item in items
+            )
+        for layer, item in enumerate(self.plot.coincidence_items):
+            self.state.visible_coincidence_counts[layer] = count_in_view(item)
         self._update_status()
 
     def _update_title(self) -> None:

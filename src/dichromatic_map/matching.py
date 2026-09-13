@@ -61,16 +61,35 @@ def _nearest_in_radius(first, second, radius):
     origin = np.minimum(first.min(axis=0), second.min(axis=0))
     first_cells = np.floor((first - origin) / radius).astype(np.int64)
     second_cells = np.floor((second - origin) / radius).astype(np.int64)
-    dtype = np.dtype([("x", np.int64), ("y", np.int64)])
+    # Scalar integer searches are substantially faster than structured-array
+    # comparisons. Pad the shared rectangle by one cell on every side, so
+    # neighboring rows cannot alias even at the boundary. Keep the full-width
+    # coordinate fallback when the rectangle would overflow an int64 key.
+    maximum = np.maximum(first_cells.max(axis=0), second_cells.max(axis=0))
+    stride = int(maximum[1]) + 3
+    scalar_keys = (
+        first_cells.min() >= 0
+        and second_cells.min() >= 0
+        and (int(maximum[0]) + 3) * stride - 1 <= np.iinfo(np.int64).max
+    )
+    if scalar_keys:
+        def keys(cells):
+            return cells[:, 0] * stride + cells[:, 1] + stride + 1
+    else:
+        dtype = np.dtype([("x", np.int64), ("y", np.int64)])
 
-    def keys(cells):
-        return np.ascontiguousarray(cells).view(dtype).reshape(-1)
+        def keys(cells):
+            return np.ascontiguousarray(cells).view(dtype).reshape(-1)
 
     # Sort each bin geometrically as well as by cell address.
     order = np.lexsort(
         (second[:, 1], second[:, 0], second_cells[:, 1], second_cells[:, 0])
     )
     sorted_keys = keys(second_cells[order])
+    bin_starts = np.r_[0, np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]) + 1]
+    bin_keys = sorted_keys[bin_starts]
+    bin_counts = np.diff(np.r_[bin_starts, len(second)])
+    first_keys = keys(first_cells) if scalar_keys else None
     coordinate_order = np.lexsort((second[:, 1], second[:, 0]))
     rank = np.empty(len(second), dtype=int)
     rank[coordinate_order] = np.arange(len(second))
@@ -81,21 +100,33 @@ def _nearest_in_radius(first, second, radius):
         chosen = np.full(stop - start, -1, dtype=int)
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
-                addresses = keys(first_cells[start:stop] + (dx, dy))
-                lower = np.searchsorted(sorted_keys, addresses, side="left")
-                upper = np.searchsorted(sorted_keys, addresses, side="right")
-                for occupant in range(int(np.max(upper - lower, initial=0))):
-                    rows = np.flatnonzero(lower + occupant < upper)
-                    targets = order[lower[rows] + occupant]
-                    delta = first[start + rows] - second[targets]
+                addresses = (
+                    first_keys[start:stop] + dx * stride + dy
+                    if scalar_keys
+                    else keys(first_cells[start:stop] + (dx, dy))
+                )
+                locations = np.searchsorted(bin_keys, addresses)
+                safe = np.minimum(locations, len(bin_keys) - 1)
+                found = (locations < len(bin_keys)) & (bin_keys[safe] == addresses)
+                rows = np.flatnonzero(found)
+                starts = bin_starts[safe[rows]]
+                counts = bin_counts[safe[rows]]
+                for occupant in range(int(np.max(counts, initial=0))):
+                    active = counts > occupant
+                    active_rows = rows[active]
+                    targets = order[starts[active] + occupant]
+                    delta = first[start + active_rows] - second[targets]
                     squared = np.einsum("ij,ij->i", delta, delta)
                     better = (squared <= radius * radius) & (
-                        (squared < best[rows])
-                        | ((squared == best[rows]) & (rank[targets] < best_rank[rows]))
+                        (squared < best[active_rows])
+                        | (
+                            (squared == best[active_rows])
+                            & (rank[targets] < best_rank[active_rows])
+                        )
                     )
-                    chosen[rows[better]] = targets[better]
-                    best[rows[better]] = squared[better]
-                    best_rank[rows[better]] = rank[targets[better]]
+                    chosen[active_rows[better]] = targets[better]
+                    best[active_rows[better]] = squared[better]
+                    best_rank[active_rows[better]] = rank[targets[better]]
         nearest[start:stop] = chosen
     return nearest
 

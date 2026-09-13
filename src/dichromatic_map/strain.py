@@ -147,41 +147,67 @@ def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110"):
         raise ValueError("strain must be (0,10]% and search index 2..40")
     e = percent / 100
     b1, b2 = bases(angle, lattice, axis)
-    integers = np.array(
-        [
-            (x, y)
-            for x in range(-extent, extent + 1)
-            for y in range(-extent, extent + 1)
-            if x > 0 or (x == 0 and y > 0)
-        ],
-        dtype=int,
+    integers = np.column_stack(
+        (
+            np.r_[
+                np.zeros(extent, dtype=int),
+                np.repeat(np.arange(1, extent + 1), 2 * extent + 1),
+            ],
+            np.r_[
+                np.arange(1, extent + 1),
+                np.tile(np.arange(-extent, extent + 1), extent),
+            ],
+        )
     )
     v = integers @ b1.T
     lengths = np.linalg.norm(v, axis=1)
     inverse_b2 = np.linalg.inv(b2)
-    nearest = np.rint(v @ inverse_b2.T).astype(int)
+    coordinates = v @ inverse_b2.T
+    nearest = np.rint(coordinates).astype(int)
     # ||v-w|| <= e (||v||+||w||) is necessary for two bounded strains.
     # Convert the physical separation bound to an integer-coordinate bound;
     # the fixed FCC [110] factor sqrt(2) is invalid for other layer bases.
     inverse_norm = np.linalg.norm(inverse_b2, ord=2)
     radii = np.ceil((2 * e / (1 - e)) * lengths * inverse_norm).astype(int) + 1
+    # A compatible w also satisfies ||v-w|| <= 2e ||v|| / (1-e).
+    # Apply this necessary bound in each integer coordinate, retaining slack
+    # for the acceptance tolerance and floating-point basis transformations.
+    bound_e = e + 1e-12
+    coordinate_bounds = (
+        (2 * bound_e / (1 - bound_e))
+        * lengths[:, None]
+        * np.linalg.norm(inverse_b2, axis=1)
+        + 1e-10
+    )
+    displacement = nearest - coordinates
     n1, n2, errors, sizes = [], [], [], []
     for dx in range(-int(radii.max()), int(radii.max()) + 1):
         for dy in range(-int(radii.max()), int(radii.max()) + 1):
-            other = nearest + (dx, dy)
+            # Discard impossible integer offsets before computing distances.
+            # Traversal and retained-vector order remain dx, dy, then integer.
+            use = np.flatnonzero(
+                (radii >= max(abs(dx), abs(dy)))
+                & (np.abs(nearest[:, 0] + dx) <= extent)
+                & (np.abs(nearest[:, 1] + dy) <= extent)
+                & (np.abs(displacement[:, 0] + dx) <= coordinate_bounds[:, 0])
+                & (np.abs(displacement[:, 1] + dy) <= coordinate_bounds[:, 1])
+            )
+            if not len(use):
+                continue
+            other = nearest[use] + (dx, dy)
             w = other @ b2.T
             l2 = np.linalg.norm(w, axis=1)
-            error = np.linalg.norm(v - w, axis=1) / (lengths + l2)
-            mask = (
-                (error <= e + 1e-12)
-                & (np.max(np.abs(other), axis=1) <= extent)
-                & (l2 > 0)
-                & (radii >= max(abs(dx), abs(dy)))
-            )
-            n1.append(integers[mask])
+            size = lengths[use] + l2
+            error = np.linalg.norm(v[use] - w, axis=1) / size
+            mask = (error <= e + 1e-12) & (l2 > 0)
+            if not np.any(mask):
+                continue
+            n1.append(integers[use[mask]])
             n2.append(other[mask])
             errors.append(error[mask])
-            sizes.append((lengths + l2)[mask])
+            sizes.append(size[mask])
+    if not n1:
+        return np.empty((0, 2), dtype=int), np.empty((0, 2), dtype=int)
     i, j = np.concatenate(n1), np.concatenate(n2)
     err, size = np.concatenate(errors), np.concatenate(sizes)
     # Retain short translations and accurate larger translations.
@@ -216,17 +242,40 @@ def solve_cells_chunk(
     geometry = get_geometry(lattice, axis)
     lattice, axis = geometry.lattice, geometry.axis
     b1, b2 = bases(angle, lattice, axis)
-    first, second = np.triu_indices(len(integers1), 1)
-    use = (first >= start) & (first < stop)
-    first, second = first[use], second[use]
+    # Build only this chunk's rows of the upper triangle. UI workers usually
+    # request eight rows; constructing the entire triangle repeats O(N²) work.
+    n = len(integers1)
+    start, stop = max(0, start), min(stop, n - 1)
+    if start >= stop:
+        return os.getpid(), []
+    rows = np.arange(start, stop)
+    counts = n - rows - 1
+    first = np.repeat(rows, counts)
+    second = np.concatenate([np.arange(row + 1, n) for row in rows])
     m1 = np.stack([integers1[first], integers1[second]], axis=2)
     m2 = np.stack([integers2[first], integers2[second]], axis=2)
-    d1, d2 = np.linalg.det(m1), np.linalg.det(m2)
+    d1 = m1[:, 0, 0] * m1[:, 1, 1] - m1[:, 0, 1] * m1[:, 1, 0]
+    d2 = m2[:, 0, 0] * m2[:, 1, 1] - m2[:, 0, 1] * m2[:, 1, 0]
     mask = (np.abs(d1) >= 0.5) & (d1 * d2 > 0)
     m1, m2 = m1[mask], m2[mask]
     if not len(m1):
         return os.getpid(), []
     a, b = b1 @ m1, b2 @ m2
+    # Bounded symmetric strains obey ||a-b|| <= e (||a||+||b||) for
+    # EVERY linear combination of the two cell edges. Check both diagonals
+    # before the more expensive SVD, with slack for the final residual limit.
+    compatible = np.ones(len(a), dtype=bool)
+    for sign in (-1, 1):
+        diagonal_a = a[:, :, 0] + sign * a[:, :, 1]
+        diagonal_b = b[:, :, 0] + sign * b[:, :, 1]
+        compatible &= np.linalg.norm(diagonal_a - diagonal_b, axis=1) <= (
+            (percent / 100 + 1e-12)
+            * (np.linalg.norm(diagonal_a, axis=1) + np.linalg.norm(diagonal_b, axis=1))
+            + 3e-8
+        )
+    m1, m2, a, b = m1[compatible], m2[compatible], a[compatible], b[compatible]
+    if not len(a):
+        return os.getpid(), []
     # Frobenius-orthonormal [Sxx,Syy,sqrt(2)Sxy] coordinates per grain.
     c = np.zeros((len(a), 4, 6))
     for col in (0, 1):

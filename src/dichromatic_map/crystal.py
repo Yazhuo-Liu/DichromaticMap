@@ -368,16 +368,19 @@ def projected_columns(
             raise GeometryLimitError(
                 f"View requires over {MAX_PROJECTED_COLUMNS:,} candidate columns per grain. Zoom in or reduce --width/--height."
             )
-        i, j = np.meshgrid(
-            np.arange(minima[0], maxima[0] + 1),
-            np.arange(minima[1], maxima[1] + 1),
-            indexing="xy",
-        )
-        coordinates = np.column_stack((i.ravel(), j.ravel()))
+        # Fill the final coordinate array directly, preserving meshgrid's
+        # row-major order without allocating two intermediate dense meshes.
+        nx, ny = maxima - minima + 1
+        grid = np.empty((ny, nx, 2), dtype=int)
+        grid[:, :, 0] = np.arange(minima[0], maxima[0] + 1)
+        grid[:, :, 1] = np.arange(minima[1], maxima[1] + 1)[:, None]
+        coordinates = grid.reshape(-1, 2)
         positions = coordinates @ screen_basis.T + screen_offset
-        keep = np.all(
-            (positions >= low - crop_epsilon) & (positions <= high + crop_epsilon),
-            axis=1,
+        keep = (
+            (positions[:, 0] >= low[0] - crop_epsilon)
+            & (positions[:, 0] <= high[0] + crop_epsilon)
+            & (positions[:, 1] >= low[1] - crop_epsilon)
+            & (positions[:, 1] <= high[1] + crop_epsilon)
         )
         coordinates = coordinates[keep]
         all_positions.append(positions[keep])

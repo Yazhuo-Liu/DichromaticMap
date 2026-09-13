@@ -1,34 +1,28 @@
 # DichromaticMap 使用手册
 
-[English](../en/README.md) · [开发与维护](development.md) · [项目首页](../../README.md)
+[English](../en/README.md) · [项目首页](../../README.md)
 
 独立的 FCC/BCC tilt-GB 双色图 Qt 查看器，不依赖 GBClaw。
-实现位于 `src/dichromatic_map/`，数值计算可以独立于 Qt 使用。
-根目录只保留 `main.py` 作为源码启动入口，旧的三个兼容模块已移除。
-`legacy/` 中的 Matplotlib 实现仅保留作历史参考和回归对照，不再增加功能。
+数值计算可以独立于 Qt 使用。
 
 ## 启动
 
-需要 Python 3.10+、NumPy、PySide6、PyQtGraph。
-当前开发机器的 NumPy、PySide6、PyQtGraph 位于 conda base 环境：
+需要 Python 3.10+。先激活你要使用的 conda 环境，再在项目根目录安装 GUI 依赖并启动：
 
 ```bash
-conda activate base
+python -m pip install numpy PySide6 pyqtgraph
 python main.py --workers 4
 python main.py --lattice BCC --axis 100
 python main.py --axis "1 -1 3"
 python main.py --help
 ```
 
-上述命令在项目根目录执行，只要依赖已安装就可以运行，不需要安装本项目，也不需要 build。
-若当前 conda 环境缺少 GUI 依赖，可运行 `python -m pip install numpy PySide6 pyqtgraph`。
-不要默认其他 conda 环境也有 GUI 依赖；应先激活实际使用的环境。
+依赖安装后可直接从源码目录运行，无需安装本项目，也无需 C 编译器或编译步骤。
 
-需要从其他项目导入计算模块时，在项目根目录执行 `python -m pip install -e .`；
-若同时需要 GUI，可以安装 `python -m pip install -e ".[gui]"`。
-安装后也可以使用 `python -m dichromatic_map` 或 `dichromatic-map`，无需改 `sys.path`。
-数值计算只依赖 NumPy；`python main.py --help` 不会加载 Qt。
-更多内容见[开发与维护](development.md)。
+需要在源码目录以外使用时，在项目根目录执行 `python -m pip install ".[gui]"`。
+安装后也可以使用 `python -m dichromatic_map` 或 `dichromatic-map` 启动。
+如果只需导入数值计算模块，执行 `python -m pip install .` 即可，核心只依赖 NumPy，
+不会安装 GUI 依赖。`python main.py --help` 不会加载 Qt。
 
 坐标、尺寸和局部匹配距离均以 a₀ 为单位。支持 FCC/BCC、预定义
 ⟨100⟩/⟨110⟩/⟨111⟩/⟨112⟩ 及自定义整数轴，层数与轴向周期自动计算。
@@ -77,7 +71,7 @@ GUI 中的 `Export plot as PNG…` 导出当前状态，包含显示旋转和标
   实际空间向量本身是唯一的，不同的是它在两个晶粒中的坐标，而不是两根不同的物理箭头。
 - `G1/G2 current (polar)` 是当前实际位移在各晶粒正交立方参考框架中的分量，
   单位为原始晶格常数 a₀；框架通过极分解跟随该晶粒的刚体旋转。
-  **该读数包含应变对方向与长度的影响**，不再只输出旧原子索引。
+  **该读数包含应变对方向与长度的影响**。
 - 有应变时，另列 `G1/G2 lattice [uvw]`：同一实际向量在各自**变形后的常规晶格基矢**中的系数。
   对同晶粒同一对原子，这些系数可以保持不变，这是随晶格变形的索引定义，不能与上面的实际分量混为一谈。
   这里表示直接晶格方向 `[uvw]`，不是晶面法向的倒易指标 `(hkl)`。
@@ -116,7 +110,7 @@ G1/G2 各自的轴向层，带对应颜色与形状的图标，每个晶粒的�
    第一顶点确定层，后续必须同层、同符号（如全圆形或全菱形）。点击不同层会在面板中提示并拒绝，
    不会改选附近的同层点；隐藏点不可选。两晶粒各自的四点均须构成不自交、非退化的凸四边形。
 3. 第四点选定后自动闭合，蓝/红轮廓分别连接 G1/G2 的实际原子顶点。
-   图右下角显示所选层的 G1/G2 计数，面板列出两晶粒的详细统计；标注不再放在胞中央。
+   图右下角显示所选层的 G1/G2 计数，面板列出两晶粒的详细统计。
    `Undo vertex` 撤销最后一点，`Clear` 清除，`Fit` 缩放到手动胞；Esc 暂停选择。
 
 计数约定：
@@ -147,7 +141,7 @@ G1/G2 各自的轴向层，带对应颜色与形状的图标，每个晶粒的�
 
 在 Local matching 中选好四个同层顶点后，`Apply bulk strain to selected cell`
 才可用（至少包含一个紫色 near-pair，允许混选该层的精确 CSL 顶点）。这一步需要再次点击，
-不会随着选胞自动改变原子。它与原有的自动 `Homogeneous strain + periodic cell` 搜索独立。
+不会随着选胞自动改变原子。它与自动 `Homogeneous strain + periodic cell` 搜索独立。
 
 - 两晶粒各自使用四个真实原子，以胞中心为参考，求最小化
   `||F1 − I||²_F + ||F2 − I||²_F` 的均匀变换；整个晶粒应用同一组变换，不逐个吸附原子。
@@ -199,7 +193,7 @@ PNG 导出包含当前旋转和手动胞标注。
   同层且互为最近邻的两原子，在可调距离阈值内配对，默认 `0.05 a₀`。
   紫色中点是候选对齐位置，形状与配对原子所属层一致（圆形、菱形等）；紫色连线连接原始原子，金色仅表示精确 CSL。
   本方法不实际移动原子、不求整体应变、不推断周期晶胞，也不是 stress-free 弛豫计算。
-- `Homogeneous strain + periodic cell`：保留均匀应变方法，对两晶粒求对称正定的面内变形，
+- `Homogeneous strain + periodic cell`：对两晶粒求对称正定的面内变形，
   不增加额外刚体旋转，寻找共同周期胞。默认主应变上限 2%、整数搜索上限 ±12。
   下拉框给出胞大小与应变的折中解；这不是弹性能最小化或全局最优证明。
 
@@ -208,23 +202,13 @@ PNG 导出包含当前旋转和手动胞标注。
 交互资源限制：约分后的轴指标绝对值不超过 64、最多 256 层，每个晶粒最多枚举
 250,000 个候选列。手动选区过大时不报告部分计数，应选更小的胞。
 
-## 测试与常见问题
+## 常见问题
 
-```bash
-PYTHONDONTWRITEBYTECODE=1 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python -m unittest discover -s test -v
-```
-
-测试使用无窗口 Qt 后端，覆盖独立三维晶格枚举、精确/均匀应变 CSL、局部匹配、
-多进程取消、隐藏点选择、手动胞边界计数、超出视野的完整计数与旋转后的交互。
-还覆盖所选胞四角的均匀变形兼容性、旋转/应变分离、非 A 层和平移参考、全点阵 CSL 重算与恢复。
-向量测试覆盖双晶粒坐标、当前/变形基矢分量、两侧不同应变与平移、跨层高度以及旋转后的图上标注。
-包结构测试覆盖无 GUI 导入、根入口独立启动与导出、独立状态、组件组合及 spawn worker。
-旧 Matplotlib 兼容测试另需要 Matplotlib；Qt 主程序不需要它。
-
-出现 `No module named PySide6` 或 `pyqtgraph` 时，确认当前 conda 环境与安装依赖的环境相同。
-直接导入 `dichromatic_map` 失败时，先做开发安装，或通过根目录 `main.py` 启动。
-无显示服务器时用上面的 offscreen 导出命令；进程启动受限时可以使用 `--workers 1`。
-大视野或高指数晶轴被拒绝时应缩小选区/视野或使用低指数晶轴，不把部分结果当成完整计数。
-
-`build/`、`__pycache__/` 与运行所需的源码不是一回事；用途和清理注意事项见
-[开发与维护](development.md)。本手册本身是 Markdown，不需要编译成 HTML 才能阅读。
+- **缺少 PySide6 或 PyQtGraph：** 激活安装了 GUI 依赖的 conda 环境，或在当前环境执行
+  `python -m pip install numpy PySide6 pyqtgraph`。
+- **无法导入 `dichromatic_map`：** 在项目根目录使用 `python main.py`，或执行
+  `python -m pip install ".[gui]"` 后从其他目录使用。
+- **没有显示服务器：** 使用上面的 offscreen PNG 导出命令。
+- **进程启动受限：** 启动时添加 `--workers 1`。
+- **视野、晶轴或选区超过资源限制：** 缩小视野或选区，或使用低指数晶轴。
+  手动胞计数覆盖完整选区；局部视野中的原子数不能代替完整计数。

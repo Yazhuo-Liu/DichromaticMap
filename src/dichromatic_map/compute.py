@@ -104,7 +104,7 @@ class NearSearch:
         self.generation = 0
         self.jobs = deque()
         self.running = {}
-        self.parts = []
+        self.parts = {}
         self.total = self.completed = 0
         self.busy = False
         self.error = None
@@ -142,7 +142,7 @@ class NearSearch:
             for future in list(self.running):
                 if not future.done():
                     continue
-                generation, stage = self.running.pop(future)
+                generation, stage, start = self.running.pop(future)
                 if generation != self.generation:
                     continue
                 result = future.result()
@@ -169,14 +169,20 @@ class NearSearch:
                 else:
                     pid, cells = result
                     self.process_ids.add(pid)
-                    self.parts.extend(cells)
+                    self.parts[start] = cells
                     self.completed += 1
             while self.jobs and len(self.running) < self.workers:
                 stage, function, args = self.jobs.popleft()
                 future = self.executor.submit(function, *args)
-                self.running[future] = (self.generation, stage)
+                self.running[future] = (
+                    self.generation, stage, args[4] if stage == "solve" else -1
+                )
             if self.busy and not self.jobs and not self.running:
-                result = pareto_cells(self.parts)
+                # Equal-area/strain candidates retain serial search order,
+                # independently of which process happens to finish first.
+                result = pareto_cells([
+                    cell for start in sorted(self.parts) for cell in self.parts[start]
+                ])
                 self.parts.clear()
                 self.busy = False
                 return result
