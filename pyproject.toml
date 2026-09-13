@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dichromatic-map"
-version = "0.1.1"
+version = "0.1.2"
 description = "Layer-resolved cubic tilt grain-boundary dichromatic patterns"
 readme = "README.md"
 license = "MIT"
