@@ -4,13 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dichromatic-map"
-version = "0.1.0"
+version = "0.1.1"
 description = "Layer-resolved cubic tilt grain-boundary dichromatic patterns"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["numpy"]
+
+[project.urls]
+Homepage = "https://github.com/Yazhuo-Liu/DichromaticMap"
+Documentation = "https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md"
+Source = "https://github.com/Yazhuo-Liu/DichromaticMap"
+Issues = "https://github.com/Yazhuo-Liu/DichromaticMap/issues"
 
 [project.optional-dependencies]
 gui = ["PySide6", "pyqtgraph"]

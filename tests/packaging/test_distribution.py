@@ -216,8 +216,18 @@ def test_documentation_links_and_python_examples(document):
     for target in re.findall(r"!?\[[^\]\n]*\]\(([^)\n]+)\)", content):
         link = urlsplit(target)
         if link.scheme or link.netloc:
-            continue
-        destination = path.parent / unquote(link.path) if link.path else path
+            # The PyPI README uses absolute repository URLs. Validate their
+            # current-branch targets locally without fetching external pages.
+            prefixes = {
+                "github.com": "/Yazhuo-Liu/DichromaticMap/blob/main/",
+                "raw.githubusercontent.com": "/Yazhuo-Liu/DichromaticMap/main/",
+            }
+            prefix = prefixes.get(link.netloc.lower())
+            if link.scheme not in {"http", "https"} or not prefix or not link.path.startswith(prefix):
+                continue
+            destination = ROOT / unquote(link.path[len(prefix):])
+        else:
+            destination = path.parent / unquote(link.path) if link.path else path
         assert destination.exists(), f"Broken link: {document}: {target}"
         if link.fragment and destination.suffix == ".md":
             assert unquote(link.fragment) in document_anchors(destination.read_text(encoding="utf-8")), (

@@ -1,6 +1,6 @@
 # DichromaticMap
 
-[English user guide](docs/en/README.md) · [中文使用手册](docs/zh/README.md)
+[English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
 
 DichromaticMap provides a Python library and an interactive viewer for
 layer-resolved FCC/BCC tilt grain-boundary dichromatic patterns. Use it to
@@ -30,16 +30,16 @@ periodicity.
 
 ## Install and launch
 
-Requires Python 3.10 or later. Download the project, open its root directory,
-and install the library with its viewer:
+Requires Python 3.10 or later. Install the library and viewer from PyPI:
 
 ```bash
-python -m pip install ".[gui]"
+python -m pip install "dichromatic-map[gui]"
 python -m dichromatic_map
 ```
 
 The viewer uses PySide6 and PyQtGraph. For numerical calculations only, install
-with `python -m pip install .`; the numerical library requires only NumPy.
+with `python -m pip install dichromatic-map`; the numerical library requires
+only NumPy.
 
 ```bash
 python -m dichromatic_map --lattice BCC --axis 100
@@ -48,12 +48,15 @@ python -m dichromatic_map --angle 22 --save pattern.png
 python -m dichromatic_map --help
 ```
 
-`dichromatic-map` is an equivalent launch command. From the project root,
-`python main.py` also launches the viewer.
+`dichromatic-map` is an equivalent launch command.
+
+To install a downloaded source archive or a Git checkout instead, open its root
+directory and run `python -m pip install ".[gui]"`. You can then use the same
+launch commands above; `python main.py` also works from the source directory.
 
 ## GUI quick start
 
-![DichromaticMap viewer with its plot and controls](docs/images/gui-overview.png)
+![DichromaticMap viewer with its plot and controls](https://raw.githubusercontent.com/Yazhuo-Liu/DichromaticMap/main/docs/images/gui-overview.png)
 
 The example above shows FCC ⟨110⟩ at the Σ9 preset. The plot is on the left;
 settings and results are in the scrollable **Controls** panel on the right.
@@ -116,11 +119,11 @@ structure** returns to the original geometry. This operation has a separate
 apply step from the automatic search.
 
 For control-by-control instructions, selection rules, result interpretation
-and troubleshooting, see the [English GUI guide](docs/en/README.md#gui-overview)
-or [中文 GUI 使用指南](docs/zh/README.md#gui-overview). Detailed workflows cover
-[vector measurements](docs/en/README.md#gui-vector),
-[Near-CSL methods](docs/en/README.md#gui-near-csl), and
-[manual cells and counts](docs/en/README.md#gui-manual-cell).
+and troubleshooting, see the [English GUI guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-overview)
+or [中文 GUI 使用指南](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md#gui-overview). Detailed workflows cover
+[vector measurements](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-vector),
+[Near-CSL methods](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-near-csl), and
+[manual cells and counts](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-manual-cell).
 
 ## Python usage
 
@@ -153,17 +156,17 @@ supplied projected columns and preserves their layer labels.
 
 | Topic | English | 中文 |
 | --- | --- | --- |
-| Installation, viewer workflows and Python API | [User guide](docs/en/README.md) | [使用手册](docs/zh/README.md) |
-| Algorithms, numerical conventions and implementation | [Implementation details](docs/en/development.md) | [开发细节](docs/zh/development.md) |
+| Installation, viewer workflows and Python API | [User guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) | [使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md) |
+| Algorithms, numerical conventions and implementation | [Implementation details](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/development.md) | [开发细节](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/development.md) |
 
 ## Contributing and support
 
 Report problems through [GitHub Issues](https://github.com/Yazhuo-Liu/DichromaticMap/issues)
 or [yliu3500@gatech.edu](mailto:yliu3500@gatech.edu). Contributions can be
-submitted as a pull request or by email; see the [contribution guide](CONTRIBUTING.md).
+submitted as a pull request or by email; see the [contribution guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/CONTRIBUTING.md).
 This project is developed by volunteers and does not currently accept external
 donations.
 
 ## License
 
-DichromaticMap is distributed under the [MIT License](LICENSE).
+DichromaticMap is distributed under the [MIT License](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/LICENSE).
