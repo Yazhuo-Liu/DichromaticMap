@@ -43,6 +43,7 @@ class PatternPlot:
 
     def __init__(self, owner: DichromaticPatternWindow):
         self.owner = owner
+        self._laying_out_title = False
         self._marker_diameter = None
         self._local_overlay_pairs = None
         self._local_overlay_key = None
@@ -178,6 +179,48 @@ class PatternPlot:
             self.owner._on_scene_mouse_click
         )
         self.view_box.sigRangeChanged.connect(self.owner._on_view_range_changed)
+        self.plot_widget.sigDeviceRangeChanged.connect(self._layout_title)
+        self.view_box.sigResized.connect(self._layout_title)
+
+    def _set_title(self, text):
+        self.plot_item.setTitle(text)
+        self._layout_title()
+
+    def _layout_title(self, *_args):
+        title = self.plot_item.titleLabel
+        if self._laying_out_title or not title.isVisible():
+            return
+        self._laying_out_title = True
+        try:
+            # LabelItem otherwise makes the entire plot at least as wide as
+            # its unwrapped title. Measure the actual viewport, since the
+            # title and ViewBox may already have grown beyond that viewport.
+            layout = self.plot_item.layout
+            left, _top, right, _bottom = layout.getContentsMargins()
+            width = max(
+                1.0,
+                self.plot_widget.viewport().width() - left - right
+                - self.plot_item.getAxis("left").width()
+                - self.plot_item.getAxis("right").width()
+                - 2 * layout.horizontalSpacing(),
+            )
+            document = title.item.document()
+            option = document.defaultTextOption()
+            option.setWrapMode(QtGui.QTextOption.WrapAtWordBoundaryOrAnywhere)
+            option.setAlignment(QtCore.Qt.AlignHCenter)
+            document.setDefaultTextOption(option)
+            title.item.setTextWidth(width)
+            height = max(30.0, float(np.ceil(title.item.boundingRect().height())))
+            title.setMaximumHeight(height)
+            layout.setRowFixedHeight(0, height)
+            title.updateMin()
+            # Reducing the title's minimum width alone does not shrink an
+            # already enlarged central item until GraphicsView is resized.
+            self.plot_item.setGeometry(self.plot_widget.sceneRect())
+            layout.activate()
+            title.resizeEvent(None)
+        finally:
+            self._laying_out_title = False
 
     def _create_layer_items(self):
         # Newly created items need sizing even if the view scale is unchanged.

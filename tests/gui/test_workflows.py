@@ -226,6 +226,52 @@ def test_exact_manual_count_navigation_filters_and_editing(gui):
     assert not plot.manual_annotation.isVisible()
 
 
+@pytest.mark.parametrize("font_stretch", [100, 200])
+def test_long_title_keeps_plot_inside_viewport_when_resizing(gui, font_stretch):
+    window = gui.window(lattice="BCC", axis="100")
+    controls, plot = window.controls, window.plot
+    title_font = plot.plot_item.titleLabel.item.font()
+    title_font.setStretch(font_stretch)
+    plot.plot_item.titleLabel.item.setFont(title_font)
+    controls.rotation_spin.setValue(37)
+    controls.near_section.toggle.setChecked(True)
+    controls.near_button.click()
+    gui.select_layer(window, 0)
+    gui.settle(window)
+
+    for width in (1040, 1380, 1040):
+        window.resize(width, 860)
+        gui.settle(window)
+        controls.cell_fit_button.click()
+        gui.settle(window)
+        viewport = plot.plot_widget.viewport().rect().adjusted(-1, -1, 1, 1)
+        plot_bounds = plot.plot_widget.mapFromScene(
+            plot.view_box.sceneBoundingRect()
+        ).boundingRect()
+        assert viewport.contains(plot_bounds), (viewport, plot_bounds)
+        title = plot.plot_item.titleLabel
+        title_bounds = plot.plot_widget.mapFromScene(
+            title.item.sceneBoundingRect()
+        ).boundingRect()
+        assert viewport.contains(title_bounds), (viewport, title_bounds)
+        assert title.boundingRect().adjusted(-1, -1, 1, 1).contains(
+            title.item.mapRectToParent(title.item.boundingRect())
+        )
+        assert "LOCAL near-CSL" in title.item.toPlainText()
+        assert "display rotation 37.0" in title.item.toPlainText()
+        controls.pick_gb_button.click()
+        gui.click_plot(window, [0, 0])
+        np.testing.assert_allclose(window.state.selected_points, [[0, 0]], atol=1e-12)
+
+    expanded_height = title.height()
+    controls.near_button.click()
+    controls.rotation_spin.setValue(0)
+    gui.settle(window)
+    assert "LOCAL near-CSL" not in title.item.toPlainText()
+    assert "display rotation" not in title.item.toPlainText()
+    assert title.height() <= expanded_height
+
+
 def test_plot_picking_waits_for_queued_view_navigation(gui):
     window = gui.window(lattice="BCC", axis="100", angle_deg=0)
     gui.select_layer(window, 0)

@@ -1750,14 +1750,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if self.state.display_rotation_deg:
             suffix += f" · display rotation {self.state.display_rotation_deg:.1f}°"
         angle_label = "reference θ" if self.state.manual_strain_fit is not None else "θ"
-        self.plot.plot_item.setTitle(
+        self.plot._set_title(
             f"<span style='font-size:15px;color:#17212b'>"
             f"{self.state.geometry.lattice} ⟨{self.state.geometry.axis}⟩ tilt dichromatic pattern · {angle_label} = {self.state.angle_deg:.2f}°"
             f"{suffix}</span>"
         )
-        if self.state.manual_strain_fit is not None:
-            self.plot.plot_item.titleLabel.setMaximumHeight(48)
-            self.plot.plot_item.layout.setRowFixedHeight(0, 48)
         prefix = "Reference" if self.state.manual_strain_fit is not None else "Exact"
         exact = f"{prefix} θ = {self.state.angle_deg:.8f}°"
         if preset is not None:
