@@ -1,0 +1,5 @@
+include main.py
+include CONTRIBUTING.md
+include scripts/run_tests.py
+recursive-include tests *.py
+recursive-include docs *.md *.png

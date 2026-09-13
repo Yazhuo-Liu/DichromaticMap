@@ -14,6 +14,7 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 gui = ["PySide6", "pyqtgraph"]
+test = ["pytest>=8", "build>=1.2", "setuptools>=77.0.3", "wheel", "packaging>=22"]
 
 [project.scripts]
 dichromatic-map = "dichromatic_map.__main__:main"
@@ -23,3 +24,13 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "dichromatic_map.ui" = ["resources/*.qss", "resources/icons/*.svg"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--strict-config --strict-markers -ra -p no:cacheprovider"
+markers = [
+    "gui: offscreen Qt interaction and rendering tests (requires the gui extra)",
+    "packaging: build and verify source and wheel distributions",
+]

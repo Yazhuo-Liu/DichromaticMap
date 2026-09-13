@@ -156,6 +156,14 @@ supplied projected columns and preserves their layer labels.
 | Installation, viewer workflows and Python API | [User guide](docs/en/README.md) | [使用手册](docs/zh/README.md) |
 | Algorithms, numerical conventions and implementation | [Implementation details](docs/en/development.md) | [开发细节](docs/zh/development.md) |
 
+## Contributing and support
+
+Report problems through [GitHub Issues](https://github.com/Yazhuo-Liu/DichromaticMap/issues)
+or [yliu3500@gatech.edu](mailto:yliu3500@gatech.edu). Contributions can be
+submitted as a pull request or by email; see the [contribution guide](CONTRIBUTING.md).
+This project is developed by volunteers and does not currently accept external
+donations.
+
 ## License
 
 DichromaticMap is distributed under the [MIT License](LICENSE).
