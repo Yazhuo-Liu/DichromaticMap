@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from dataclasses import replace
 import numpy as np
-from PySide6 import QtCore, QtGui, QtWidgets
+from ._qt import QtCore, QtGui, QtWidgets
 from . import LAYER_SYMBOLS
 from ..crystal import (
     get_geometry,

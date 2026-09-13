@@ -8,8 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 import numpy as np
-import pyqtgraph as pg
-from PySide6 import QtCore, QtGui, QtWidgets
+from ._qt import QtCore, QtGui, QtWidgets, pg
 from . import (
     GRAIN_1_COLOR,
     GRAIN_1_EDGE,
