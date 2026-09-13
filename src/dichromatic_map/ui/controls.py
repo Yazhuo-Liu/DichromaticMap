@@ -10,8 +10,7 @@ import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-import pyqtgraph as pg
-from PySide6 import QtCore, QtGui, QtWidgets
+from ._qt import QtCore, QtGui, QtWidgets, pg
 from . import (
     GRAIN_1_COLOR,
     GRAIN_1_EDGE,
