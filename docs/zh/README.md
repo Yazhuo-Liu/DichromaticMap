@@ -2,7 +2,7 @@
 
 [English](../en/README.md) · [项目首页](../../README.md) · [开发细节](development.md)
 
-DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 FCC/BCC 倾转晶界双色图。
+DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FCC/BCC 倾转晶界双色图。
 它按轴向层显示两个晶粒，支持精确重合点、局部近邻配对、晶体向量测量、原子计数、
 均匀应变共同胞搜索和 PNG 导出。
 
@@ -24,6 +24,7 @@ python -m dichromatic_map
 `dichromatic-map` 是等效的查看器启动命令；在项目根目录也可使用 `python main.py` 启动。
 
 ```bash
+python -m dichromatic_map --lattice SC --axis 100
 python -m dichromatic_map --lattice BCC --axis 100
 python -m dichromatic_map --axis "1 -1 3" --workers 4
 python -m dichromatic_map --help
@@ -32,14 +33,21 @@ python -m dichromatic_map --help
 图中坐标、视野尺寸和匹配距离均以参考晶格常数 a₀ 为单位，坐标 1 表示一个晶格常数。
 晶格常数设置给出 a₀ 的 Å 数值，不会改变归一化的图中坐标。
 
-支持 FCC/BCC、预定义 ⟨100⟩、⟨110⟩、⟨111⟩、⟨112⟩ 晶轴及自定义整数晶轴。
-每种几何对应各自的轴向层数和重复周期。
+支持三种立方 Bravais 晶格：简单立方 `SC`、面心立方 `FCC`（默认）和体心立方 `BCC`，
+以及预定义 ⟨100⟩、⟨110⟩、⟨111⟩、⟨112⟩ 晶轴和自定义整数晶轴。
+每种几何对应各自的轴向层数和重复周期。这里表示每个原胞含一个原子的点阵，
+不包含金刚石等带额外多原子基元的晶体结构。
+
+对于约分后的 SC 晶轴 [h k l]，一个轴向周期包含 h²+k²+l² 层，
+周期长度为 a₀√(h²+k²+l²)，层间距为 a₀/√(h²+k²+l²)。
+因此 SC [100]、[110]、[111]、[112] 分别有 1、2、3、6 层，SC [100] 只显示 A 层。
+三种晶格采用相同的逐层匹配、胞计数和应变操作规则。
 
 ### 命令行参数
 
 | 参数 | 含义与默认值 |
 | --- | --- |
-| `--lattice` | `FCC`（默认）或 `BCC` |
+| `--lattice` | `FCC`（默认）、`BCC` 或 `SC` |
 | `--axis` | 整数晶轴，默认 `110`；负数或多位数指标用引号和空格分隔，例如 `"1 -1 3"` |
 | `--angle` | 参考错取向角，范围 0–90°；未指定时 `110` 选 Σ9、`100` 选 Σ5，其他轴选最低 Σ 预设，无预设则为 0° |
 | `--lattice-constant` | 参考晶格常数 a₀，单位 Å，默认 3.52 |
@@ -119,7 +127,7 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 
 在 `ORIENTATION` 页签中操作：
 
-1. 在 `CRYSTAL / AXIS` 的 `Structure` 选择 `FCC` 或 `BCC`，选择后立即更新。
+1. 在 `CRYSTAL / AXIS` 的 `Structure` 选择 `FCC`、`BCC` 或 `SC`，选择后立即更新。
 2. 在 `Tilt / viewing axis` 选择预定义晶轴；如需自定义，选 `Custom [h k l]`，
    输入 `1 -1 3` 这样的 3 个整数，点击 `Apply axis` 或在输入框按 Enter。
    负数或多位数指标用空格分隔；无效输入会在该区域显示原因，当前晶体保持不变。
@@ -426,6 +434,23 @@ print("G1/G2 layer-0 half-open counts:", counts.half_open[:, 0])
 
 这里的正方形只是计数区域，不表示已经证明晶体周期性。
 匹配使用传入的投影原子柱；计数覆盖完整多边形，与前面生成的观察矩形无关。
+
+简单立方示例：未旋转的 SC [100] 晶格中，边长为 2 a₀ 的正方形按半开约定
+每晶粒包含 4 个原子；若把全部边界原子也计入，则每晶粒有 9 个：
+
+```python
+import numpy as np
+from dichromatic_map import get_geometry, count_cell_atoms
+
+geometry = get_geometry("SC", "100")
+vertices = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+counts = count_cell_atoms(
+    vertices, 0, (np.eye(2), np.eye(2)), lattice="SC", axis="100", layer=0
+)
+print(geometry.layer_count)                         # 1
+print(counts.half_open[:, 0])                       # [4 4]
+print((counts.interior + counts.boundary)[:, 0])     # [9 9]
+```
 
 ### API 说明
 

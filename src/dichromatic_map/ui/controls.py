@@ -17,7 +17,7 @@ from . import (
     GRAIN_2_COLOR,
     LAYER_SYMBOLS,
 )
-from ..crystal import layer_name
+from ..crystal import SUPPORTED_LATTICES, layer_name
 from ..state import VIEW_SCALE_MIN, VIEW_SCALE_MAX, VIEW_SCALE_STOPS
 from ..strain import DEFAULT_STRAIN_PERCENT, DEFAULT_SEARCH_INDEX
 from ..matching import DEFAULT_LOCAL_DISTANCE
@@ -246,7 +246,7 @@ class ControlDock:
         crystal_box = QtWidgets.QGroupBox("CRYSTAL / AXIS")
         crystal_layout = QtWidgets.QFormLayout(crystal_box)
         self.structure_combo = QtWidgets.QComboBox()
-        for lattice in ("FCC", "BCC"):
+        for lattice in SUPPORTED_LATTICES:
             self.structure_combo.addItem(lattice, lattice)
         self.structure_combo.setCurrentIndex(
             self.structure_combo.findData(self.owner.state.geometry.lattice)

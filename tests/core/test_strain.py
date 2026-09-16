@@ -6,7 +6,8 @@ from dichromatic_map import cells as cell_ops, crystal, matching, strain as stra
 import math
 from .helpers import rotation, solve, fcc22_diamond_pairs
 
-MODELS = (("FCC", "100"), ("FCC", "110"), ("BCC", "100"), ("BCC", "110"))
+MODELS = (("FCC", "100"), ("FCC", "110"), ("BCC", "100"), ("BCC", "110"),
+          ("SC", "100"), ("SC", "110"))
 
 class CrystalPhysicsTests(unittest.TestCase):
     def test_near_cells_and_cubic_strain_tensors_all_models(self):
@@ -77,6 +78,33 @@ class PhysicsTests(unittest.TestCase):
         self.assertEqual(solve("FCC", "110", 13.25, 0.001, 3), [])
 
 class SelectedStrainPhysicsTests(unittest.TestCase):
+    def test_sc_100_shifted_near_sigma5_four_pairs_fit_and_count(self):
+        # Independent square-lattice construction: at cos(theta)=3/5 and
+        # sin(theta)=4/5 these integer edge pairs become a common square.
+        # A slight angle change needs small polar rotations, not large strain.
+        angle = 53.12
+        uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
+        integer_cells = (np.array([[2, 1], [-1, 2]]),
+                         np.array([[2, -1], [1, 2]]))
+        reference_origins = (np.array([3, -2]), np.array([-1, 2]))
+        vertices = np.stack([
+            (uv @ matrix.T + origin) @ rotation(sign * angle / 2).T
+            for matrix, origin, sign in zip(integer_cells, reference_origins, (1, -1))
+        ])
+        fit = strain_ops.strain_selected_cell(
+            vertices, angle, lattice="SC", axis="100", layer=0
+        )
+        self.assertLess(fit.cell.max_strain, 1e-7)
+        self.assertGreater(np.max(np.abs(fit.rotations_deg)), 0.005)
+        self.assertGreater(np.linalg.norm(fit.translations[0] - fit.translations[1]), 1)
+        np.testing.assert_allclose(fit.vertices[0], fit.vertices[1], atol=1e-12)
+        self.assertEqual(fit.cell.atoms, (5, 5))
+        counts = cell_ops.count_cell_atoms(
+            fit.vertices, angle, (fit.cell.f1, fit.cell.f2), "SC", "100",
+            layer=0, translations=fit.translations
+        )
+        np.testing.assert_array_equal(counts.half_open, [[5], [5]])
+
     def test_fcc22_four_pairs_bulk_strain_and_rotation_are_separate(self):
         _, vertices = fcc22_diamond_pairs()
         before = vertices.copy()
@@ -183,7 +211,7 @@ class SelectedStrainPhysicsTests(unittest.TestCase):
 
     def test_exact_identity_all_axes_and_original_pure_strain_method(self):
         uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
-        for lattice in ("FCC", "BCC"):
+        for lattice in ("FCC", "BCC", "SC"):
             for axis in ("100", "110", "111", "112", "1 -1 3"):
                 angle = min(
                     crystal.csl_presets(axis), key=lambda p: (p.sigma, p.angle_deg)
@@ -220,7 +248,9 @@ def test_candidate_prefilters_retain_all_small_range_compatible_vectors():
     second_integers = np.array([(x, y) for x, y in product(
         range(-extent, extent + 1), repeat=2) if x or y])
     for lattice, axis, angle in (("FCC", "110", 22), ("BCC", "100", 37.2),
-                                 ("FCC", "112", 0), ("BCC", "1 -1 3", 21.4)):
+                                 ("FCC", "112", 0), ("BCC", "1 -1 3", 21.4),
+                                 ("SC", "100", 37.2), ("SC", "112", 0),
+                                 ("SC", "1 -1 3", 21.4)):
         first_basis, second_basis = cell_ops.bases(angle, lattice, axis)
         v, w = first_integers @ first_basis.T, second_integers @ second_basis.T
         allowed = np.linalg.norm(v[:, None] - w[None], axis=2) <= (

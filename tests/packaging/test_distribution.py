@@ -161,12 +161,26 @@ def main():
     counts = count_cell_atoms(vertices, 0, (np.eye(2), np.eye(2)), 'BCC', '100', layer=0)
     np.testing.assert_array_equal(counts.half_open, [[4, 0], [4, 0]])
     np.testing.assert_array_equal(counts.interior + counts.boundary, [[9, 0], [9, 0]])
+    assert get_geometry('SC', '100').layer_count == 1
+    sc_grain = projected_columns(4, 3, 0, lattice='SC', axis='100')
+    assert len(sc_grain.positions) > 0
+    np.testing.assert_array_equal(sc_grain.layers, np.zeros(len(sc_grain.positions), dtype=int))
+    np.testing.assert_allclose(sc_grain.positions, np.rint(sc_grain.positions), atol=1e-12)
+    sc_counts = count_cell_atoms(vertices, 0, (np.eye(2), np.eye(2)), 'SC', '100', layer=0)
+    np.testing.assert_array_equal(sc_counts.half_open, [[4], [4]])
+    np.testing.assert_array_equal(sc_counts.interior + sc_counts.boundary, [[9], [9]])
     arguments = (4.0, 3.0, 0.0, (0.0, 0.0), None, 'BCC', '100')
     with ProcessPoolExecutor(max_workers=2, mp_context=multiprocessing.get_context('spawn'),
                              initializer=worker_initializer) as executor:
         pid, generated = executor.submit(generate_grain_worker, *arguments).result(30)
         assert pid != os.getpid()
         np.testing.assert_allclose(generated.positions, grain.positions)
+        sc_arguments = (4.0, 3.0, 0.0, (0.0, 0.0), None, 'SC', '100')
+        sc_pid, sc_generated = executor.submit(generate_grain_worker, *sc_arguments).result(30)
+        assert sc_pid != os.getpid()
+        assert sc_generated.layer_count == 1
+        np.testing.assert_allclose(sc_generated.positions, sc_grain.positions)
+        np.testing.assert_array_equal(sc_generated.layers, sc_grain.layers)
         assert Path(executor.submit(worker_origin).result(30)).is_relative_to(target)
     sys.argv = ['dichromatic-map', '--help']
     try:
@@ -192,6 +206,9 @@ if __name__ == '__main__':
     assert entry_point is not None, "pip did not install the console entry point"
     help_result = run([str(entry_point), "--help"], cwd=outside, env=environment)
     assert "--workers" in help_result.stdout and "--save" in help_result.stdout
+    lattice_choices = re.search(r"--lattice \{([^}]+)\}", help_result.stdout)
+    assert lattice_choices is not None, help_result.stdout
+    assert set(lattice_choices.group(1).split(",")) == {"FCC", "BCC", "SC"}
 
 
 def document_anchors(content):

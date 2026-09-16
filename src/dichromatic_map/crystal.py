@@ -11,6 +11,8 @@ from math import gcd, lcm
 import re
 import numpy as np
 
+SUPPORTED_LATTICES = ("FCC", "BCC", "SC")
+
 MAX_LAYERS = 256
 MAX_PROJECTED_COLUMNS = 250_000
 
@@ -140,8 +142,8 @@ def get_geometry(lattice: str = "FCC", axis: str = "110") -> CrystalGeometry:
 
 @lru_cache(maxsize=64)
 def _geometry(lattice: str, axis: str) -> CrystalGeometry:
-    if lattice not in ("FCC", "BCC"):
-        raise ValueError("lattice must be FCC or BCC")
+    if lattice not in SUPPORTED_LATTICES:
+        raise ValueError("lattice must be FCC, BCC or SC")
     direction = np.array(parse_axis(axis), dtype=np.int64)
     axis_norm_squared = int(direction @ direction)
     unit = direction / np.sqrt(axis_norm_squared)
@@ -150,17 +152,16 @@ def _geometry(lattice: str, axis: str) -> CrystalGeometry:
     ex /= np.linalg.norm(ex)
     frame = _readonly(np.column_stack((ex, np.cross(unit, ex), unit)))
     # Primitive cubic Bravais translations in units a0/2.
-    primitive = (
-        np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=np.int64)
-        if lattice == "FCC"
-        else np.array([[2, 0, 1], [0, 2, 1], [0, 0, 1]], dtype=np.int64)
-    )
+    if lattice == "FCC":
+        primitive = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=np.int64)
+        axial_factor = 1 if int(direction.sum()) % 2 == 0 else 2
+    elif lattice == "BCC":
+        primitive = np.array([[2, 0, 1], [0, 2, 1], [0, 0, 1]], dtype=np.int64)
+        axial_factor = 1 if np.all(direction % 2 == direction[0] % 2) else 2
+    else:  # SC sites have three even half-indices.
+        primitive = 2 * np.eye(3, dtype=np.int64)
+        axial_factor = 2
     step, unimodular = plane_integer_basis(direction @ primitive)
-    axial_factor = (
-        (1 if int(direction.sum()) % 2 == 0 else 2)
-        if lattice == "FCC"
-        else (1 if np.all(direction % 2 == direction[0] % 2) else 2)
-    )
     axial = _readonly(direction * axial_factor, int)
     count = axial_factor * axis_norm_squared // step
     if count > MAX_LAYERS:
@@ -433,7 +434,7 @@ def _csl_presets(axis: str) -> tuple[CSLPreset, ...]:
     """Selected cubic CSL rotations; complementary angles remain selectable.
 
     Sigma is the odd part of the primitive integer quaternion norm.  These
-    cubic rotation indices apply to both FCC and BCC; the actual planar common
+    cubic rotation indices apply to FCC, BCC and SC; the actual planar common
     cell is calculated using the selected lattice's own primitive basis.
     """
 

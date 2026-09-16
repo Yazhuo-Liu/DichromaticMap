@@ -51,12 +51,14 @@ It rejects the zero vector and reduced components with absolute value above 64.
 Let `D = d·d`. A transverse unit vector is constructed by crossing a reference direction
 with `d / sqrt(D)`; the second transverse vector completes a right-handed orthonormal frame.
 
-The columns of the primitive translation matrices below are expressed in half-index units:
+SC, FCC and BCC each describe a Bravais point lattice with one atom per primitive
+cell. There is no additional atom-basis or chemical-species array. The columns of
+the primitive translation matrices below are expressed in half-index units (a₀/2):
 
 ```text
-          [0 1 1]             [2 0 1]
-T_FCC =   [1 0 1]    T_BCC =  [0 2 1]
-          [1 1 0]             [0 0 1]
+          [0 1 1]             [2 0 1]             [2 0 0]
+T_FCC =   [1 0 1]    T_BCC =  [0 2 1]    T_SC =   [0 2 0]
+          [1 1 0]             [0 0 1]             [0 0 2]
 ```
 
 For the integer row `r = dᵀ T`, extended Euclidean steps construct a unimodular integer matrix
@@ -69,12 +71,18 @@ The shortest axial lattice translation has half-indices `κ d`, where:
 
 - FCC uses `κ=1` when `h+k+l` is even, otherwise `κ=2`.
 - BCC uses `κ=1` when all three components have the same parity, otherwise `κ=2`.
+- SC uses `κ=2`: all reference half-indices are even, so the physical repeat is `a₀ d`.
 
 The number of phases, axial repeat length and spacing are:
 
 ```text
 L = κ D / g,       H_axial = κ sqrt(D) / 2,       s = g / (2 sqrt(D)).
 ```
+
+For SC, the reduced axis has `gcd(d)=1`, hence `g=gcd(2d)=2`. Therefore
+`L=D`, `H_axial=sqrt(D)` and `s=1/sqrt(D)` in normalized units. The [100], [110],
+[111] and [112] layer counts are 1, 2, 3 and 6. SC uses the same integer-plane
+construction, phase offsets and resource limits as FCC/BCC.
 
 The first column of `T U` generates successive layer offsets. Integer planar translations
 bring each offset back into the planar fundamental parallelogram without changing its axial height.

@@ -3,7 +3,7 @@
 [中文](../zh/README.md) · [Project home](../../README.md) · [Implementation details](development.md)
 
 DichromaticMap includes a numerical Python library and an interactive viewer for
-FCC/BCC tilt grain-boundary dichromatic patterns. It displays two grains by
+SC/FCC/BCC tilt grain-boundary dichromatic patterns. It displays two grains by
 axial layer and supports exact coincidence sites, local near-pair matching,
 vector measurements, atom counting, uniform-strain common cells and PNG export.
 
@@ -30,6 +30,7 @@ PyQtGraph. For numerical use only, install with `python -m pip install .`.
 `python main.py` also launches the viewer.
 
 ```bash
+python -m dichromatic_map --lattice SC --axis 100
 python -m dichromatic_map --lattice BCC --axis 100
 python -m dichromatic_map --axis "1 -1 3" --workers 4
 python -m dichromatic_map --help
@@ -40,14 +41,23 @@ reference lattice constant. A coordinate of 1 means one lattice constant.
 The lattice-constant setting supplies its value in Å without changing the
 normalized plot coordinates.
 
-FCC/BCC and preset ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ axes are supported, as are custom
-integer axes. Each geometry has its own axial layers and repeat distance.
+The three supported cubic Bravais lattices are simple cubic (`SC`), face-centered
+cubic (`FCC`, the default) and body-centered cubic (`BCC`). Preset ⟨100⟩, ⟨110⟩,
+⟨111⟩, ⟨112⟩ axes and custom integer axes are supported. Each geometry has its
+own axial layers and repeat distance. These are point lattices with one atom
+per primitive cell; additional multi-atom bases, such as diamond, are not supported.
+
+For SC along a reduced integer axis [h k l], one axial repeat contains h²+k²+l²
+layers. The repeat length is a₀√(h²+k²+l²), and the layer spacing is
+a₀/√(h²+k²+l²). Thus SC [100], [110], [111] and [112] have 1, 2, 3 and 6 layers,
+respectively. SC [100] shows only layer A. Matching, cell counting and strain
+operations use the same layer rules for all three lattices.
 
 ### Command-line options
 
 | Option | Meaning and default |
 | --- | --- |
-| `--lattice` | `FCC` (default) or `BCC` |
+| `--lattice` | `FCC` (default), `BCC` or `SC` |
 | `--axis` | Integer axis, default `110`; quote separated signed/multi-digit indices, e.g. `"1 -1 3"` |
 | `--angle` | Reference misorientation, 0–90°; default Σ9 for `110`, Σ5 for `100`, lowest-Σ preset for other axes, or 0° if none exists |
 | `--lattice-constant` | Reference a₀ in Å, default 3.52 |
@@ -89,7 +99,7 @@ and export button.
 
 | Area | Use it to |
 | --- | --- |
-| `ORIENTATION` | Choose FCC/BCC, a viewing axis, a CSL preset or a custom angle; rotate the display |
+| `ORIENTATION` | Choose FCC/BCC/SC, a viewing axis, a CSL preset or a custom angle; rotate the display |
 | `LAYERS` | Show individual G1/G2 axial layers and the automatic common cell |
 | `GB / VECTOR` | Pick a GB reference line, clip either grain to its sides, or measure a vector |
 | `VIEW / PERFORMANCE` | Adjust field size and centering in `VIEW`; change `CPU workers` in `PERFORMANCE` |
@@ -137,7 +147,7 @@ so use the layer names as well as the symbols.
 
 ## Setting the crystal and orientation
 
-In `ORIENTATION`, use `CRYSTAL / AXIS` to choose `Structure` (`FCC` or `BCC`)
+In `ORIENTATION`, use `CRYSTAL / AXIS` to choose `Structure` (`FCC`, `BCC` or `SC`)
 and `Tilt / viewing axis` (⟨100⟩, ⟨110⟩, ⟨111⟩ or ⟨112⟩). For another axis,
 choose `Custom [h k l]`, enter three integers such as `1 -1 3`, then click
 `Apply axis` or press Enter. An invalid axis displays a message below the field;
@@ -481,6 +491,24 @@ print("G1/G2 layer-0 half-open counts:", counts.half_open[:, 0])
 The square is a counting region, not a claim of crystal periodicity. Matching
 uses the supplied projected columns; counting covers the complete polygon
 independently of the generated viewing rectangle.
+
+For a simple-cubic example, an unrotated [100] square of side 2 a₀ contains
+four atoms per grain under the half-open convention, or nine when all boundary
+atoms are included:
+
+```python
+import numpy as np
+from dichromatic_map import get_geometry, count_cell_atoms
+
+geometry = get_geometry("SC", "100")
+vertices = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+counts = count_cell_atoms(
+    vertices, 0, (np.eye(2), np.eye(2)), lattice="SC", axis="100", layer=0
+)
+print(geometry.layer_count)                         # 1
+print(counts.half_open[:, 0])                       # [4 4]
+print((counts.interior + counts.boundary)[:, 0])     # [9 9]
+```
 
 ### API reference
 

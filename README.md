@@ -3,14 +3,15 @@
 [English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
 
 DichromaticMap provides a Python library and an interactive viewer for
-layer-resolved FCC/BCC tilt grain-boundary dichromatic patterns. Use it to
+layer-resolved SC/FCC/BCC tilt grain-boundary dichromatic patterns. Use it to
 inspect two overlaid grains, identify coincidence sites, measure crystal
 vectors, count atoms in selected cells and explore common cells under uniform
 strain.
 
 ## Features
 
-- FCC/BCC lattices with ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ and custom integer tilt axes.
+- Simple cubic (SC), face-centered cubic (FCC) and body-centered cubic (BCC)
+  lattices with ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ and custom integer tilt axes.
 - Independent grain/layer visibility, grain-boundary side filtering and
   display rotation.
 - Same-layer exact coincidence-site lattice (CSL) detection and local near-pair
@@ -21,6 +22,10 @@ strain.
   strain fitting.
 - Automatic homogeneous-strain common-cell search and PNG export.
 - NumPy-based numerical functions usable independently of the viewer.
+
+The three choices represent cubic Bravais point lattices with one atom per
+primitive cell. Structures with an additional multi-atom basis, such as diamond,
+are not represented. FCC remains the default.
 
 Coordinates and distances use the reference lattice constant a₀ as their unit.
 Local matching preserves the atom positions. Strain operations impose a
@@ -42,6 +47,7 @@ with `python -m pip install dichromatic-map`; the numerical library requires
 only NumPy.
 
 ```bash
+python -m dichromatic_map --lattice SC --axis 100
 python -m dichromatic_map --lattice BCC --axis 100
 python -m dichromatic_map --axis "1 -1 3" --workers 4
 python -m dichromatic_map --angle 22 --save pattern.png
@@ -65,7 +71,7 @@ and **LAYERS** tabs at the top. Blue markers represent G1, orange outlines
 represent G2, marker shapes distinguish axial layers, and gold outlines mark
 same-layer exact coincidences.
 
-1. **Choose the grains.** In **ORIENTATION**, select **Structure** and
+1. **Choose the grains.** In **ORIENTATION**, select **Structure** (`FCC`, `BCC` or `SC`) and
    **Tilt / viewing axis**, then choose a **CSL preset** or enter a
    **Misorientation**. For a custom axis, choose **Custom [h k l]**, enter an
    integer triple such as `1 -1 3`, and click **Apply axis** or press Enter.

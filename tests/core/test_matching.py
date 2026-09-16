@@ -14,6 +14,27 @@ class LocalMatchingTests(unittest.TestCase):
             points, np.asarray(layers), np.zeros((len(points), 3), dtype=int)
         )
 
+    def test_sc_100_exact_and_near_sites_have_one_layer(self):
+        first = crystal.projected_columns(2, 2, 0, lattice="SC", axis="100")
+        sites = matching.same_layer_coincidence_sites(first, first, 1e-6)
+        self.assertEqual(len(sites), 1)
+        np.testing.assert_array_equal(sites[0], first.positions)
+        self.assertEqual(len(matching.local_near_pairs(first, first).layers), 0)
+
+        # A uniform small shift gives nine distinct, known nearest pairs.
+        shift = np.array([0.02, -0.01])
+        second = crystal.projected_columns(
+            2, 2, 0, center=shift, lattice="SC", axis="100", translation=shift
+        )
+        pairs = matching.local_near_pairs(first, second, 0.05)
+        self.assertEqual(len(pairs.layers), 9)
+        np.testing.assert_array_equal(pairs.layers, np.zeros(9, dtype=int))
+        np.testing.assert_allclose(pairs.second - pairs.first,
+                                   np.tile(shift, (9, 1)), atol=1e-12)
+        self.assertEqual(len(matching.same_layer_coincidence_sites(
+            first, second, 1e-6
+        )[0]), 0)
+
     def test_spatial_search_matches_brute_force_all_bin_occupants(self):
         rng = np.random.default_rng(20260910)
         for radius in (0.01, 0.05, 0.3, 0.5):
@@ -65,7 +86,7 @@ class LocalMatchingTests(unittest.TestCase):
         np.testing.assert_array_equal(translated.second - shift, reference.second)
 
     def test_unstrained_multilayer_crystals_against_brute_force(self):
-        for lattice in ("FCC", "BCC"):
+        for lattice in ("FCC", "BCC", "SC"):
             for axis in ("100", "110", "111", "112", "1 -1 3"):
                 options = dict(lattice=lattice, axis=axis)
                 first = crystal.projected_columns(5, 4, +26.56, **options)

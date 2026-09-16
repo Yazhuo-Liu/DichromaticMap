@@ -6,8 +6,8 @@ from dichromatic_map import cells as cell_ops, crystal, matching, strain as stra
 from itertools import product
 from .helpers import rotation, solve
 
-MODELS = tuple(product(("FCC", "BCC"), ("110", "100")))
-GENERAL_MODELS = tuple(product(("FCC", "BCC"),
+MODELS = tuple(product(("FCC", "BCC", "SC"), ("110", "100")))
+GENERAL_MODELS = tuple(product(("FCC", "BCC", "SC"),
     ("100", "110", "111", "112", "1 -1 3", "2 3 5", "0 0 1")))
 
 class CrystalPhysicsTests(unittest.TestCase):
@@ -21,11 +21,12 @@ class CrystalPhysicsTests(unittest.TestCase):
             geometry = crystal.get_geometry(lattice, axis)
             axial_direction = np.array(crystal.parse_axis(axis))
             # A shortest axial half-index vector must itself be a Bravais site.
-            is_site = (
-                (sum(axial_direction) % 2 == 0)
-                if lattice == "FCC"
-                else np.all(axial_direction % 2 == axial_direction[0] % 2)
-            )
+            if lattice == "FCC":
+                is_site = sum(axial_direction) % 2 == 0
+            elif lattice == "BCC":
+                is_site = np.all(axial_direction % 2 == axial_direction[0] % 2)
+            else:
+                is_site = np.all(axial_direction % 2 == 0)
             repeat = axial_direction * (1 if is_site else 2)
             np.testing.assert_array_equal(geometry.axial_repeat_half_indices, repeat)
             np.testing.assert_allclose(
@@ -35,8 +36,10 @@ class CrystalPhysicsTests(unittest.TestCase):
             parity = indices % 2
             if lattice == "FCC":
                 allowed = indices.sum(axis=1) % 2 == 0
-            else:
+            elif lattice == "BCC":
                 allowed = np.all(parity == parity[:, :1], axis=1)
+            else:
+                allowed = np.all(parity == 0, axis=1)
             axial_integer = indices @ axial_direction
             period_integer = int(repeat @ axial_direction)
             allowed &= (axial_integer >= 0) & (axial_integer < period_integer)
@@ -74,9 +77,9 @@ class CrystalPhysicsTests(unittest.TestCase):
                     )
 
     def test_axis_parsing_computed_layers_and_resource_limits(self):
-        for lattice in ("FCC", "BCC"):
+        for lattice in ("FCC", "BCC", "SC"):
             for axis, count in (
-                ("100", 2),
+                ("100", 1 if lattice == "SC" else 2),
                 ("110", 2),
                 ("111", 3),
                 ("112", 6),
@@ -134,8 +137,10 @@ class CrystalPhysicsTests(unittest.TestCase):
                             sites = offset[:, None] + translation
                             if lattice == "FCC":
                                 self.assertTrue(np.all(sites.sum(axis=0) % 2 == 0))
-                            else:
+                            elif lattice == "BCC":
                                 self.assertTrue(np.all(sites % 2 == sites[:1] % 2))
+                            else:
+                                self.assertTrue(np.all(sites % 2 == 0))
             if axis not in ("111", "112", "1 -1 3"):
                 continue
             angle = 21.4 if axis == "111" else presets[0].angle_deg + 0.4
@@ -173,7 +178,7 @@ class CrystalPhysicsTests(unittest.TestCase):
             correct = same_layer_coincidence_sites(first, first, 1e-6)
             self.assertEqual(list(map(len, correct)), [1] * count)
 
-    def test_exact_cells_presets_preserve_both_phases(self):
+    def test_exact_cells_presets_preserve_all_phases(self):
         for lattice, axis in MODELS:
             options = dict(lattice=lattice, axis=axis)
             for preset in crystal.csl_presets(axis):
@@ -196,7 +201,7 @@ class CrystalPhysicsTests(unittest.TestCase):
                             self.assertLess(
                                 np.min(np.linalg.norm(a_points - point, axis=1)), 1e-8
                             )
-                        for phase in (0, 1):
+                        for phase in range(grain.layer_count):
                             points = grain.positions[grain.layers == phase]
                             anchor = points[np.argmin(np.linalg.norm(points, axis=1))]
                             for translation in cell.cell.T:
@@ -212,7 +217,7 @@ class CrystalPhysicsTests(unittest.TestCase):
 
 
 def test_projected_crop_keeps_edges_and_uniform_translation():
-    for lattice in ("FCC", "BCC"):
+    for lattice in ("FCC", "BCC", "SC"):
         boundary = crystal.projected_columns(2, 2, 0, lattice=lattice, axis="100")
         assert np.any(boundary.positions[:, 0] == -1)
         assert np.any(boundary.positions[:, 0] == 1)
@@ -229,3 +234,42 @@ def test_projected_crop_keeps_edges_and_uniform_translation():
         np.testing.assert_array_equal(translated.layers, reference.layers)
         np.testing.assert_allclose(translated.positions, reference.positions + shift,
             rtol=0, atol=2e-12)
+
+
+def test_sc_axis_repeat_and_known_square_plane():
+    # SC has integer conventional coordinates, so the primitive axial repeat
+    # is the reduced integer direction itself, including mixed-parity axes.
+    for axis, direction in (("100", [1, 0, 0]), ("110", [1, 1, 0]),
+                            ("111", [1, 1, 1]), ("112", [1, 1, 2]),
+                            ("1 -1 3", [1, -1, 3])):
+        geometry = crystal.get_geometry("SC", axis)
+        norm_squared = np.dot(direction, direction)
+        assert geometry.layer_count == norm_squared
+        np.testing.assert_array_equal(geometry.axial_repeat_half_indices,
+                                      2 * np.array(direction))
+        np.testing.assert_allclose(geometry.axial_period, np.sqrt(norm_squared))
+        np.testing.assert_allclose(geometry.layer_spacing, 1 / np.sqrt(norm_squared))
+
+    grain = crystal.projected_columns(2, 2, 0, lattice="SC", axis="100")
+    expected = set(product((-1.0, 0.0, 1.0), repeat=2))
+    assert set(map(tuple, grain.positions)) == expected
+    assert grain.layer_count == 1
+    np.testing.assert_array_equal(grain.layers, np.zeros(9, dtype=int))
+    # [100] analysis x/y are conventional y/z; no body or face centers exist.
+    assert set(map(tuple, grain.half_indices)) == {
+        (0, 2 * int(y), 2 * int(z)) for y, z in expected
+    }
+
+
+def test_sc_100_known_sigma5_and_square_symmetry_cells():
+    for angle, area, atoms in ((0.0, 1, 1),
+                               (np.degrees(2 * np.arctan2(1, 2)), 5, 5),
+                               (90.0, 1, 1)):
+        cell = matching.exact_csl_cell(angle, lattice="SC", axis="100")
+        assert cell is not None
+        np.testing.assert_allclose(abs(np.linalg.det(cell.cell)), area, atol=1e-12)
+        assert cell.atoms == (atoms, atoms)
+        # The actual [100] lattice in each grain is the rotated square Z².
+        for sign in (1, -1):
+            reference = rotation(-sign * angle / 2) @ cell.cell
+            np.testing.assert_allclose(reference, np.rint(reference), atol=1e-12)
