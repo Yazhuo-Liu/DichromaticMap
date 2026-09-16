@@ -171,7 +171,10 @@ def local_near_pairs(
 def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
     """Exact, layer-preserving common cell; no strain search or atom matching.
 
-    Recognize tan(theta/2)/sqrt(axis.axis) = n/m to 1e-9 degrees.
+    Recognize tan(theta/2)/sqrt(axis.axis) = n/m to 1e-9 degrees, with
+    primitive m,n bounded by max_denominator. The raw angle may span [0,180]
+    independently of the viewer's symmetry-reduced range. At 180 degrees use
+    the exact quaternion (0, axis) without evaluating the tangent singularity.
     In the selected A-layer basis, B2^-1 B1 = P/d with integer P.
     Build the rational 3D quaternion rotation and express it in the computed
     planar lattice basis. A general integer-congruence kernel handles axes
@@ -182,11 +185,19 @@ def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
     geometry = get_geometry(lattice, axis)
     lattice, axis = geometry.lattice, geometry.axis
     norm_squared = geometry.axis_norm_squared
-    if not np.isfinite(angle) or not 0 <= angle <= 90:
+    if not np.isfinite(angle) or not 0 <= angle <= 180:
         return None
-    ratio = Fraction(float(np.tan(np.deg2rad(angle / 2)) / np.sqrt(norm_squared)))
-    ratio = ratio.limit_denominator(max_denominator)
-    n, m = ratio.numerator, ratio.denominator
+    if angle == 180:
+        m, n = 0, 1
+    else:
+        ratio = Fraction(float(np.tan(np.deg2rad(angle / 2)) / np.sqrt(norm_squared)))
+        ratio = ratio.limit_denominator(max_denominator)
+        n, m = ratio.numerator, ratio.denominator
+        # Below 90 degrees n <= m already held. Bound both coefficients now
+        # that n/m can grow without limit near a half-turn; an enormous cell
+        # should remain unrecognized rather than overflow its integer basis.
+        if n > max_denominator:
+            return None
     recognized = np.degrees(2 * np.arctan2(np.sqrt(norm_squared) * n, m))
     if abs(recognized - angle) > 1e-9:
         return None

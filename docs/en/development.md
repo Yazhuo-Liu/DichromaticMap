@@ -89,10 +89,49 @@ bring each offset back into the planar fundamental parallelogram without changin
 The implementation rejects geometries requiring more than 256 phases. Geometry arrays are
 read-only and cached by normalized lattice and axis, with up to 64 cached geometries.
 
+### Fixed-axis misorientation range
+
+The reference angle input uses the symmetry of the undeformed cubic lattice.
+SC, FCC and BCC have the same proper cubic point group: the 24 signed permutation
+matrices with determinant +1. For the reduced integer axis `d`, count the matrices
+`S` satisfying `S d = d` exactly. This directed-axis stabilizer has order `n`;
+operations sending `d` to `-d` are not counted as rotations about `d`.
+
+```text
+rotation period = 360° / n
+input interval  = [0°, 180° / n]
+```
+
+The second line also identifies `theta` and `-theta` by exchanging the grains.
+The ⟨100⟩, ⟨110⟩ and ⟨111⟩ families have orders 4, 2 and 3, respectively, so the
+input maxima are 45°, 90° and 60°. All other cubic axes, including ⟨112⟩, have
+order 1 and use 180°. The cubic rotation orders are illustrated in the
+[IUCr teaching pamphlet, *Projections of cubic crystals*](https://www.iucr.org/what-we-do/education/pamphlets/projections-of-cubic-crystals).
+Sign changes, integer rescaling and index permutations are handled through the
+axis parser and symmetry calculation, without relying on menu labels.
+
+This is a reduction within the chosen fixed-axis rotation family, not a global
+cubic disorientation minimization that can change the axis representation.
+Every valid supported cubic axis has a computable order. The general 0–180°
+interval is also the fallback when crystal symmetry information is unavailable.
+The public `misorientation_range(axis="110", lattice="FCC")` helper returns an
+immutable `AngleRange(maximum_deg, period_deg, symmetry_order)`; for an unknown
+lattice it returns `(180.0, None, None)` without claiming a known rotation period.
+Axis validation still applies, and geometry construction still rejects unsupported
+lattices.
+
+The GUI number field, slider, range hint and preset list use the same upper
+bound. Command-line angle validation rejects values outside that bound rather
+than folding them into the interval. The numerical geometry and rotation
+functions continue to use their supplied angles without this UI restriction.
+
 CSL menu presets use integer quaternions `(m, n d)` and
 `theta = 2 atan2(sqrt(D) n, m)`. For primitive quaternions, preset Σ is the odd part of
 `m² + D n²`. The [100]/[110] menus have selected entries; other axes use a bounded low-Σ menu.
-The menu and its display-angle matching tolerance do not establish exact cell commensurability.
+All menus are limited to the corresponding fixed-axis input interval; for example,
+the [100] Σ5 entry is approximately 36.87°, while its complementary 53.13° angle
+is outside the 0–45° interval. The menu and its display-angle matching tolerance
+do not establish exact cell commensurability.
 
 ## 3. Generating a finite projected region
 
@@ -150,9 +189,14 @@ alone does not certify a primitive periodic cell.
 
 ### Rational, layer-preserving common cell
 
-`exact_csl_cell` approximates `tan(theta/2)/sqrt(D)` by a rational `n/m`, with denominator
-at most 128 by default. It accepts the rational only if its reconstructed angle differs by
-at most `1e-9` degrees. An unrecognized angle returns `None`.
+`exact_csl_cell` approximates `tan(theta/2)/sqrt(D)` by a reduced rational `n/m`.
+The `max_denominator` parameter bounds both primitive coefficients `m` and `n`
+(default 128), preventing an arbitrarily large numerator near 180°. It accepts
+the rational only if its reconstructed angle differs by at most `1e-9` degrees.
+An unrecognized angle returns `None`; a mathematically commensurate rotation
+can remain unrecognized when its coefficients exceed the bound. The full 0–180°
+interval is supported: 0° and 180° use exact endpoint quaternions `(1, 0)` and
+`(0, d)`, respectively, without evaluating the singular tangent at 180°.
 
 The quaternion rotation is constructed as an integer numerator and denominator. Projecting
 it into the primitive planar basis gives the rational matrix `B2⁻¹ B1 = A/q`, where
@@ -381,6 +425,32 @@ coordinates for picking. Independent grain/layer masks filter atoms; exact and l
 require the layer to be visible in both grains. Local visibility checks both original endpoints
 against the GB sides, not just the midpoint. A manual cell stores its layer and actual paired
 vertices, keeping its counting geometry independent of later display filters.
+
+The floating grain reference axes use the two transverse unit directions in
+`geometry.frame[:, :2]`, expressed as crystal direction labels `[uvw]`. They are
+perpendicular to the viewing axis and to each other; for [110] they are parallel
+to `[-1 1 0]` and `[0 0 1]`. `in_plane_reference_directions` derives their signed
+integer labels by cross products followed by greatest-common-divisor reduction;
+the labels describe directions, not primitive translation lengths.
+`in_plane_reference_axes` uses the two unit basis vectors as their normalized
+reference-plane components. For grain `g`, the displayed arrow directions are
+
+```text
+v_g,i = R_display R_polar(F_g) R(phi_g) e_i,
+phi_1 = +theta/2,    phi_2 = -theta/2,    i = 1, 2.
+```
+
+Using only the polar rotation of `F_g` keeps both arrows orthogonal. Applying
+`F_g` directly would draw the sheared/stretched lattice directions, which is a
+different quantity from this orientation reference. The overlay is anchored to
+the lower-left viewport with a fixed screen size, independently of the model
+origin and atom positions. Both grain frames share one fixed origin, with blue
+and orange distinguishing them and no G1/G2 headings. The layout reserves space
+for the arrows and `[uvw]` labels independently of the current angle, so rotation
+does not recenter or resize the panel. Pan and zoom preserve its placement and
+size; geometry, reference angle, deformation and display rotation determine the
+arrow directions. `Grain reference axes` controls visibility, and the vector readout
+reserves space above it while visible. Enabled axes are included in plot export.
 
 The plot reuses local-pair scatter data, links, transformed midpoints and distances when only
 the viewport changes. The cache key includes pair-object identity, local-mode state, display

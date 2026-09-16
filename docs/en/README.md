@@ -59,7 +59,7 @@ operations use the same layer rules for all three lattices.
 | --- | --- |
 | `--lattice` | `FCC` (default), `BCC` or `SC` |
 | `--axis` | Integer axis, default `110`; quote separated signed/multi-digit indices, e.g. `"1 -1 3"` |
-| `--angle` | Reference misorientation, 0–90°; default Σ9 for `110`, Σ5 for `100`, lowest-Σ preset for other axes, or 0° if none exists |
+| `--angle` | Reference misorientation in the selected axis range: ⟨100⟩ 0–45°, ⟨110⟩ 0–90°, ⟨111⟩ 0–60°, other cubic axes 0–180°; default Σ9 for `110`, Σ5 for `100`, lowest-Σ preset for other axes, or 0° if none exists |
 | `--lattice-constant` | Reference a₀ in Å, default 3.52 |
 | `--width`, `--height` | Base view dimensions in a₀, default 12 and 9 |
 | `--marker-size` | Atom marker size parameter, default 32 |
@@ -102,7 +102,7 @@ and export button.
 | `ORIENTATION` | Choose FCC/BCC/SC, a viewing axis, a CSL preset or a custom angle; rotate the display |
 | `LAYERS` | Show individual G1/G2 axial layers and the automatic common cell |
 | `GB / VECTOR` | Pick a GB reference line, clip either grain to its sides, or measure a vector |
-| `VIEW / PERFORMANCE` | Adjust field size and centering in `VIEW`; change `CPU workers` in `PERFORMANCE` |
+| `VIEW / PERFORMANCE` | Adjust field size, centering and grain reference axes in `VIEW`; change `CPU workers` in `PERFORMANCE` |
 | `NEAR-CSL` | Enable local near-pair matching or search for a strained periodic cell |
 | `MANUAL COMMON CELL` | Select four common sites, count atoms, and optionally apply selected-cell strain |
 | Status card | Read the next picking instruction, visible atom/CSL counts, and calculation status |
@@ -117,6 +117,7 @@ the complete selected polygons, so the two totals answer different questions.
 | Gold markers | Same-layer exact CSL sites |
 | Purple midpoint markers and short dotted links | Local near pairs and their actual atom endpoints |
 | Teal dashed outline | Automatic common periodic cell, when enabled and available |
+| Blue G1 / orange G2 arrows at the lower left | Perpendicular in-plane grain reference directions, labeled `[uvw]` |
 | B1–B2 and a dark line | Picked GB reference and its left/right sides |
 | P1–P2 and a purple arrow | Measured vector |
 | C1–C4 and blue/red outlines | Manual-cell vertices and the separate G1/G2 polygons |
@@ -155,8 +156,28 @@ the existing geometry remains in use. Separate signed or multi-digit indices
 with spaces; the all-zero axis is invalid.
 
 Choose a `CSL preset` for an exact preset angle, or change `Misorientation`
-with the number field or slider (0–90°). The number field shows two decimal
-places; the `Exact θ` readout below shows the stored angle with more precision.
+with the number field or slider. Their range and the nearby range hint follow
+the selected axis; the preset menu includes only angles within that range:
+
+| Cubic tilt-axis family | Misorientation range | Rotation period about the axis |
+| --- | --- | --- |
+| ⟨100⟩ | 0–45° | 90° |
+| ⟨110⟩ | 0–90° | 180° |
+| ⟨111⟩ | 0–60° | 120° |
+| Other axes, including ⟨112⟩ | 0–180° | 360° |
+
+These ranges apply to SC, FCC and BCC. Custom `[h k l]` indices are reduced
+and evaluated using cubic symmetry, including sign changes and permutations;
+for example, `0 -2 2` uses the ⟨110⟩ range. The upper bound is half the rotation
+period because exchanging the two grains identifies opposite relative rotations.
+This reduction keeps the selected tilt axis fixed; it does not minimize the angle
+over all cubic axis representations. If a crystal symmetry cannot be determined,
+the general range is 0–180°.
+
+The command-line `--angle` option uses the same bounds and rejects out-of-range
+values instead of changing them to a symmetry-equivalent angle. The number field
+shows two decimal places; the `Exact θ` readout below shows the stored angle with
+more precision.
 Use the preset entry to retain its exact angle. Selecting `Custom angle` alone
 does not change the angle; enter the desired value. After moving the slider,
 wait for CSL markers and enabled Near-CSL results before picking sites.
@@ -209,6 +230,22 @@ show more atoms; smaller ones magnify a smaller region. Use the slider or
 current field on the origin while keeping its scale. Use `Fit cell` in `LAYERS`
 for an automatic cell or `Fit` in `MANUAL COMMON CELL` for a selected polygon.
 
+`Grain reference axes` is checked by default in `VIEW`. It shows two perpendicular
+in-plane reference directions for each grain, blue for G1 and orange for G2,
+with crystal direction labels `[uvw]`. For a [110] viewing axis, the labels are
+`[-1 1 0]` and `[0 0 1]`. All four arrows share one fixed origin at the lower left
+of the viewport. Color distinguishes the grains, without G1/G2 headings.
+The origin and panel size stay fixed as the arrows rotate, and panning or zooming
+preserves their screen size and placement. They indicate orientation, not atom
+positions or vector lengths. Uncheck the option to hide them and free that area.
+
+The arrows follow each grain's reference rotation (± half the misorientation)
+and `Display rotation`. With strain applied, they also follow the grain's polar
+rigid rotation and remain perpendicular. They are an orthogonal reference frame,
+not the actual sheared or stretched lattice vectors. Vector measurements report
+actual displacements; their readout is placed above the axes while the overlay
+is visible. PNG export includes the axes when enabled.
+
 In `PERFORMANCE`, `CPU workers` controls calculation processes. Changing it
 refreshes calculations. More workers can help larger views and searches but
 use more CPU resources; choose 1 if process creation is restricted. Navigation
@@ -253,8 +290,8 @@ is checked in that panel.
 In `GB / VECTOR`, click `Measure vector` (`V`), then click a visible atom for
 P1 and a second atom at a distinct projected position for P2. Labels identify
 the chosen grain and layer. You can pan or zoom between picks. The arrow and
-a readout at the lower left of the plot appear after P2; the arrow represents
-P1→P2. A same-grain selection reports that grain's coordinates; a cross-grain selection reports both G1 and
+a readout at the lower left of the plot appear after P2; the readout sits above
+the grain reference axes when they are visible. The arrow represents P1→P2. A same-grain selection reports that grain's coordinates; a cross-grain selection reports both G1 and
 G2 representations of the same physical displacement.
 
 If atoms overlap, use `LAYERS` to hide the unwanted grain or layer before each
@@ -444,7 +481,8 @@ transformation, not a stress-free configuration or an energy relaxation.
    dialog without saving.
 
 The PNG is 1800 pixels wide and contains the plot, title, axes, legend and
-currently displayed annotations, including display rotation. Controls and
+currently displayed annotations, including display rotation and enabled grain
+reference axes. Controls and
 their detailed result boxes are outside the exported plot; copy their text
 separately when needed. PNG is an image export, not a saved interactive session.
 
@@ -517,14 +555,17 @@ These six functions are available directly from `dichromatic_map`:
 | Function | Inputs and results |
 | --- | --- |
 | `get_geometry(lattice="FCC", axis="110")` | Returns the planar basis, axial period, layer count and related crystal geometry |
+| `misorientation_range(axis="110", lattice="FCC")` | Returns an immutable `AngleRange` with `maximum_deg`, `period_deg` and `symmetry_order`; for [110], these are 90°, 180° and 2 |
 | `projected_columns(width, height, rotation_deg, ...)` | Returns `positions` (N×2, in a₀), zero-based `layers` and reference `half_indices` (N×3, in a₀/2); accepts a view center, a 2×2 deformation and a uniform translation |
 | `same_layer_coincidence_sites(grain_1, grain_2, tolerance)` | Returns one N×2 array of coincidence positions per layer; tolerance is in a₀ |
 | `local_near_pairs(grain1, grain2, distance=0.05, ...)` | Returns actual endpoints `first`/`second`, layer labels, `midpoints` and `distances`; excludes exact pairs from the local overlay |
-| `exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110")` | Returns a layer-preserving common translation cell for recognized commensurate angles, otherwise `None`; the cell is primitive within the layer-preserving plane, not necessarily in 3D |
+| `exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110")` | Returns a layer-preserving common translation cell for recognized commensurate angles, otherwise `None`; `max_denominator` bounds both primitive quaternion coefficients `m` and `n`; the cell is primitive within the layer-preserving plane, not necessarily in 3D |
 | `count_cell_atoms(vertices, angle, deformations, ...)` | Accepts a shared 4×2 polygon or two 2×4×2 per-grain polygons, two 2×2 deformations, optional translations and a layer index; returns per-grain/per-layer counts and per-grain areas |
 
 The reference misorientation `angle` is in degrees, with G1/G2 rotated by
-`+angle/2` and `−angle/2`. Projected-column deformations act after the grain
+`+angle/2` and `−angle/2`. The numerical geometry and rotation functions use
+the supplied angle without imposing the viewer’s reduced input range.
+Projected-column deformations act after the grain
 rotation; translations act after deformation. `exact_csl_cell(...).cell`
 contains the two common cell vectors as columns, in a₀.
 

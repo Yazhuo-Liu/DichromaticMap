@@ -377,7 +377,7 @@ class ControlDock:
         angle_row.addWidget(QtWidgets.QLabel("Misorientation"))
         angle_row.addStretch(1)
         self.angle_spin = QtWidgets.QDoubleSpinBox()
-        self.angle_spin.setRange(0.0, 90.0)
+        self.angle_spin.setRange(0.0, self.owner.state.angle_range.maximum_deg)
         self.angle_spin.setDecimals(2)
         self.angle_spin.setSingleStep(0.1)
         self.angle_spin.setSuffix("°")
@@ -387,7 +387,7 @@ class ControlDock:
         orientation_layout.addLayout(angle_row)
 
         self.angle_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.angle_slider.setRange(0, 9000)
+        self.angle_slider.setRange(0, round(self.owner.state.angle_range.maximum_deg * 100))
         self.angle_slider.setSingleStep(1)
         self.angle_slider.setPageStep(100)
         self.angle_slider.setValue(round(self.owner.state.angle_deg * 100.0))
@@ -396,6 +396,9 @@ class ControlDock:
         )
         self.angle_slider.sliderReleased.connect(self.owner._finish_angle_update)
         orientation_layout.addWidget(self.angle_slider)
+        self.angle_range_label = QtWidgets.QLabel()
+        self.angle_range_label.setObjectName("mutedLabel")
+        orientation_layout.addWidget(self.angle_range_label)
         self.angle_exact_label = QtWidgets.QLabel()
         self.angle_exact_label.setObjectName("mutedLabel")
         orientation_layout.addWidget(self.angle_exact_label)
@@ -599,6 +602,14 @@ class ControlDock:
 
         display_layout.removeWidget(self.worker_label)
         display_layout.removeWidget(self.worker_spin)
+        self.reference_axes_check = QtWidgets.QCheckBox("Grain reference axes")
+        self.reference_axes_check.setChecked(self.owner.state.show_reference_axes)
+        self.reference_axes_check.setToolTip(
+            "Show blue G1 and orange G2 crystal directions at the lower left. "
+            "The perpendicular reference axes follow each grain's polar rotation under strain."
+        )
+        self.reference_axes_check.toggled.connect(self.owner._on_reference_axes_toggled)
+        display_layout.addWidget(self.reference_axes_check, 4, 0, 1, 2)
         self.performance_section = CollapsibleSection(
             "PERFORMANCE", QtWidgets.QFormLayout, expanded=False
         )

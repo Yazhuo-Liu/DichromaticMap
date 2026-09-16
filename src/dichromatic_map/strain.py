@@ -52,8 +52,8 @@ def strain_selected_cell(
         validate_cell_vertices(polygon)
     if not np.isfinite(percent) or not 0 < percent <= 10:
         raise ValueError("Strain limit must be in (0,10]%")
-    if not np.isfinite(angle) or not 0 <= angle <= 90:
-        raise ValueError("Reference angle must be in [0,90] degrees")
+    if not np.isfinite(angle) or not 0 <= angle <= 180:
+        raise ValueError("Reference angle must be in [0,180] degrees")
     if not np.isfinite(max_rotation_deg) or not 0 <= max_rotation_deg <= 5:
         raise ValueError("Rotation limit must be in [0,5] degrees per grain")
     geometry = get_geometry(lattice, axis)

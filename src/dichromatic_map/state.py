@@ -8,7 +8,9 @@ Changing display state must not change physical coordinates or cell counts.
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
-from .crystal import get_geometry, csl_presets, matching_csl_preset, ProjectedGrain
+from .crystal import (
+    get_geometry, csl_presets, matching_csl_preset, misorientation_range, ProjectedGrain,
+)
 from .matching import LocalPairs
 
 BUFFER_FACTOR = 2.0
@@ -57,9 +59,13 @@ class PatternParameters:
     axis: str = "110"
 
     def validate(self) -> None:
-        get_geometry(self.lattice, self.axis)
-        if self.angle_deg is not None and not 0.0 <= self.angle_deg <= 90.0:
-            raise ValueError("angle_deg must be between 0 and 90 degrees")
+        geometry = get_geometry(self.lattice, self.axis)
+        limit = misorientation_range(geometry.axis, geometry.lattice).maximum_deg
+        if self.angle_deg is not None and not 0.0 <= self.angle_deg <= limit:
+            raise ValueError(
+                f"angle_deg must be between 0 and {limit:g} degrees "
+                f"for {geometry.lattice} {geometry.axis_label}"
+            )
         if self.lattice_constant <= 0.0:
             raise ValueError("lattice_constant must be positive")
         if self.width <= 0.0 or self.height <= 0.0:
@@ -79,6 +85,7 @@ class PatternState:
         parameters.validate()
         self.parameters = parameters
         self.geometry = get_geometry(parameters.lattice, parameters.axis)
+        self.angle_range = misorientation_range(self.geometry.axis, self.geometry.lattice)
         self.presets = csl_presets(self.geometry.axis)
         initial_angle = parameters.angle_deg
         if initial_angle is None:
@@ -89,6 +96,7 @@ class PatternState:
         )
         self.interaction_mode = "idle"
         self.display_rotation_deg = 0.0
+        self.show_reference_axes = True
         self.manual_vertices = []
         self.manual_counts = None
         self.manual_count_error = None

@@ -12,8 +12,8 @@ strain.
 
 - Simple cubic (SC), face-centered cubic (FCC) and body-centered cubic (BCC)
   lattices with ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ and custom integer tilt axes.
-- Independent grain/layer visibility, grain-boundary side filtering and
-  display rotation.
+- Independent grain/layer visibility, grain-boundary side filtering,
+  display rotation and floating grain reference axes.
 - Same-layer exact coincidence-site lattice (CSL) detection and local near-pair
   matching.
 - Vector measurements in both grain coordinate frames, including axial
@@ -75,7 +75,11 @@ same-layer exact coincidences.
    **Tilt / viewing axis**, then choose a **CSL preset** or enter a
    **Misorientation**. For a custom axis, choose **Custom [h k l]**, enter an
    integer triple such as `1 -1 3`, and click **Apply axis** or press Enter.
-   **Display rotation** turns the drawing without changing the grain geometry.
+   The angle range follows the axis: 0–45° for ⟨100⟩, 0–90° for ⟨110⟩,
+   0–60° for ⟨111⟩, and 0–180° for other cubic axes such as ⟨112⟩.
+   Custom indices use the same symmetry calculation; the angle field, slider
+   and CSL presets update together. **Display rotation** turns the drawing
+   without changing the grain geometry.
 2. **Choose visible layers.** Open **LAYERS** and toggle individual **G1 A**,
    **G2 A**, etc. For a first selection, click **No layers**, then enable
    **G1 A** and **G2 A**. Coincidence and local-pair markers require the layer to
@@ -83,11 +87,18 @@ same-layer exact coincidences.
    available exact or strain-search cell; **Fit cell** frames it in the view.
 3. **Navigate.** Drag to pan and use the wheel to zoom. Under **VIEW /
    PERFORMANCE → VIEW**, **Field size** selects a wider or narrower region;
-   **Center view** (`C`) returns to the origin at the current zoom. The
-   **PERFORMANCE** tab contains **CPU workers**.
+   **Center view** (`C`) returns to the origin at the current zoom.
+   **Grain reference axes**, enabled by default, shows blue G1 and orange G2
+   orientation arrows sharing one fixed origin at the lower left. Color
+   distinguishes the grains; no G1/G2 headings are drawn. Their panel keeps
+   its size and position as the arrows rotate.
+   They mark perpendicular reference directions and follow grain and display
+   rotation; under strain they follow only the polar rigid rotation.
+   The **PERFORMANCE** tab contains **CPU workers**.
 4. **Measure a vector.** In **GB / VECTOR**, click **Measure vector** (`V`),
    then click two distinct visible atom positions, P1 and P2. Read the vector
-   annotation at the lower left of the plot. Same-grain picks show that grain's
+   annotation at the lower left of the plot, above the reference axes when
+   they are enabled. Same-grain picks show that grain's
    coordinates; cross-grain picks show both G1 and G2 representations.
    **P2 axial periodic image** selects an axial repeat for the second endpoint
    without adding plotted atoms.
@@ -103,8 +114,8 @@ same-layer exact coincidences.
    **Apply GB side visibility to counts** optionally restricts those counts
    to the displayed grain sides.
 7. **Export the figure.** Scroll to **Export plot as PNG…**, choose a file
-   name and save. The PNG contains the plot with its current layers, rotation
-   and annotations; the controls are excluded.
+   name and save. The PNG contains the plot with its current layers, rotation,
+   reference axes when enabled, and annotations; the controls are excluded.
 
 Press `Esc` to stop picking while retaining existing selections. Pressing `R`
 or `V` starts a fresh boundary or vector selection. Click near a visible atom
@@ -152,6 +163,7 @@ supplied projected columns and preserves their layer labels.
 | Function exported by `dichromatic_map` | Purpose |
 | --- | --- |
 | `get_geometry` | Obtain planar geometry, axial layers and repeat distance |
+| `misorientation_range` | Obtain the fixed-axis angle limit and rotational symmetry period |
 | `projected_columns` | Generate a grain's projected columns in a rectangular region |
 | `same_layer_coincidence_sites` | Locate same-layer coincidences within a specified tolerance |
 | `local_near_pairs` | Find same-layer mutual nearest pairs within a distance threshold |

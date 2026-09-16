@@ -143,7 +143,13 @@ class CrystalPhysicsTests(unittest.TestCase):
                                 self.assertTrue(np.all(sites % 2 == 0))
             if axis not in ("111", "112", "1 -1 3"):
                 continue
-            angle = 21.4 if axis == "111" else presets[0].angle_deg + 0.4
+            # Keep known nondegenerate near-CSL cases independent of menu
+            # ordering: the lowest-Sigma preset can now be the 180° endpoint.
+            angle = {
+                "111": 21.4,
+                "112": crystal.csl_angle_deg(4, 1, "112") + 0.4,
+                "1 -1 3": crystal.csl_angle_deg(5, 1, "1 -1 3") + 0.4,
+            }[axis]
             cells = solve(lattice, axis, angle)
             self.assertTrue(cells, (lattice, axis))
             b1, b2 = cell_ops.bases(angle, **options)

@@ -19,6 +19,7 @@ from ..crystal import (
     GeometryLimitError,
     csl_presets,
     matching_csl_preset,
+    misorientation_range,
     crystal_vector_coordinates,
     format_direction_components,
 )
@@ -321,6 +322,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), self)
             shortcut.activated.connect(callback)
             self.shortcuts.append(shortcut)
+
+    def _on_reference_axes_toggled(self, visible):
+        self.state.show_reference_axes = bool(visible)
+        self.plot._update_reference_axes()
 
     def _on_display_rotation(self, angle):
         angle = float(angle)
@@ -930,6 +935,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
 
     def _update_geometry_labels(self):
+        self.plot._update_reference_axes()
         model = self.state.geometry
         name = f"{model.lattice} ⟨{model.axis}⟩ Tilt GB"
         self.setWindowTitle(name + " · Dichromatic Pattern")
@@ -994,6 +1000,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.compute.near_search.cancel()
         self._clear_lattice_selections()
         self.state.geometry = geometry
+        self.state.angle_range = misorientation_range(geometry.axis, geometry.lattice)
         self.state.render_error = None
         self.state.parameters = replace(
             self.state.parameters, lattice=lattice, axis=axis
@@ -1656,6 +1663,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         return tuple(check.isChecked() for check in self.controls.region_checks)  # type: ignore[return-value]
 
     def _update_visible_points(self, *_args) -> None:
+        self.plot._update_reference_axes()
         if len(self.state.grains) != 2:
             return
         states = self._region_states()
@@ -1765,6 +1773,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.controls.angle_exact_label.setText(exact)
 
     def _queue_angle_update(self, angle_deg: float) -> None:
+        angle_deg = float(np.clip(angle_deg, 0.0, self.state.angle_range.maximum_deg))
         preset = matching_csl_preset(float(angle_deg), axis=self.state.geometry.axis)
         self.state.pending_angle = (
             preset.angle_deg if preset is not None else float(angle_deg)
@@ -1823,6 +1832,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         slider_blocker = QtCore.QSignalBlocker(self.controls.angle_slider)
         spin_blocker = QtCore.QSignalBlocker(self.controls.angle_spin)
         combo_blocker = QtCore.QSignalBlocker(self.controls.preset_combo)
+        bounds = self.state.angle_range
+        self.controls.angle_slider.setRange(0, round(bounds.maximum_deg * 100))
+        self.controls.angle_spin.setRange(0.0, bounds.maximum_deg)
+        self.controls.angle_range_label.setText(f"Allowed range: 0–{bounds.maximum_deg:g}°")
+        if bounds.symmetry_order is None:
+            explanation = "Unknown crystal symmetry; using the general 0–180° range."
+        else:
+            explanation = (
+                f"{self.state.geometry.axis_label}: {bounds.symmetry_order}-fold axial symmetry; "
+                f"rotation period {bounds.period_deg:g}°. Exchanging the grains gives "
+                f"the fixed-axis range 0–{bounds.maximum_deg:g}°."
+            )
+        for widget in (self.controls.angle_spin, self.controls.angle_slider,
+                       self.controls.angle_range_label):
+            widget.setToolTip(explanation)
         self.controls.angle_slider.setValue(round(angle * 100.0))
         self.controls.angle_spin.setValue(angle)
         preset = matching_csl_preset(angle, axis=self.state.geometry.axis)
