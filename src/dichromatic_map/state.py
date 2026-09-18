@@ -12,6 +12,7 @@ from .crystal import (
     get_geometry, csl_presets, matching_csl_preset, misorientation_range, ProjectedGrain,
 )
 from .matching import LocalPairs
+from .appearance import DEFAULT_GRAIN_COLORS, default_layer_symbols
 
 BUFFER_FACTOR = 2.0
 VIEW_SCALE_MIN = 0.1
@@ -44,7 +45,7 @@ class CellVertex:
     position: np.ndarray  # unrotated model coordinates
     layer: int
     source: str  # exact CSL or local near-pair midpoint
-    grain_positions: np.ndarray | None = None  # (G1 blue, G2 red) actual endpoints
+    grain_positions: np.ndarray | None = None  # (G1, G2) actual endpoints
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,8 @@ class PatternState:
         self.interaction_mode = "idle"
         self.display_rotation_deg = 0.0
         self.show_reference_axes = True
+        self.grain_colors = list(DEFAULT_GRAIN_COLORS)
+        self.layer_symbols = default_layer_symbols(self.geometry.layer_count)
         self.manual_vertices = []
         self.manual_counts = None
         self.manual_count_error = None

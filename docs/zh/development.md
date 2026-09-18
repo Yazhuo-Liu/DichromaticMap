@@ -17,12 +17,14 @@
 | [`strain.py`](../../src/dichromatic_map/strain.py) | 自动均匀应变搜索、所选胞拟合、极分解及应变张量 |
 | [`state.py`](../../src/dichromatic_map/state.py) | 几何参数、显示状态、选点和计算结果 |
 | [`compute.py`](../../src/dichromatic_map/compute.py) | 计算任务入口、线程/进程池、异步搜索和任务失效管理 |
+| [`appearance.py`](../../src/dichromatic_map/appearance.py) | 不依赖 Qt 的晶粒颜色、唯一符号标识、校验及层数调整 |
 | [`session.py`](../../src/dichromatic_map/session.py) | 版本化会话压缩文件、数据校验与原子写入 |
 | [`exports.py`](../../src/dichromatic_map/exports.py) | 重新计算并导出计数、向量和应变 CSV |
 | [`ui/session.py`](../../src/dichromatic_map/ui/session.py) | 文件对话框、控件同步与会话恢复 |
 | [`ui/window.py`](../../src/dichromatic_map/ui/window.py) | 用户操作、状态转换、拾取和结果更新 |
 | [`ui/plot.py`](../../src/dichromatic_map/ui/plot.py) | 显示变换、绘图缓存、标注和 PNG 导出 |
 | [`ui/controls.py`](../../src/dichromatic_map/ui/controls.py) | 控件、参数输入和结果面板 |
+| [`ui/markers.py`](../../src/dichromatic_map/ui/markers.py) | 共用符号路径、层图标和晶粒边缘颜色 |
 
 `CrystalGeometry` 保存同一晶格/晶轴可复用的几何量；`ProjectedGrain` 保存原子柱的
 二维实际坐标 `positions`、轴向层号 `layers` 和参考晶格整数坐标 `half_indices`。
@@ -413,7 +415,8 @@ v_g,i = R_display R_polar(F_g) R(φ_g) e_i
 
 这里只使用 Fᵍ 的极分解旋转，因而保持两箭头正交；若直接使用 Fᵍ，得到的是剪切或拉伸后的
 晶格方向，与此处的取向参考不同。参考轴锚定在视野左下角，以固定屏幕尺寸绘制，
-不依赖模型原点或原子位置。两晶粒共用一个固定原点，以蓝色和橙色区分，不绘制 G1/G2 标题。
+不依赖模型原点或原子位置。两晶粒共用一个固定原点，以所选晶粒颜色区分（默认蓝色和橙色），
+不绘制 G1/G2 标题。
 布局为箭头和 `[uvw]` 标签预留与当前转角无关的空间，因此旋转不会使面板重新居中或改变尺寸；
 平移和缩放也保持其位置与尺寸。晶体几何、参考角、变形的极分解旋转和显示旋转决定参考轴方向。
 `Grain reference axes` 控制显隐，可见时向量读数为其预留空间并显示在上方；导出包含启用的参考轴。
@@ -442,16 +445,35 @@ v_g,i = R_display R_polar(F_g) R(φ_g) e_i
 显示旋转、平移和缩放不会修改已有物理结果；改变晶格、参考角或实际变形时，
 相关选择与缓存按依赖关系失效。耗时任务在界面事件循环中轮询完成状态，结果通过当前请求校验后更新。
 
+## 外观状态与符号绘制
+
+`PatternState.grain_colors` 保存两个 `#RRGGBB` 字符串，`layer_symbols` 为每个轴向层保存一个唯一符号标识，
+同一层在两晶粒中共用该标识。不依赖 Qt 的 `appearance.py` 校验颜色格式并规范化为小写，
+同时检查符号数量、合法性和唯一性；两晶粒颜色可以相同。前 12 层沿用原有 PyQtGraph 符号，
+后续层默认使用 `number:13` 至 `number:256`。`number:1` 至 `number:256` 都是稳定标识，
+合法性不取决于当前层数，因此减少层数不会丢弃仍保留层上已选择的高编号符号。
+层数调整保留已有合法分配，新层从尚未占用的默认符号中补齐。
+
+`ui/markers.py` 将普通标识解析成内置符号，将编号标识解析成带数字镂空的圆形 `QPainterPath`，
+并缓存路径，不修改 PyQtGraph 的全局符号注册表。绘图区和控件图标共用此解析器。
+晶粒颜色同时用于参考轴、手动胞轮廓和图例；G1 保持实心和较深的边缘，G2 保持空心轮廓。
+
+`APPEARANCE` 控件禁用其他层已占用的符号，回调也拒绝重复分配。修改外观只重绘已有数据并刷新相关图标和叠加层，
+不会使物理几何、配对或计数结果失效，不提交数值任务，也不清除选点、应变或平移。
+`Reset appearance` 仅恢复这些样式设置。
+
 ## 会话保存、恢复与数值导出
 
-`session.py` 将 `.dmap` 定义为格式版本 1 的 ZIP 文件。`session.json` 显式保存物理和显示输入，
+`session.py` 将 `.dmap` 定义为格式版本 2 的 ZIP 文件。`session.json` 显式保存物理和显示输入，
 不直接序列化整个 `PatternState`。当前晶格、晶轴和角度覆盖可能过时的启动参数，数组转换成 JSON 列表，
 所选原子保留晶粒、轴向层及整数半坐标。已应用的 `StrainedCell`、`SelectedCellStrain` 同时保存
 撤销所选胞应变所需的原始顶点与局部配对阈值；交互模式和未完成选点也会保存。
 绘图缓存、任务句柄、worker 数量及本地路径不写入文件；自动搜索仅保存已应用的候选胞。
+版本 2 在状态字段中新增 `grain_colors` 和 `layer_symbols`。版本 1 文件仍可加载，自动使用默认颜色和唯一层符号，
+再次保存时写出版本 2；不支持的后续版本和未定义字段会被拒绝。
 
 `load_session` 返回 `SessionSnapshot(state, settings, view_range)`。加载时检查格式版本、成员名称与
-大小限制、有限数值、数组形状、晶轴/层/整数指标、变形方向、共同胞一致性及原子的实际位置。
+大小限制、有限数值、数组形状、晶轴/层/整数指标、颜色格式与符号唯一性、变形方向、共同胞一致性及原子的实际位置。
 直接从压缩包读取 JSON，不解压文件、不使用 pickle；CSV 只是导出结果，不参与恢复。
 `save_session` 先验证将写出的状态并生成数值表，再在目标目录写临时文件，完成后刷新并原子替换目标。
 失败保留原文件，临时文件会清理。

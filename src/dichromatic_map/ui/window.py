@@ -11,7 +11,7 @@ from pathlib import Path
 from dataclasses import replace
 import numpy as np
 from ._qt import QtCore, QtGui, QtWidgets
-from . import LAYER_SYMBOLS
+from ..appearance import DEFAULT_GRAIN_COLORS, default_layer_symbols, resize_layer_symbols
 from .session import SessionController
 from ..crystal import (
     get_geometry,
@@ -325,6 +325,37 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             shortcut.activated.connect(callback)
             self.shortcuts.append(shortcut)
 
+    def _choose_grain_color(self, grain):
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(self.state.grain_colors[grain]), self, f"Choose G{grain + 1} color"
+        )
+        if color.isValid() and color.name() != self.state.grain_colors[grain]:
+            self.state.grain_colors[grain] = color.name()
+            self._refresh_appearance()
+
+    def _on_layer_symbol_changed(self, layer, index):
+        combo = self.controls.layer_symbol_combos[layer]
+        symbol = combo.itemData(index)
+        if symbol == self.state.layer_symbols[layer]:
+            return
+        if symbol is None or symbol in self.state.layer_symbols:
+            with QtCore.QSignalBlocker(combo):
+                combo.setCurrentIndex(combo.findData(self.state.layer_symbols[layer]))
+            return
+        self.state.layer_symbols[layer] = symbol
+        self._refresh_appearance()
+
+    def _reset_appearance(self, *_args):
+        self.state.grain_colors = list(DEFAULT_GRAIN_COLORS)
+        self.state.layer_symbols = default_layer_symbols(self.state.geometry.layer_count)
+        self._refresh_appearance()
+
+    def _refresh_appearance(self):
+        self.controls._refresh_appearance_controls()
+        self.plot.refresh_appearance()
+        if self.state.manual_counts is not None:
+            self._show_manual_counts()
+
     def _on_reference_axes_toggled(self, visible):
         self.state.show_reference_axes = bool(visible)
         self.plot._update_reference_axes()
@@ -581,9 +612,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
         return candidates
 
-    @staticmethod
-    def _cell_layer_label(layer):
-        symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
+    def _cell_layer_label(self, layer):
+        symbol = self.state.layer_symbols[layer]
         glyph = {
             "o": "○",
             "d": "◇",
@@ -597,7 +627,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "t1": "▽",
             "t2": "▷",
             "t3": "◁",
-        }.get(symbol, symbol)
+        }.get(symbol, symbol.removeprefix("number:"))
         return f"{glyph} layer"
 
     def _resolve_cell_vertex(self, candidate):
@@ -816,7 +846,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             interior = counts.interior[grain, layer]
             boundary = counts.boundary[grain, layer]
             lines.append(
-                f"G{grain+1} ({'blue' if grain == 0 else 'red'}): area {counts.areas[grain]:.6g} a₀²"
+                f"G{grain+1}: area {counts.areas[grain]:.6g} a₀²"
             )
             if counts.half_open_available[grain]:
                 total = counts.half_open[grain, layer]
@@ -1002,6 +1032,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.compute.near_search.cancel()
         self._clear_lattice_selections()
         self.state.geometry = geometry
+        self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, geometry.layer_count)
         self.state.angle_range = misorientation_range(geometry.axis, geometry.lattice)
         self.state.render_error = None
         self.state.parameters = replace(

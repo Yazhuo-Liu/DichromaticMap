@@ -149,6 +149,7 @@ class SessionController:
             owner._sync_angle_controls()
             owner._update_geometry_labels()
             owner._sync_near_controls()
+            plot.refresh_appearance()
             self._restore_result_text()
             owner._update_title()
             plot.view_box.setLimits(

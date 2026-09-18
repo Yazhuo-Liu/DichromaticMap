@@ -376,7 +376,7 @@ def test_local_cell_uses_actual_pair_polygons_and_restores_fit(gui, local_diamon
         assert vertex.source == "CSL"
         assert np.linalg.norm(state.coincident_points[1] - vertex.position, axis=1).min() < 1e-10
     details = controls.manual_strain_details.toPlainText()
-    assert "G1 (blue)" in details and "G2 (red)" in details
+    assert "\nG1\n" in details and "\nG2\n" in details
     assert "Four-pair alignment" in details
     controls.rotation_spin.setValue(41)
     plot.view_box.translateBy(x=20, y=-16)

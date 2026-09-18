@@ -389,7 +389,7 @@ def selected_cell_strain_readout(
         lines.extend(
             [
                 "",
-                f"G{grain + 1} ({'blue' if grain == 0 else 'red'})",
+                f"G{grain + 1}",
                 f"Polar rotation = {fit.rotations_deg[grain]:+.8f}°",
                 "Principal stretch factors:",
                 array(fit.stretches[grain]),

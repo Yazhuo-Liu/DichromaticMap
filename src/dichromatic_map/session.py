@@ -16,13 +16,14 @@ import zlib
 
 import numpy as np
 
+from .appearance import validate_appearance
 from .cells import StrainedCell, bases, determinant, validate_cell_vertices
 from .crystal import rotation_matrix_2d
 from .state import CellVertex, PatternParameters, PatternState, SelectedAtom
 from .strain import SelectedCellStrain
 
 FORMAT = "dichromatic-map-session"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_JSON_BYTES = 1_000_000
 MAX_MEMBER_BYTES = 8_000_000
 MAX_ARCHIVE_BYTES = 32_000_000
@@ -36,8 +37,9 @@ _STATE_FIELDS = {
     "visible_grain_layers", "selected_points", "selected_atoms", "manual_vertices",
     "manual_local_cutoff", "axial_repeat", "near_enabled", "near_method", "near_cell",
     "deformations", "translations", "manual_strain_fit", "manual_unstrained_vertices",
-    "manual_unstrained_cutoff",
+    "manual_unstrained_cutoff", "grain_colors", "layer_symbols",
 }
+_STATE_FIELDS_V1 = _STATE_FIELDS - {"grain_colors", "layer_symbols"}
 
 
 @dataclass(frozen=True)
@@ -235,9 +237,10 @@ def _read_settings(value):
 
 def _snapshot_from_payload(payload):
     _fields(payload, ("format", "schema_version", "state", "settings", "view_range"), "session")
-    if payload["format"] != FORMAT or type(payload["schema_version"]) is not int or payload["schema_version"] != SCHEMA_VERSION:
+    version = payload["schema_version"]
+    if payload["format"] != FORMAT or type(version) is not int or version not in (1, SCHEMA_VERSION):
         raise ValueError("Unsupported DichromaticMap session format or schema version")
-    raw = _fields(payload["state"], _STATE_FIELDS, "state")
+    raw = _fields(payload["state"], _STATE_FIELDS_V1 if version == 1 else _STATE_FIELDS, "state")
     parameters = dict(_fields(raw["parameters"], PatternParameters.__dataclass_fields__, "parameters"))
     for field in ("lattice_constant", "width", "height", "marker_size"):
         parameters[field] = _number(parameters[field], field, 1e-8, 1e4)
@@ -246,6 +249,12 @@ def _snapshot_from_payload(payload):
     if not isinstance(parameters["lattice"], str) or not isinstance(parameters["axis"], str):
         raise ValueError("Lattice and axis must be strings")
     state = PatternState(PatternParameters(**parameters))
+    # Schema 1 used fixed grain colours and had no marker preference fields.
+    # Its migrated state inherits the defaults, including unique extra markers.
+    if version >= 2:
+        state.grain_colors, state.layer_symbols = validate_appearance(
+            raw["grain_colors"], raw["layer_symbols"], state.geometry.layer_count,
+        )
     # Preserve the actual stored angle, including precision beyond the GUI spinbox.
     state.angle_deg = state.pending_angle = parameters["angle_deg"]
     if raw["interaction_mode"] not in ("idle", "boundary", "vector", "cell"):
@@ -305,10 +314,14 @@ def _snapshot_from_payload(payload):
 
 
 def _state_payload(state):
+    colors, symbols = validate_appearance(
+        state.grain_colors, state.layer_symbols, state.geometry.layer_count,
+    )
     parameters = replace(state.parameters, lattice=state.geometry.lattice,
                          axis=state.geometry.axis, angle_deg=float(state.angle_deg))
     return {
         "parameters": asdict(parameters), "interaction_mode": state.interaction_mode,
+        "grain_colors": colors, "layer_symbols": symbols,
         "display_rotation_deg": float(state.display_rotation_deg),
         "show_reference_axes": bool(state.show_reference_axes), "selected_layer": int(state.selected_layer),
         "visible_grain_layers": [sorted(map(int, layers)) for layers in state.visible_grain_layers],

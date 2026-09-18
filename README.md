@@ -13,7 +13,7 @@ strain.
 - Simple cubic (SC), face-centered cubic (FCC) and body-centered cubic (BCC)
   lattices with ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ and custom integer tilt axes.
 - Independent grain/layer visibility, grain-boundary side filtering,
-  display rotation and floating grain reference axes.
+  display rotation, floating grain reference axes, custom grain colors and unique layer symbols.
 - Same-layer exact coincidence-site lattice (CSL) detection and local near-pair
   matching.
 - Vector measurements in both grain coordinate frames, including axial
@@ -68,8 +68,8 @@ launch commands above; `python main.py` also works from the source directory.
 The example above shows FCC ⟨110⟩ at the Σ9 preset. The plot is on the left;
 settings and results are in the scrollable **Controls** panel on the right.
 Click section headers to expand them, and switch between the **ORIENTATION**
-and **LAYERS** tabs at the top. Blue markers represent G1, orange outlines
-represent G2, marker shapes distinguish axial layers, and gold outlines mark
+and **LAYERS** tabs at the top. By default, blue markers represent G1 and orange
+outlines represent G2. Marker shapes distinguish axial layers, and gold outlines mark
 same-layer exact coincidences.
 
 1. **Choose the grains.** In **ORIENTATION**, select **Structure** (`FCC`, `BCC` or `SC`) and
@@ -89,39 +89,46 @@ same-layer exact coincidences.
 3. **Navigate.** Drag to pan and use the wheel to zoom. Under **VIEW /
    PERFORMANCE → VIEW**, **Field size** selects a wider or narrower region;
    **Center view** (`C`) returns to the origin at the current zoom.
-   **Grain reference axes**, enabled by default, shows blue G1 and orange G2
-   orientation arrows sharing one fixed origin at the lower left. Color
-   distinguishes the grains; no G1/G2 headings are drawn. Their panel keeps
+   **Grain reference axes**, enabled by default, shows orientation arrows in the
+   selected grain colors (blue G1 and orange G2 by default), sharing one fixed
+   origin at the lower left. Color distinguishes the grains; no G1/G2 headings are drawn. Their panel keeps
    its size and position as the arrows rotate.
    They mark perpendicular reference directions and follow grain and display
    rotation; under strain they follow only the polar rigid rotation.
    The **PERFORMANCE** tab contains **CPU workers**.
-4. **Measure a vector.** In **GB / VECTOR**, click **Measure vector** (`V`),
+4. **Choose colors and symbols.** Open **VIEW / PERFORMANCE → APPEARANCE**.
+   Click the G1 or G2 color button to choose that grain's color, and use each
+   layer's symbol menu to choose its shape for both grains. Symbols already used
+   by other layers are disabled. **Reset appearance** restores the original
+   colors and shapes; layers beyond the first twelve use distinct numbered
+   circles. Changes preserve selections, counts and applied strain, and appear
+   in PNG exports.
+5. **Measure a vector.** In **GB / VECTOR**, click **Measure vector** (`V`),
    then click two distinct visible atom positions, P1 and P2. Read the vector
    annotation at the lower left of the plot, above the reference axes when
    they are enabled. Same-grain picks show that grain's
    coordinates; cross-grain picks show both G1 and G2 representations.
    **P2 axial periodic image** selects an axial repeat for the second endpoint
    without adding plotted atoms.
-5. **Define a boundary.** Click **Pick GB** (`R`) and select B1, then B2.
+6. **Define a boundary.** Click **Pick GB** (`R`) and select B1, then B2.
    The side switches appear after the second pick; left/right are relative to
    B1 → B2. Use `1` or `2` for the two complementary grain-side arrangements,
    and `F` to show all sides again. Layer visibility settings still apply.
-6. **Select and count a cell.** Expand **MANUAL COMMON CELL**, click
+7. **Select and count a cell.** Expand **MANUAL COMMON CELL**, click
    **Pick 4 CSL vertices** (`M`), and select four gold sites of one layer in
    clockwise or counterclockwise order around a convex cell. Use **Undo
    vertex**, **Clear** or **Fit** as needed. The readout gives G1/G2 counts for
    the complete selected cell, including portions outside the current view.
    **Apply GB side visibility to counts** optionally restricts those counts
    to the displayed grain sides.
-7. **Export the figure.** Scroll to **Export PNG…**, choose a file
+8. **Export the figure.** Scroll to **Export PNG…**, choose a file
    name and save. The PNG contains the plot with its current layers, rotation,
    reference axes when enabled, and annotations; the controls are excluded.
 
-8. **Save or restore a session.** Click **Save session…** beside **Export PNG…**
+9. **Save or restore a session.** Click **Save session…** beside **Export PNG…**
    to save one `.dmap` file containing the current structure, selections, applied
-   strain/translations, display settings and numerical CSV tables. In
-   **ORIENTATION**, use **Import session…** to restore it in the current window.
+   strain/translations, display settings including colors and symbols, and numerical
+   CSV tables. In **ORIENTATION**, use **Import session…** to restore it in the current window.
    The file is a standard ZIP archive; open it with a ZIP tool to read
    `counts.csv`, `vectors.csv` and `strain.csv`.
 

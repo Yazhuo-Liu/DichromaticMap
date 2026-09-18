@@ -15,6 +15,7 @@ class GrainReferenceAxes(pg.GraphicsObject):
         self.setZValue(20)
         self.directions = np.tile(np.eye(2), (2, 1, 1))
         self.labels = ("", "")
+        self.colors = (GRAIN_1_COLOR, GRAIN_2_COLOR)
         self.origin = QtCore.QPointF()
         self._rect = QtCore.QRectF()
         self._groups = []
@@ -22,10 +23,16 @@ class GrainReferenceAxes(pg.GraphicsObject):
         self._font = QtGui.QFont()
         self._font.setPointSize(9)
         self.setToolTip(
-            "Orthogonal in-plane crystal reference directions: blue G1, orange G2. "
+            "Orthogonal in-plane crystal reference directions in each grain's color. "
             "Both grains share a fixed origin. Arrows follow the polar rigid "
             "rotation under strain, not shear or stretch."
         )
+
+    def set_colors(self, colors):
+        colors = tuple(colors)
+        if colors != self.colors:
+            self.colors = colors
+            self.update()
 
     def set_reference(self, directions, labels):
         directions = np.asarray(directions, dtype=float)
@@ -84,7 +91,7 @@ class GrainReferenceAxes(pg.GraphicsObject):
         painter.save()
         painter.translate(self.origin)
         painter.setFont(self._font)
-        for color, arrows in zip((GRAIN_1_COLOR, GRAIN_2_COLOR), self._groups):
+        for color, arrows in zip(self.colors, self._groups):
             painter.setBrush(pg.mkBrush(color))
             for tip, polygon, text_rect, label in arrows:
                 painter.setPen(pg.mkPen(color, width=2))

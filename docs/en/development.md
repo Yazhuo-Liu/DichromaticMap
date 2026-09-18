@@ -16,12 +16,14 @@ point per row, so corresponding matrix operations use a transpose.
 | [strain.py](../../src/dichromatic_map/strain.py) | Automatic symmetric strain search and selected-cell fitting |
 | [compute.py](../../src/dichromatic_map/compute.py) | Worker entry points, executors and asynchronous search |
 | [state.py](../../src/dichromatic_map/state.py) | Parameters, geometry, selections, deformations and result state |
+| [appearance.py](../../src/dichromatic_map/appearance.py) | Qt-free grain colors, unique marker identifiers, validation and resizing |
 | [session.py](../../src/dichromatic_map/session.py) | Versioned session archive, validation and atomic persistence |
 | [exports.py](../../src/dichromatic_map/exports.py) | Recomputed count, vector and strain CSV tables |
 | [ui/session.py](../../src/dichromatic_map/ui/session.py) | File dialogs, control synchronization and session restoration |
 | [ui/window.py](../../src/dichromatic_map/ui/window.py) | Interaction, validation, task dispatch and result application |
 | [ui/plot.py](../../src/dichromatic_map/ui/plot.py) | Display transforms, buffered rendering, overlays and export |
 | [ui/controls.py](../../src/dichromatic_map/ui/controls.py) | Controls and visual resources |
+| [ui/markers.py](../../src/dichromatic_map/ui/markers.py) | Shared marker paths, layer icons and grain edge colors |
 
 The numerical modules use NumPy without importing Qt. `PatternState`, `ComputeSession`,
 `ControlDock` and `PatternPlot` hold separate parts of a viewer session; the window coordinates them.
@@ -447,8 +449,9 @@ Using only the polar rotation of `F_g` keeps both arrows orthogonal. Applying
 `F_g` directly would draw the sheared/stretched lattice directions, which is a
 different quantity from this orientation reference. The overlay is anchored to
 the lower-left viewport with a fixed screen size, independently of the model
-origin and atom positions. Both grain frames share one fixed origin, with blue
-and orange distinguishing them and no G1/G2 headings. The layout reserves space
+origin and atom positions. Both grain frames share one fixed origin, with the
+selected grain colors (blue and orange by default) distinguishing them and no
+G1/G2 headings. The layout reserves space
 for the arrows and `[uvw]` labels independently of the current angle, so rotation
 does not recenter or resize the panel. Pan and zoom preserve its placement and
 size; geometry, reference angle, deformation and display rotation determine the
@@ -486,9 +489,34 @@ These resource bounds, candidate sampling and numerical tolerances are part of t
 algorithm. They support interactive geometric analysis and do not establish relaxed structures,
 elastic equilibria or global optimality.
 
+## Appearance state and marker rendering
+
+`PatternState.grain_colors` stores two `#RRGGBB` strings; `layer_symbols` stores
+one unique marker identifier per axial layer, shared by both grains. The Qt-free
+`appearance.py` validates the color format and normalizes it to lowercase. It
+checks symbol count, membership and uniqueness, while allowing the two grain
+colors to match. The original twelve PyQtGraph symbols remain the defaults for
+the first twelve layers; later layers use `number:13` through `number:256`.
+All numbered identifiers from `number:1` through `number:256` are valid regardless
+of the current layer count, so an assigned numbered symbol survives a geometry
+change to fewer layers. Resizing preserves valid retained assignments and fills
+new layers from unused defaults.
+
+`ui/markers.py` resolves ordinary identifiers to built-in symbols and numbered
+identifiers to cached `QPainterPath` circles with numeral cutouts. It does not
+modify PyQtGraph's global symbol registry. Plot markers and control icons share
+this resolver. Grain colors also feed the reference axes, manual-cell outlines
+and legend; G1 keeps a filled style with a darker edge and G2 keeps an outline.
+
+The `APPEARANCE` controls disable symbols assigned to other layers and reject
+duplicate assignments in callbacks. Appearance updates repaint existing data and
+refresh affected icons and overlays. They do not invalidate physical geometry,
+matching or count results, schedule numerical work, or clear selections, strain
+or translations. `Reset appearance` changes only these style preferences.
+
 ## Session persistence and numerical export
 
-`session.py` stores a `.dmap` ZIP archive with schema version 1. `session.json`
+`session.py` stores a `.dmap` ZIP archive with schema version 2. `session.json`
 contains explicit physical and display inputs, not a dump of `PatternState`:
 current lattice/axis/angle replace potentially stale launch parameters, arrays
 become ordinary JSON lists, and selected atom indices retain their grain and
@@ -496,12 +524,16 @@ axial layer. Applied `StrainedCell` and `SelectedCellStrain` records include the
 original vertices and cutoff needed to undo a selected-cell fit. Interaction
 mode and partial selections are retained; rendering buffers, futures, worker
 counts and local paths are excluded. The selected automatic strain candidate is
-retained, while its other search candidates are omitted.
+retained, while its other search candidates are omitted. Schema 2 adds
+`grain_colors` and `layer_symbols` to the explicit state fields. Schema 1 files
+still load with the default colors and unique layer symbols; saving them writes
+schema 2. Unsupported future versions and unexpected fields are rejected.
 
 `load_session` returns `SessionSnapshot(state, settings, view_range)`. The
 loader checks schema/version, required archive members and bounded sizes,
-finite numbers, array shapes, axis/layer/index validity, deformation orientation,
-common-cell consistency, and selected-atom coordinates. It reads JSON directly
+finite numbers, array shapes, axis/layer/index validity, appearance formats and
+symbol uniqueness, deformation orientation, common-cell consistency, and
+selected-atom coordinates. It reads JSON directly
 without extracting files or unpickling objects; CSV outputs are not inputs to
 state restoration. `save_session` validates its own serialized payload and
 builds the numerical tables before writing a temporary archive beside the

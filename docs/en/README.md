@@ -9,7 +9,7 @@ vector measurements, atom counting, uniform-strain common cells, PNG export and 
 
 GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 [Crystal and orientation](#gui-orientation) · [Layers](#gui-layers) ·
-[Navigation](#gui-view) · [GB reference](#gui-boundary) · [Vectors](#gui-vector) ·
+[Navigation](#gui-view) · [Colors and symbols](#gui-appearance) · [GB reference](#gui-boundary) · [Vectors](#gui-vector) ·
 [Near-CSL](#gui-near-csl) · [Manual cells](#gui-manual-cell) ·
 [Selected-cell strain](#gui-selected-strain) · [Export](#gui-export) · [Sessions and tables](#gui-session) ·
 [Troubleshooting](#gui-troubleshooting).
@@ -102,7 +102,7 @@ and export button.
 | `ORIENTATION` | Choose FCC/BCC/SC, a viewing axis, a CSL preset or a custom angle; rotate the display |
 | `LAYERS` | Show individual G1/G2 axial layers and the automatic common cell |
 | `GB / VECTOR` | Pick a GB reference line, clip either grain to its sides, or measure a vector |
-| `VIEW / PERFORMANCE` | Adjust field size, centering and grain reference axes in `VIEW`; change `CPU workers` in `PERFORMANCE` |
+| `VIEW / PERFORMANCE` | Use `VIEW` for navigation and reference axes, `PERFORMANCE` for `CPU workers`, and `APPEARANCE` for grain colors and layer symbols |
 | `NEAR-CSL` | Enable local near-pair matching or search for a strained periodic cell |
 | `MANUAL COMMON CELL` | Select four common sites, count atoms, and optionally apply selected-cell strain |
 | Status card | Read the next picking instruction, visible atom/CSL counts, and calculation status |
@@ -112,19 +112,20 @@ the complete selected polygons, so the two totals answer different questions.
 
 | Plot marker | Meaning |
 | --- | --- |
-| Blue filled atoms / orange-red outlined atoms | Grain 1 (G1) / Grain 2 (G2) |
+| Filled atoms / outlined atoms | Grain 1 (G1) / Grain 2 (G2); blue / orange-red by default |
 | Circle, diamond, triangle and other shapes | Axial layers; match the shape and layer name to the legend or `LAYERS` checkboxes |
 | Gold markers | Same-layer exact CSL sites |
 | Purple midpoint markers and short dotted links | Local near pairs and their actual atom endpoints |
 | Teal dashed outline | Automatic common periodic cell, when enabled and available |
-| Blue G1 / orange G2 arrows at the lower left | Perpendicular in-plane grain reference directions, labeled `[uvw]` |
+| Arrows in each grain's selected color at the lower left | Perpendicular in-plane grain reference directions, labeled `[uvw]` |
 | B1–B2 and a dark line | Picked GB reference and its left/right sides |
 | P1–P2 and a purple arrow | Measured vector |
-| C1–C4 and blue/red outlines | Manual-cell vertices and the separate G1/G2 polygons |
+| C1–C4 and outlines in the selected grain colors | Manual-cell vertices and the separate G1/G2 polygons |
 
 The legend follows enabled layers and overlays. It shows at most six enabled
-layers; use `LAYERS` to inspect others. Shapes repeat beyond twelve layers,
-so use the layer names as well as the symbols.
+layers; use `LAYERS` to inspect others. Every layer has a distinct symbol. The
+first twelve layers retain the original default shapes; additional layers use
+numbered circles. Customize them in `VIEW / PERFORMANCE → APPEARANCE`.
 
 <a id="gui-quick-start"></a>
 
@@ -231,8 +232,9 @@ current field on the origin while keeping its scale. Use `Fit cell` in `LAYERS`
 for an automatic cell or `Fit` in `MANUAL COMMON CELL` for a selected polygon.
 
 `Grain reference axes` is checked by default in `VIEW`. It shows two perpendicular
-in-plane reference directions for each grain, blue for G1 and orange for G2,
-with crystal direction labels `[uvw]`. For a [110] viewing axis, the labels are
+in-plane reference directions for each grain in its selected color (blue for G1
+and orange for G2 by default), with crystal direction labels `[uvw]`. For a [110]
+viewing axis, the labels are
 `[-1 1 0]` and `[0 0 1]`. All four arrows share one fixed origin at the lower left
 of the viewport. Color distinguishes the grains, without G1/G2 headings.
 The origin and panel size stay fixed as the arrows rotate, and panning or zooming
@@ -251,6 +253,32 @@ refreshes calculations. More workers can help larger views and searches but
 use more CPU resources; choose 1 if process creation is restricted. Navigation
 remains available during calculation. After a geometry change, wait for new
 atom positions before picking.
+
+<a id="gui-appearance"></a>
+
+## Choosing grain colors and layer symbols
+
+Expand `VIEW / PERFORMANCE` and open its third tab, `APPEARANCE`.
+
+1. Click the G1 or G2 color button to open the color dialog. Choose a color and
+   confirm; cancelling keeps the previous color. Each grain's atoms, reference
+   arrows, manual-cell outlines, layer icons and legend update together.
+   G1 retains filled markers and G2 retains outlined markers.
+2. Use the symbol menu beside a layer to choose its marker. The selected symbol
+   applies to that layer in both grains, including its CSL and local-pair markers.
+   Other layers must use different symbols: choices already assigned elsewhere
+   are disabled. Change the other layer first to free a symbol for reuse.
+3. Click `Reset appearance` to restore the blue/orange grain colors and the
+   original sequence of twelve shapes. Additional layers receive numbered
+   circles, keeping all layer symbols distinct. Numbered circles are also
+   available as explicit choices.
+
+Appearance changes update the drawing without restarting calculations or clearing
+picked points, counts, strain or translations. PNG export uses the selected styles.
+Changing the lattice or tilt axis keeps the grain colors and the symbol assignments
+for retained layer indices; new layers receive unused defaults. `Save session…`
+saves these choices, and `Import session…` restores them. Older session files open
+with the default colors and symbols.
 
 <a id="gui-boundary"></a>
 
@@ -383,8 +411,8 @@ geometric change, not an atomic relaxation or elastic-energy minimum.
    ordinary atoms are not. The first vertex fixes the layer. Actual vertices
    of each grain must form a convex, non-degenerate quadrilateral without
    crossed edges.
-3. The fourth vertex closes the cell. Blue/red outlines connect the actual
-   G1/G2 atoms. Counts appear at the lower right of the plot and in the panel.
+3. The fourth vertex closes the cell. Outlines in the selected grain colors
+   connect the actual G1/G2 atoms. Counts appear at the lower right of the plot and in the panel.
 4. `Undo vertex` removes the last point and resumes picking; `Clear` removes
    the manual cell and its counts; `Fit` frames a completed cell. `Esc` pauses
    picking without discarding points. Press `M` to resume an incomplete cell;
@@ -504,7 +532,8 @@ lattice constant, GB endpoints, vector endpoints and axial periodic image, manua
 cell vertices, each grain's deformation gradient and translation, applied common
 cell, and the original vertices needed by `Restore original local structure`.
 It also retains grain/layer and GB-side visibility, selected-cell counting options,
-Near-CSL and strain limits, display rotation, reference-axis visibility and the view.
+Near-CSL and strain limits, display rotation, reference-axis visibility, grain
+colors, layer symbols and the view. Older session files use the default appearance.
 If the window has a different aspect ratio, the restored view keeps its center
 and expands as needed to include the saved region without distorting the lattice.
 Partial selections are retained so picking can continue. Worker count stays at the

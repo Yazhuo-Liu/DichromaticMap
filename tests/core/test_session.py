@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from dichromatic_map import crystal, session
+from dichromatic_map.appearance import DEFAULT_GRAIN_COLORS, default_layer_symbols
 from dichromatic_map.state import CellVertex, PatternParameters, PatternState, SelectedAtom
 from dichromatic_map.strain import strain_selected_cell
 from .helpers import fcc22_diamond_pairs
@@ -24,6 +25,8 @@ def populated_state():
                                            marker_size=25, view_scale=1.5))
     state.display_rotation_deg = 33.7
     state.show_reference_axes = False
+    state.grain_colors = ["#116633", "#9922aa"]
+    state.layer_symbols = ["number:256", "star", "t2"]
     state.selected_layer = 1
     state.visible_grain_layers = [{0, 2}, {1, 2}]
     state.visible_layers = {2}
@@ -93,6 +96,8 @@ def test_roundtrip_full_state_and_partial_picking_without_cached_results(tmp_pat
     assert after.angle_deg == 17.123456789
     assert after.display_rotation_deg == 33.7
     assert not after.show_reference_axes
+    assert after.grain_colors == before.grain_colors == ["#116633", "#9922aa"]
+    assert after.layer_symbols == before.layer_symbols == ["number:256", "star", "t2"]
     assert after.selected_layer == 1
     assert after.visible_grain_layers == [{0, 2}, {1, 2}]
     assert after.visible_layers == {2}
@@ -117,6 +122,7 @@ def test_roundtrip_full_state_and_partial_picking_without_cached_results(tmp_pat
     with zipfile.ZipFile(path) as archive:
         assert set(archive.namelist()) == {"session.json", "counts.csv", "vectors.csv", "strain.csv", "README.txt"}
         data = archive.read("session.json").decode()
+        assert json.loads(data)["schema_version"] == 2
         assert "grain_signature" not in data and "worker" not in data and "buffer_bounds" not in data
         assert archive.read("vectors.csv").decode().strip()
 
@@ -172,6 +178,14 @@ def test_save_uses_current_geometry_and_exact_angle_not_launch_parameters(tmp_pa
     lambda p: p["state"].update(visible_grain_layers=[[0, 0], [1]]),
     lambda p: p["state"].update(axial_repeat=5),
     lambda p: p["state"].update(show_reference_axes=1),
+    lambda p: p["state"].update(grain_colors=["red", "#123456"]),
+    lambda p: p["state"].update(grain_colors=["#123456"]),
+    lambda p: p["state"].update(grain_colors=["#12345678", "#123456"]),
+    lambda p: p["state"].update(layer_symbols=["o", "o", "t"]),
+    lambda p: p["state"].update(layer_symbols=["o", "d"]),
+    lambda p: p["state"].update(layer_symbols=["o", "d", "number:257"]),
+    lambda p: p["state"].update(layer_symbols=["o", "d", "unknown"]),
+    lambda p: p["state"].pop("grain_colors"),
     lambda p: p["state"].update(near_method="unknown"),
     lambda p: p["state"].update(interaction_mode="unknown"),
     lambda p: p["state"]["manual_vertices"][0].update(grain_positions=None),
@@ -294,3 +308,55 @@ def test_corrupted_deflate_stream_is_rejected_as_invalid_session(tmp_path):
     path.write_bytes(damaged)
     with pytest.raises(ValueError, match="Invalid DichromaticMap session"):
         session.load_session(path)
+
+
+@pytest.mark.parametrize("axis", ["111", "1 1 6"])
+def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(tmp_path, axis):
+    before = PatternState(PatternParameters(lattice="SC", axis=axis, angle_deg=17.5))
+    before.display_rotation_deg = 12.75
+    before.grain_colors = ["#abcdef", "#112233"]
+    path = tmp_path / "legacy.dmap"
+    session.save_session(path, before, SETTINGS, VIEW)
+
+    def downgrade(payload):
+        payload["schema_version"] = 1
+        payload["state"].pop("grain_colors")
+        payload["state"].pop("layer_symbols")
+
+    rewrite_metadata(path, downgrade)
+    after = session.load_session(path).state
+    assert after.geometry.axis == before.geometry.axis
+    assert after.angle_deg == 17.5 and after.display_rotation_deg == 12.75
+    assert after.grain_colors == list(DEFAULT_GRAIN_COLORS)
+    assert after.layer_symbols == default_layer_symbols(after.geometry.layer_count)
+    assert len(set(after.layer_symbols)) == after.geometry.layer_count
+    if axis == "1 1 6":
+        assert after.geometry.layer_count == 38
+    session.save_session(path, after, SETTINGS, VIEW)
+    with zipfile.ZipFile(path) as archive:
+        assert json.loads(archive.read("session.json"))["schema_version"] == 2
+
+
+def test_schema_1_does_not_accept_unversioned_appearance_fields(tmp_path):
+    path = tmp_path / "wrong-version.dmap"
+    session.save_session(path, populated_state(), SETTINGS, VIEW)
+    rewrite_metadata(path, lambda payload: payload.update(schema_version=1))
+    with pytest.raises(ValueError, match="state fields"):
+        session.load_session(path)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("grain_colors", ["not-a-color", "#123456"]),
+    ("layer_symbols", ["o", "o"]),
+    ("layer_symbols", ["o"]),
+    ("layer_symbols", ["o", "unknown"]),
+])
+def test_invalid_appearance_save_preserves_existing_destination(tmp_path, field, value):
+    path = tmp_path / "existing.dmap"
+    path.write_bytes(b"existing user data")
+    state = PatternState(PatternParameters())
+    setattr(state, field, value)
+    with pytest.raises(ValueError):
+        session.save_session(path, state, SETTINGS, VIEW)
+    assert path.read_bytes() == b"existing user data"
+    assert list(tmp_path.iterdir()) == [path]
