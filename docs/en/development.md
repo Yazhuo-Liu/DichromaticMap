@@ -504,7 +504,9 @@ new layers from unused defaults.
 
 `ui/markers.py` resolves ordinary identifiers to built-in symbols and numbered
 identifiers to cached `QPainterPath` circles with numeral cutouts. It does not
-modify PyQtGraph's global symbol registry. Plot markers and control icons share
+modify PyQtGraph's global symbol registry. The numerals use built-in seven-segment
+vector outlines rather than system fonts, so headless Qt environments cannot
+replace distinct numbers with identical missing-glyph boxes. Plot markers and control icons share
 this resolver. Grain colors also feed the reference axes, manual-cell outlines
 and legend; G1 keeps a filled style with a darker edge and G2 keeps an outline.
 
