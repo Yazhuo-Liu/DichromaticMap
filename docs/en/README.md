@@ -5,13 +5,13 @@
 DichromaticMap includes a numerical Python library and an interactive viewer for
 SC/FCC/BCC tilt grain-boundary dichromatic patterns. It displays two grains by
 axial layer and supports exact coincidence sites, local near-pair matching,
-vector measurements, atom counting, uniform-strain common cells and PNG export.
+vector measurements, atom counting, uniform-strain common cells, PNG export and restorable sessions with numerical tables.
 
 GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 [Crystal and orientation](#gui-orientation) · [Layers](#gui-layers) ·
 [Navigation](#gui-view) · [GB reference](#gui-boundary) · [Vectors](#gui-vector) ·
 [Near-CSL](#gui-near-csl) · [Manual cells](#gui-manual-cell) ·
-[Selected-cell strain](#gui-selected-strain) · [Export](#gui-export) ·
+[Selected-cell strain](#gui-selected-strain) · [Export](#gui-export) · [Sessions and tables](#gui-session) ·
 [Troubleshooting](#gui-troubleshooting).
 
 ## Installation and launch
@@ -80,7 +80,7 @@ shell that supports inline environment variables:
 QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.png
 ```
 
-The viewer's `Export plot as PNG…` button saves the current plot, including
+The viewer's `Export PNG…` button saves the current plot, including
 display rotation and annotations.
 
 <a id="gui-overview"></a>
@@ -142,7 +142,7 @@ so use the layer names as well as the symbols.
    four gold sites in clockwise or counterclockwise order around a convex
    quadrilateral. Read G1/G2 counts in the panel and at the lower right of the
    plot. Use `Fit` to frame your selection.
-6. Scroll to `Export plot as PNG…`, choose a destination and save the image.
+6. Scroll to `Export PNG…`, choose a destination and save the image.
 
 <a id="gui-orientation"></a>
 
@@ -475,7 +475,7 @@ transformation, not a stress-free configuration or an energy relaxation.
 1. Finish choosing the angle, layers, view and annotations, then wait for
    pending calculations and counts. Use display rotation and the appropriate
    `Fit` action to arrange the image.
-2. Scroll to the bottom of `Controls` and click `Export plot as PNG…`.
+2. Scroll to the bottom of `Controls` and click `Export PNG…`.
 3. In the `Export dichromatic pattern` dialog, choose a folder and a `.png`
    filename (default `dichromatic_pattern.png`), then save. Cancel closes the
    dialog without saving.
@@ -485,6 +485,56 @@ currently displayed annotations, including display rotation and enabled grain
 reference axes. Controls and
 their detailed result boxes are outside the exported plot; copy their text
 separately when needed. PNG is an image export, not a saved interactive session.
+
+<a id="gui-session"></a>
+
+## Saving a session and numerical tables
+
+1. Finish the desired selections and strain application. Wait for active calculations
+   if you want to save their completed results.
+2. At the bottom of `Controls`, click `Save session…`, beside `Export PNG…`.
+3. In the file dialog, choose a folder and filename ending in `.dmap`, then save.
+   This writes one file; cancelling leaves the current session unchanged.
+4. To continue later, open `ORIENTATION` and click `Import session…`. Choose the
+   `.dmap` file. It replaces the current window's session, so save any current work
+   you want to retain first. Invalid or unsupported files leave the current session intact.
+
+The session retains the lattice, integer tilt axis, full-precision reference angle,
+lattice constant, GB endpoints, vector endpoints and axial periodic image, manual
+cell vertices, each grain's deformation gradient and translation, applied common
+cell, and the original vertices needed by `Restore original local structure`.
+It also retains grain/layer and GB-side visibility, selected-cell counting options,
+Near-CSL and strain limits, display rotation, reference-axis visibility and the view.
+If the window has a different aspect ratio, the restored view keeps its center
+and expands as needed to include the saved region without distorting the lattice.
+Partial selections are retained so picking can continue. Worker count stays at the
+current computer's setting; atom buffers and counts are rebuilt after import.
+Only the applied strain candidate is retained, not the entire previous search list.
+An enabled strain search with no applied cell remains unstrained after import;
+change its search settings to start a new search.
+
+A `.dmap` file is a standard ZIP archive. Use a ZIP tool to open it (or copy it and
+change the copy's extension to `.zip`). Its contents are:
+
+| File | Contents |
+| --- | --- |
+| `session.json` | Versioned state used by `Import session…` |
+| `counts.csv` | Each grain's selected-layer manual-cell counts: interior, boundary, closed and available half-open counts, area, and GB-filter status |
+| `vectors.csv` | P1→P2 in analysis/display coordinates and applicable grain polar/lattice frames, with axial-image and length information |
+| `strain.csv` | Per-grain deformation, polar rotation/stretch, Green–Lagrange strain, principal strains, translations and reference/current angles |
+| `README.txt` | Table units, coordinate conventions and missing-result rules |
+
+Open the CSV files in a spreadsheet or read them with Python's `csv` module.
+Lengths are labeled in a₀ or Å, areas in a₀² or Å², and strain tensors are dimensionless.
+The vector table distinguishes current spatial components from lattice `[uvw]`
+coordinates. Counts are recomputed for the complete selected region, respecting
+its optional GB-side filter, independently of the viewport. With fewer than four
+cell vertices, `counts.csv` contains only its header; with fewer than two vector
+endpoints, `vectors.csv` does the same. Unstrained grains have identity deformation
+and zero strain, not a missing result. Editing a CSV does not change restored state.
+
+PNG remains a separate figure export. The `.dmap` file contains numerical state
+and tables; export a PNG as well when you need the rendered image.
 
 ## Using the Python library
 

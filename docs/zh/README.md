@@ -4,11 +4,11 @@
 
 DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FCC/BCC 倾转晶界双色图。
 它按轴向层显示两个晶粒，支持精确重合点、局部近邻配对、晶体向量测量、原子计数、
-均匀应变共同胞搜索和 PNG 导出。
+均匀应变共同胞搜索、PNG 导出，以及会话保存/恢复和数值表导出。
 
 使用指南：[认识界面](#gui-overview) · [第一次操作](#gui-quick-start) · [晶体与角度](#gui-orientation) ·
 [显示层](#gui-layers) · [视野](#gui-view) · [晶界](#gui-boundary) · [向量](#gui-vector) ·
-[Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [常见问题](#gui-troubleshooting)。
+[Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [会话与数值表](#gui-session) · [常见问题](#gui-troubleshooting)。
 
 ## 安装与启动
 
@@ -70,7 +70,7 @@ python -m dichromatic_map --angle 22 --save pattern.png
 QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.png
 ```
 
-也可以在查看器中用 `Export plot as PNG…` 导出当前图，详见 [GUI 导出步骤](#gui-export)。
+也可以在查看器中用 `Export PNG…` 导出当前图，详见 [GUI 导出步骤](#gui-export)。
 
 <a id="gui-overview"></a>
 
@@ -120,7 +120,7 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
    图中出现 P1→P2 箭头和向量读数。两次点击之间仍可拖动平移或滚轮缩放。
 5. 若要练习计数，展开 `MANUAL COMMON CELL`，点击 `Pick 4 CSL vertices   M`，
    沿一个凸四边形的边界依次选 4 个金色标记，等待该层的 G1/G2 计数显示。
-6. 调整好视野后，滚动到面板底部点击 `Export plot as PNG…` 保存图片。
+6. 调整好视野后，滚动到面板底部点击 `Export PNG…` 保存图片。
 
 <a id="gui-orientation"></a>
 
@@ -416,13 +416,51 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 1. 选好晶格、角度、可见层和 GB 两侧；按需要显示胞框、向量或手动计数。
 2. 调整平移、缩放和 `Display rotation`，使目标区域与标注出现在当前视野中。
    等待晶格、CSL、局部匹配及手动计数更新结束。
-3. 滚动到右侧面板底部，点击 `Export plot as PNG…`。
+3. 滚动到右侧面板底部，点击 `Export PNG…`。
 4. 在 `Export dichromatic pattern` 对话框中选择目录和 `.png` 文件名；默认名为
    `dichromatic_pattern.png`，保存类型为 `PNG image (*.png)`。确认保存，或取消以返回查看器。
 
 导出的是当前绘图区，宽度为 1800 像素，包含图标题、坐标轴、图例、显示旋转、启用的晶粒参考轴及当前可见标注。
 右侧控制面板和其中的详细文本不在图片内；需要保存应变详情时，可从其只读文本框选择复制。
 自动胞或手动胞超出当前视野时，先用对应的 `Fit cell` 或 `Fit` 再导出。
+
+<a id="gui-session"></a>
+
+## 保存/恢复会话与导出数值表
+
+1. 完成需要保留的选点和应变操作；若要保存正在计算的结果，请先等待计算完成。
+2. 滚动到右侧 `Controls` 底部，点击 `Export PNG…` 旁的 `Save session…`。
+3. 在文件对话框中选择目录和以 `.dmap` 结尾的文件名并保存。只生成一个文件；
+   取消对话框不会改变当前会话。
+4. 恢复时，在 `ORIENTATION` 页点击 `Import session…` 并选择该 `.dmap` 文件。
+   导入会替换当前窗口的会话，需要保留现有工作时请先保存。文件损坏或版本不支持时，
+   当前会话保持不变。
+
+保存内容包括晶格、整数 tilt axis、完整精度的参考角度、晶格常数、GB 端点、向量端点及轴向周期像、
+手动胞顶点、两晶粒的变形梯度和平移、已应用的共同胞，以及用于 `Restore original local structure`
+的原始顶点。可见晶粒/层、GB 两侧筛选、手动计数选项、Near-CSL 和应变限值、显示旋转、
+参考轴显隐及视野也会恢复。窗口宽高比不同时，恢复的视野保留中心并按需扩展，以覆盖原区域且不拉伸晶格。
+尚未完成的选点可以继续；原子缓存和计数在导入后重新计算。
+CPU workers 保留当前计算机的设置。应变搜索只保存已应用的候选胞，不保存整个候选列表；
+若保存时启用了搜索但未应用任何胞，导入后保持未应变状态，修改搜索参数即可重新搜索。
+
+`.dmap` 是标准 ZIP 压缩文件，可用 ZIP 工具打开，或复制一份并将副本扩展名改为 `.zip` 后解压：
+
+| 文件 | 内容 |
+| --- | --- |
+| `session.json` | 供导入恢复使用、带格式版本的状态数据 |
+| `counts.csv` | 两晶粒在手动选定层中的内部、边界、闭合及可用的半开计数，面积与 GB 筛选标记 |
+| `vectors.csv` | P1→P2 在分析/显示坐标及相关晶粒极分解/晶格坐标中的分量，轴向周期像与长度 |
+| `strain.csv` | 各晶粒的变形梯度、极分解旋转/伸长、Green–Lagrange 应变、主应变、平移及参考/当前角度 |
+| `README.txt` | 各表的单位、坐标约定及缺失结果规则 |
+
+CSV 可用表格软件或 Python 的 `csv` 模块读取。长度标明 a₀ 或 Å，面积标明 a₀² 或 Å²，
+应变张量为无量纲。向量表区分当前空间分量与晶格 `[uvw]` 坐标。
+计数针对完整选区重新计算，应用所选的 GB 两侧筛选，不依赖当前视野。
+手动胞不足四个顶点时，`counts.csv` 只有表头；向量不足两个端点时，`vectors.csv` 只有表头。
+未应变晶粒的变形梯度为单位矩阵、应变为零。修改 CSV 不会改变导入恢复的状态。
+
+PNG 仍单独保存图像；`.dmap` 保存数值状态和表格，需要图片时请另外导出 PNG。
 
 ## 使用 Python 数值库
 

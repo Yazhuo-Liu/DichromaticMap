@@ -16,6 +16,9 @@ point per row, so corresponding matrix operations use a transpose.
 | [strain.py](../../src/dichromatic_map/strain.py) | Automatic symmetric strain search and selected-cell fitting |
 | [compute.py](../../src/dichromatic_map/compute.py) | Worker entry points, executors and asynchronous search |
 | [state.py](../../src/dichromatic_map/state.py) | Parameters, geometry, selections, deformations and result state |
+| [session.py](../../src/dichromatic_map/session.py) | Versioned session archive, validation and atomic persistence |
+| [exports.py](../../src/dichromatic_map/exports.py) | Recomputed count, vector and strain CSV tables |
+| [ui/session.py](../../src/dichromatic_map/ui/session.py) | File dialogs, control synchronization and session restoration |
 | [ui/window.py](../../src/dichromatic_map/ui/window.py) | Interaction, validation, task dispatch and result application |
 | [ui/plot.py](../../src/dichromatic_map/ui/plot.py) | Display transforms, buffered rendering, overlays and export |
 | [ui/controls.py](../../src/dichromatic_map/ui/controls.py) | Controls and visual resources |
@@ -482,3 +485,54 @@ signatures and count-request keys similarly prevent stale results from replacing
 These resource bounds, candidate sampling and numerical tolerances are part of the implemented
 algorithm. They support interactive geometric analysis and do not establish relaxed structures,
 elastic equilibria or global optimality.
+
+## Session persistence and numerical export
+
+`session.py` stores a `.dmap` ZIP archive with schema version 1. `session.json`
+contains explicit physical and display inputs, not a dump of `PatternState`:
+current lattice/axis/angle replace potentially stale launch parameters, arrays
+become ordinary JSON lists, and selected atom indices retain their grain and
+axial layer. Applied `StrainedCell` and `SelectedCellStrain` records include the
+original vertices and cutoff needed to undo a selected-cell fit. Interaction
+mode and partial selections are retained; rendering buffers, futures, worker
+counts and local paths are excluded. The selected automatic strain candidate is
+retained, while its other search candidates are omitted.
+
+`load_session` returns `SessionSnapshot(state, settings, view_range)`. The
+loader checks schema/version, required archive members and bounded sizes,
+finite numbers, array shapes, axis/layer/index validity, deformation orientation,
+common-cell consistency, and selected-atom coordinates. It reads JSON directly
+without extracting files or unpickling objects; CSV outputs are not inputs to
+state restoration. `save_session` validates its own serialized payload and
+builds the numerical tables before writing a temporary archive beside the
+destination. A successful write is flushed and atomically replaces the target;
+failure leaves the previous file intact and removes the temporary file.
+
+`SessionController` checks viewport enumeration limits before replacing the
+window state. It stops old timers, invalidates geometry/search work and drops
+the previous count future's publication handle. Control signals are blocked
+while applying the validated state, preventing geometry changes from clearing
+imported selections. It then regenerates the plot, local pairs and manual counts
+from the restored inputs. The current worker configuration is retained. View
+bounds are given in display coordinates; aspect locking can enlarge a restored
+view on a differently proportioned viewport while preserving its center.
+
+`exports.build_export_tables` returns UTF-8 CSV text plus `README.txt`:
+
+- Counts are recomputed with `count_cell_atoms` for each actual grain polygon
+  and the picked layer, applying the saved GB filter only when enabled. No
+  cached or viewport count is reused. Unavailable half-open values are blank.
+- Vector xy components come from actual endpoint positions; the axial component
+  uses reference half-indices plus the selected periodic image. The same
+  physical displacement is converted to analysis/display, polar cubic and
+  deformed lattice coordinates. Cross-grain vectors use both grain frames.
+- Strain tables use the current per-grain deformation gradients and translations.
+  SVD gives `F = R U`; `E = (F.T F - I)/2` is exported in the reference analysis
+  plane and transformed to reference cubic coordinates. Rigid rotation and
+  principal engineering strains remain distinct quantities.
+
+Floating-point values use 17 significant digits. Headers and rows identify units
+and frames; a₀/Å and a₀²/Å² conversions use the saved lattice constant. Incomplete
+manual-cell or vector selections produce header-only tables, whereas an
+unstrained grain has a real identity F and zero E. Numerical export errors fail
+the save instead of silently writing partial or stale results.

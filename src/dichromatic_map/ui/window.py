@@ -12,6 +12,7 @@ from dataclasses import replace
 import numpy as np
 from ._qt import QtCore, QtGui, QtWidgets
 from . import LAYER_SYMBOLS
+from .session import SessionController
 from ..crystal import (
     get_geometry,
     projected_columns,
@@ -257,6 +258,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.compute = ComputeSession()
         self.plot = PatternPlot(self)
         self.controls = ControlDock(self)
+        self.session = SessionController(self)
         available_cpus = max(1, os.cpu_count() or 1)
         automatic_workers = min(4, available_cpus)
         self.compute.worker_count = int(worker_count or automatic_workers)
@@ -2214,6 +2216,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             f"Same-layer CSL: {csl_state}<br>"
             f"Compute: {compute_state}</div>"
         )
+
+    def save_session(self, path) -> None:
+        self.session.save(path)
+
+    def load_session(self, path) -> None:
+        self.session.load(path)
+
+    def _choose_session_save_path(self) -> None:
+        self.session.choose_save_path()
+
+    def _choose_session_import_path(self) -> None:
+        self.session.choose_import_path()
 
     def _choose_export_path(self) -> None:
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(

@@ -21,6 +21,7 @@ strain.
 - Manual common cells with separate G1/G2 atom counts and optional uniform
   strain fitting.
 - Automatic homogeneous-strain common-cell search and PNG export.
+- Save and restore sessions, with count, vector and strain CSV tables in one file.
 - NumPy-based numerical functions usable independently of the viewer.
 
 The three choices represent cubic Bravais point lattices with one atom per
@@ -113,9 +114,16 @@ same-layer exact coincidences.
    the complete selected cell, including portions outside the current view.
    **Apply GB side visibility to counts** optionally restricts those counts
    to the displayed grain sides.
-7. **Export the figure.** Scroll to **Export plot as PNG…**, choose a file
+7. **Export the figure.** Scroll to **Export PNG…**, choose a file
    name and save. The PNG contains the plot with its current layers, rotation,
    reference axes when enabled, and annotations; the controls are excluded.
+
+8. **Save or restore a session.** Click **Save session…** beside **Export PNG…**
+   to save one `.dmap` file containing the current structure, selections, applied
+   strain/translations, display settings and numerical CSV tables. In
+   **ORIENTATION**, use **Import session…** to restore it in the current window.
+   The file is a standard ZIP archive; open it with a ZIP tool to read
+   `counts.csv`, `vectors.csv` and `strain.csv`.
 
 Press `Esc` to stop picking while retaining existing selections. Pressing `R`
 or `V` starts a fresh boundary or vector selection. Click near a visible atom

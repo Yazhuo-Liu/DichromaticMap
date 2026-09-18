@@ -482,10 +482,7 @@ def test_gui_export_dialog_writes_plot_png_and_theme_icons(gui, monkeypatch, tmp
         return str(output), "PNG image (*.png)"
 
     monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", choose_filename)
-    export = next(
-        button for button in window.findChildren(QtWidgets.QPushButton)
-        if button.text() == "Export plot as PNG…"
-    )
+    export = window.controls.export_button
     export.click()
     assert calls[0][1:] == (
         "Export dichromatic pattern", "dichromatic_pattern.png", "PNG image (*.png)"
