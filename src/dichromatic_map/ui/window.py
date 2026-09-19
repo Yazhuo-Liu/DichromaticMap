@@ -11,7 +11,8 @@ from pathlib import Path
 from dataclasses import replace
 import numpy as np
 from ._qt import QtCore, QtGui, QtWidgets
-from . import LAYER_SYMBOLS
+from ..appearance import DEFAULT_GRAIN_COLORS, default_layer_symbols, resize_layer_symbols
+from .session import SessionController
 from ..crystal import (
     get_geometry,
     projected_columns,
@@ -19,6 +20,7 @@ from ..crystal import (
     GeometryLimitError,
     csl_presets,
     matching_csl_preset,
+    misorientation_range,
     crystal_vector_coordinates,
     format_direction_components,
 )
@@ -256,6 +258,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.compute = ComputeSession()
         self.plot = PatternPlot(self)
         self.controls = ControlDock(self)
+        self.session = SessionController(self)
         available_cpus = max(1, os.cpu_count() or 1)
         automatic_workers = min(4, available_cpus)
         self.compute.worker_count = int(worker_count or automatic_workers)
@@ -321,6 +324,41 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), self)
             shortcut.activated.connect(callback)
             self.shortcuts.append(shortcut)
+
+    def _choose_grain_color(self, grain):
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(self.state.grain_colors[grain]), self, f"Choose G{grain + 1} color"
+        )
+        if color.isValid() and color.name() != self.state.grain_colors[grain]:
+            self.state.grain_colors[grain] = color.name()
+            self._refresh_appearance()
+
+    def _on_layer_symbol_changed(self, layer, index):
+        combo = self.controls.layer_symbol_combos[layer]
+        symbol = combo.itemData(index)
+        if symbol == self.state.layer_symbols[layer]:
+            return
+        if symbol is None or symbol in self.state.layer_symbols:
+            with QtCore.QSignalBlocker(combo):
+                combo.setCurrentIndex(combo.findData(self.state.layer_symbols[layer]))
+            return
+        self.state.layer_symbols[layer] = symbol
+        self._refresh_appearance()
+
+    def _reset_appearance(self, *_args):
+        self.state.grain_colors = list(DEFAULT_GRAIN_COLORS)
+        self.state.layer_symbols = default_layer_symbols(self.state.geometry.layer_count)
+        self._refresh_appearance()
+
+    def _refresh_appearance(self):
+        self.controls._refresh_appearance_controls()
+        self.plot.refresh_appearance()
+        if self.state.manual_counts is not None:
+            self._show_manual_counts()
+
+    def _on_reference_axes_toggled(self, visible):
+        self.state.show_reference_axes = bool(visible)
+        self.plot._update_reference_axes()
 
     def _on_display_rotation(self, angle):
         angle = float(angle)
@@ -574,9 +612,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
         return candidates
 
-    @staticmethod
-    def _cell_layer_label(layer):
-        symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
+    def _cell_layer_label(self, layer):
+        symbol = self.state.layer_symbols[layer]
         glyph = {
             "o": "○",
             "d": "◇",
@@ -590,7 +627,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "t1": "▽",
             "t2": "▷",
             "t3": "◁",
-        }.get(symbol, symbol)
+        }.get(symbol, symbol.removeprefix("number:"))
         return f"{glyph} layer"
 
     def _resolve_cell_vertex(self, candidate):
@@ -809,7 +846,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             interior = counts.interior[grain, layer]
             boundary = counts.boundary[grain, layer]
             lines.append(
-                f"G{grain+1} ({'blue' if grain == 0 else 'red'}): area {counts.areas[grain]:.6g} a₀²"
+                f"G{grain+1}: area {counts.areas[grain]:.6g} a₀²"
             )
             if counts.half_open_available[grain]:
                 total = counts.half_open[grain, layer]
@@ -930,6 +967,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
 
     def _update_geometry_labels(self):
+        self.plot._update_reference_axes()
         model = self.state.geometry
         name = f"{model.lattice} ⟨{model.axis}⟩ Tilt GB"
         self.setWindowTitle(name + " · Dichromatic Pattern")
@@ -994,6 +1032,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.compute.near_search.cancel()
         self._clear_lattice_selections()
         self.state.geometry = geometry
+        self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, geometry.layer_count)
+        self.state.angle_range = misorientation_range(geometry.axis, geometry.lattice)
         self.state.render_error = None
         self.state.parameters = replace(
             self.state.parameters, lattice=lattice, axis=axis
@@ -1656,6 +1696,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         return tuple(check.isChecked() for check in self.controls.region_checks)  # type: ignore[return-value]
 
     def _update_visible_points(self, *_args) -> None:
+        self.plot._update_reference_axes()
         if len(self.state.grains) != 2:
             return
         states = self._region_states()
@@ -1765,6 +1806,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.controls.angle_exact_label.setText(exact)
 
     def _queue_angle_update(self, angle_deg: float) -> None:
+        angle_deg = float(np.clip(angle_deg, 0.0, self.state.angle_range.maximum_deg))
         preset = matching_csl_preset(float(angle_deg), axis=self.state.geometry.axis)
         self.state.pending_angle = (
             preset.angle_deg if preset is not None else float(angle_deg)
@@ -1823,6 +1865,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         slider_blocker = QtCore.QSignalBlocker(self.controls.angle_slider)
         spin_blocker = QtCore.QSignalBlocker(self.controls.angle_spin)
         combo_blocker = QtCore.QSignalBlocker(self.controls.preset_combo)
+        bounds = self.state.angle_range
+        self.controls.angle_slider.setRange(0, round(bounds.maximum_deg * 100))
+        self.controls.angle_spin.setRange(0.0, bounds.maximum_deg)
+        self.controls.angle_range_label.setText(f"Allowed range: 0–{bounds.maximum_deg:g}°")
+        if bounds.symmetry_order is None:
+            explanation = "Unknown crystal symmetry; using the general 0–180° range."
+        else:
+            explanation = (
+                f"{self.state.geometry.axis_label}: {bounds.symmetry_order}-fold axial symmetry; "
+                f"rotation period {bounds.period_deg:g}°. Exchanging the grains gives "
+                f"the fixed-axis range 0–{bounds.maximum_deg:g}°."
+            )
+        for widget in (self.controls.angle_spin, self.controls.angle_slider,
+                       self.controls.angle_range_label):
+            widget.setToolTip(explanation)
         self.controls.angle_slider.setValue(round(angle * 100.0))
         self.controls.angle_spin.setValue(angle)
         preset = matching_csl_preset(angle, axis=self.state.geometry.axis)
@@ -2190,6 +2247,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             f"Same-layer CSL: {csl_state}<br>"
             f"Compute: {compute_state}</div>"
         )
+
+    def save_session(self, path) -> None:
+        self.session.save(path)
+
+    def load_session(self, path) -> None:
+        self.session.load(path)
+
+    def _choose_session_save_path(self) -> None:
+        self.session.choose_save_path()
+
+    def _choose_session_import_path(self) -> None:
+        self.session.choose_import_path()
 
     def _choose_export_path(self) -> None:
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(

@@ -7,9 +7,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from fractions import Fraction
+from itertools import permutations, product
 from math import gcd, lcm
 import re
 import numpy as np
+
+SUPPORTED_LATTICES = ("FCC", "BCC", "SC")
 
 MAX_LAYERS = 256
 MAX_PROJECTED_COLUMNS = 250_000
@@ -54,6 +57,55 @@ def axis_key(axis):
     if values in ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 1, 2)):
         return "".join(map(str, values))
     return " ".join(map(str, values))
+
+
+@dataclass(frozen=True)
+class AngleRange:
+    """Fixed-axis, unstrained misorientation interval starts at zero degrees.
+
+    ``period_deg`` describes equivalent rotations about the directed axis.
+    Interchanging the two grains halves that period to ``maximum_deg``.
+    Unknown lattice symmetry uses the generic 0--180 degree interval.
+    """
+
+    maximum_deg: float
+    period_deg: float | None
+    symmetry_order: int | None
+
+
+def misorientation_range(axis="110", lattice="FCC") -> AngleRange:
+    """Return the symmetry-reduced range for a fixed cubic tilt axis.
+
+    FCC, BCC and SC share the 24 proper cubic rotations. Only rotations that
+    preserve the *directed* axis contribute to its rotational period; mapping
+    the axis to its negative must not be counted a second time. Grain exchange
+    identifies positive and negative misorientations. This is not the full
+    cubic disorientation reduction, which may change the tilt axis.
+
+    Axes are parsed and validated normally. For a lattice whose point group
+    is not implemented, return a generic 180-degree maximum and no claimed
+    rotational period or symmetry order.
+    """
+    direction = parse_axis(axis)
+    if str(lattice).strip().upper() not in SUPPORTED_LATTICES:
+        return AngleRange(180.0, None, None)
+    return _cubic_misorientation_range(direction)
+
+
+@lru_cache(maxsize=64)
+def _cubic_misorientation_range(direction):
+    order = 0
+    for permutation in permutations(range(3)):
+        inversions = sum(
+            permutation[i] > permutation[j] for i in range(3) for j in range(i + 1, 3)
+        )
+        parity = -1 if inversions % 2 else 1
+        for signs in product((-1, 1), repeat=3):
+            if parity * signs[0] * signs[1] * signs[2] != 1:
+                continue
+            rotated = tuple(signs[i] * direction[permutation[i]] for i in range(3))
+            order += rotated == direction
+    return AngleRange(180.0 / order, 360.0 / order, order)
 
 
 def layer_name(index):
@@ -130,6 +182,45 @@ def _readonly(values, dtype=float) -> np.ndarray:
     return array
 
 
+def in_plane_reference_directions(axis="110") -> np.ndarray:
+    """Two reduced integer [uvw] directions, stored as read-only (2,3) rows.
+
+    These are the reference analysis x/y directions expressed in cubic
+    coordinates, using the same reference-vector choice as ``get_geometry``.
+    Both lie perpendicular to the tilt axis and form a right-handed frame
+    with it. Integer cross products preserve signs without rationalizing
+    floating-point vectors. They label directions, not primitive translations.
+    """
+    direction = np.asarray(parse_axis(axis), dtype=np.int64)
+    reference = [0, 0, 1] if np.any(direction[:2]) else [0, 1, 0]
+    first = np.cross(reference, direction)
+    first //= gcd(*(int(value) for value in first))
+    second = np.cross(direction, first)
+    second //= gcd(*(int(value) for value in second))
+    return _readonly((first, second), dtype=np.int64)
+
+
+def in_plane_reference_axes(rotation_deg, deformation=None) -> np.ndarray:
+    """Two perpendicular unit reference axes as read-only (2,2) xy rows.
+
+    The axes correspond to ``in_plane_reference_directions`` and are expressed
+    in unrotated analysis coordinates. For F=Rpolar U, transport the reference
+    frame by Rpolar R(rotation_deg), matching ``crystal_vector_coordinates``.
+    Stretch/shear U does not distort this orthonormal orientation indicator;
+    these are not generally the actual deformed lattice-vector directions.
+    Display rotation, if any, is applied separately by the caller.
+    """
+    if not np.isfinite(rotation_deg):
+        raise ValueError("Grain rotation must be finite")
+    f = np.eye(2) if deformation is None else np.asarray(deformation, dtype=float)
+    if f.shape != (2, 2) or not np.all(np.isfinite(f)):
+        raise ValueError("Deformation must be a finite 2-by-2 matrix")
+    left, stretches, right = np.linalg.svd(f)
+    if np.linalg.det(f) <= 0 or np.min(stretches) <= 1e-12:
+        raise ValueError("Deformation must be nonsingular and orientation-preserving")
+    return _readonly((left @ right @ rotation_matrix_2d(rotation_deg)).T)
+
+
 def get_geometry(lattice: str = "FCC", axis: str = "110") -> CrystalGeometry:
     """Compute the primitive plane and every axial phase of a cubic lattice."""
 
@@ -140,8 +231,8 @@ def get_geometry(lattice: str = "FCC", axis: str = "110") -> CrystalGeometry:
 
 @lru_cache(maxsize=64)
 def _geometry(lattice: str, axis: str) -> CrystalGeometry:
-    if lattice not in ("FCC", "BCC"):
-        raise ValueError("lattice must be FCC or BCC")
+    if lattice not in SUPPORTED_LATTICES:
+        raise ValueError("lattice must be FCC, BCC or SC")
     direction = np.array(parse_axis(axis), dtype=np.int64)
     axis_norm_squared = int(direction @ direction)
     unit = direction / np.sqrt(axis_norm_squared)
@@ -150,17 +241,16 @@ def _geometry(lattice: str, axis: str) -> CrystalGeometry:
     ex /= np.linalg.norm(ex)
     frame = _readonly(np.column_stack((ex, np.cross(unit, ex), unit)))
     # Primitive cubic Bravais translations in units a0/2.
-    primitive = (
-        np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=np.int64)
-        if lattice == "FCC"
-        else np.array([[2, 0, 1], [0, 2, 1], [0, 0, 1]], dtype=np.int64)
-    )
+    if lattice == "FCC":
+        primitive = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=np.int64)
+        axial_factor = 1 if int(direction.sum()) % 2 == 0 else 2
+    elif lattice == "BCC":
+        primitive = np.array([[2, 0, 1], [0, 2, 1], [0, 0, 1]], dtype=np.int64)
+        axial_factor = 1 if np.all(direction % 2 == direction[0] % 2) else 2
+    else:  # SC sites have three even half-indices.
+        primitive = 2 * np.eye(3, dtype=np.int64)
+        axial_factor = 2
     step, unimodular = plane_integer_basis(direction @ primitive)
-    axial_factor = (
-        (1 if int(direction.sum()) % 2 == 0 else 2)
-        if lattice == "FCC"
-        else (1 if np.all(direction % 2 == direction[0] % 2) else 2)
-    )
     axial = _readonly(direction * axial_factor, int)
     count = axial_factor * axis_norm_squared // step
     if count > MAX_LAYERS:
@@ -430,15 +520,18 @@ def csl_presets(axis: str = "110") -> tuple[CSLPreset, ...]:
 
 @lru_cache(maxsize=64)
 def _csl_presets(axis: str) -> tuple[CSLPreset, ...]:
-    """Selected cubic CSL rotations; complementary angles remain selectable.
+    """Selected cubic CSL rotations inside the fixed-axis reduced interval.
 
     Sigma is the odd part of the primitive integer quaternion norm.  These
-    cubic rotation indices apply to both FCC and BCC; the actual planar common
+    cubic rotation indices apply to FCC, BCC and SC; the actual planar common
     cell is calculated using the selected lattice's own primitive basis.
     """
 
     axis = axis_key(axis)
-    if axis == "110":
+    direction = parse_axis(axis)
+    family = sorted(map(abs, direction))
+    maximum = misorientation_range(axis).maximum_deg
+    if family == [0, 1, 1]:
         members = (
             (33, 8, 1, "a"),
             (19, 6, 1, ""),
@@ -449,29 +542,24 @@ def _csl_presets(axis: str) -> tuple[CSLPreset, ...]:
             (3, 2, 1, ""),
             (17, 3, 2, ""),
         )
-    elif axis == "100":
-        # No invented a/b/c suffixes: use the angle to distinguish complements.
+    elif family == [0, 0, 1]:
         members = (
             (25, 7, 1, ""),
             (13, 5, 1, ""),
             (17, 4, 1, ""),
             (5, 3, 1, ""),
-            (5, 2, 1, ""),
-            (17, 5, 3, ""),
-            (13, 3, 2, ""),
-            (25, 4, 3, ""),
         )
     else:
         # Generic primitive integer quaternions. Bounded low-Sigma menu only;
         # exact cell recognition is independent of this displayed menu.
-        norm_squared = sum(x * x for x in parse_axis(axis))
+        norm_squared = sum(x * x for x in direction)
         options = []
-        for m in range(1, 33):
+        for m in range(33):
             for n in range(1, 17):
                 if gcd(m, n) != 1:
                     continue
                 angle = csl_angle_deg(m, n, axis)
-                if not 0 < angle <= 90 + 1e-10:
+                if not 0 < angle <= maximum + 1e-10:
                     continue
                 sigma = m * m + norm_squared * n * n
                 while sigma % 2 == 0:

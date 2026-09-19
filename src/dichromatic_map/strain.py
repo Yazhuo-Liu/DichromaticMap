@@ -52,8 +52,8 @@ def strain_selected_cell(
         validate_cell_vertices(polygon)
     if not np.isfinite(percent) or not 0 < percent <= 10:
         raise ValueError("Strain limit must be in (0,10]%")
-    if not np.isfinite(angle) or not 0 <= angle <= 90:
-        raise ValueError("Reference angle must be in [0,90] degrees")
+    if not np.isfinite(angle) or not 0 <= angle <= 180:
+        raise ValueError("Reference angle must be in [0,180] degrees")
     if not np.isfinite(max_rotation_deg) or not 0 <= max_rotation_deg <= 5:
         raise ValueError("Rotation limit must be in [0,5] degrees per grain")
     geometry = get_geometry(lattice, axis)
@@ -389,7 +389,7 @@ def selected_cell_strain_readout(
         lines.extend(
             [
                 "",
-                f"G{grain + 1} ({'blue' if grain == 0 else 'red'})",
+                f"G{grain + 1}",
                 f"Polar rotation = {fit.rotations_deg[grain]:+.8f}°",
                 "Principal stretch factors:",
                 array(fit.stretches[grain]),

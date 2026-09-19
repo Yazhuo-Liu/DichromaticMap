@@ -37,15 +37,20 @@ def run_fresh(arguments, environment, directory):
     return result
 
 
-@pytest.mark.parametrize("requested_binding", [None, "PyQt5", "PyQt6"])
-def test_command_line_export_uses_pyside6(startup_environment, tmp_path, requested_binding):
+@pytest.mark.parametrize("requested_binding,lattice", [
+    (None, "FCC"), ("PyQt5", "BCC"), ("PyQt6", "SC"),
+])
+def test_command_line_export_uses_pyside6(
+    startup_environment, tmp_path, requested_binding, lattice,
+):
     # A conflicting environment variable must not select a different widget
     # family, even when the requested binding is installed alongside PySide6.
     if requested_binding is not None:
         startup_environment["PYQTGRAPH_QT_LIB"] = requested_binding
     image = tmp_path / "startup.png"
     result = run_fresh(
-        ["-m", "dichromatic_map", "--workers", "4", "--save", str(image)],
+        ["-m", "dichromatic_map", "--lattice", lattice, "--axis", "100",
+         "--workers", "4", "--save", str(image)],
         startup_environment, tmp_path,
     )
     assert "Saved dichromatic pattern" in result.stdout

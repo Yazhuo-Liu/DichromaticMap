@@ -6,6 +6,34 @@ from dichromatic_map import cells as cell_ops, crystal, matching, strain as stra
 from .helpers import corners, fcc22_diamond_pairs
 
 class CountingTests(unittest.TestCase):
+    def test_sc_100_single_layer_square_has_integer_site_counts(self):
+        # Direct square-grid count: nine closed sites, one interior site,
+        # and four representatives in [0,2) × [0,2).
+        polygon = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+        for layer in (-1, 0):
+            counts = cell_ops.count_cell_atoms(
+                polygon, 0, (np.eye(2), np.eye(2)), "SC", "100", layer=layer
+            )
+            np.testing.assert_array_equal(counts.interior, [[1], [1]])
+            np.testing.assert_array_equal(counts.boundary, [[8], [8]])
+            np.testing.assert_array_equal(counts.half_open, [[4], [4]])
+            np.testing.assert_array_equal(counts.half_open_edges, [[2], [2]])
+            np.testing.assert_array_equal(counts.half_open_corners, [[1], [1]])
+            self.assertEqual(counts.area, 4)
+
+        # Translate the two whole grains independently. Counts refer to their
+        # own physical polygons and must still contain exactly four sites.
+        shifts = np.array([[123.25, -46.5], [-8.125, 7.25]])
+        shifted = cell_ops.count_cell_atoms(
+            polygon[None] + shifts[:, None], 0, (np.eye(2), np.eye(2)),
+            "SC", "100", layer=0, translations=shifts
+        )
+        np.testing.assert_array_equal(shifted.half_open, [[4], [4]])
+        with self.assertRaises(ValueError):
+            cell_ops.count_cell_atoms(
+                polygon, 0, (np.eye(2), np.eye(2)), "SC", "100", layer=1
+            )
+
     def test_independent_grain_polygons_and_selected_layer(self):
         polygons = np.array(
             [
@@ -78,7 +106,7 @@ class CountingTests(unittest.TestCase):
         self.assertEqual(counts.area, 4)
 
     def test_exact_and_strained_counts_equal_lattice_determinants(self):
-        for lattice in ("FCC", "BCC"):
+        for lattice in ("FCC", "BCC", "SC"):
             for axis in ("100", "110", "111", "112", "1 -1 3"):
                 preset = min(
                     crystal.csl_presets(axis), key=lambda p: (p.sigma, p.angle_deg)

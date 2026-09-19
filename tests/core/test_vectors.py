@@ -13,6 +13,24 @@ def basis(angle, f, lattice, axis):
 
 
 class VectorPhysicsTests(unittest.TestCase):
+    def test_sc_110_integer_translation_includes_axial_component(self):
+        # SC conventional [2,-1,3] projects onto [-1,1,0]/sqrt(2),
+        # [0,0,1], [1,1,0]/sqrt(2). Build this without the geometry helper.
+        reference = np.array([2, -1, 3])
+        angle = 19.0
+        f = rotation(0.7) @ np.array([[1.03, 0.015], [0.015, 0.98]])
+        planar = f @ rotation(angle) @ [-3 / np.sqrt(2), 3]
+        displacement = np.r_[planar, 1 / np.sqrt(2)]
+        value = crystal.crystal_vector_coordinates(
+            displacement, angle, f, lattice="SC", axis="110"
+        )
+        np.testing.assert_allclose(value.lattice, reference, atol=1e-12)
+        np.testing.assert_allclose(value.current_frame @ value.current,
+                                   displacement, atol=1e-12)
+        self.assertEqual(crystal.format_direction_components(value.lattice, unit=""),
+                         "[2 -1 3]")
+        self.assertTrue(value.strained)
+
     def test_unstrained_vector_has_two_crystal_representations(self):
         value = np.array([0.5, 0.5, 1.0])
         d = basis(30, np.eye(2), "BCC", "100") @ value
@@ -30,7 +48,7 @@ class VectorPhysicsTests(unittest.TestCase):
         )
 
     def test_strain_changes_current_components_not_material_indices(self):
-        for lattice in ("FCC", "BCC"):
+        for lattice in ("FCC", "BCC", "SC"):
             for axis in ("100", "110", "111", "112", "1 -1 3"):
                 u = np.array([[1.04, 0.009], [0.009, 0.98]])
                 r = rotation(0.7)
@@ -100,4 +118,3 @@ class VectorPhysicsTests(unittest.TestCase):
         for deformation in (np.zeros((2, 2)), np.diag([-1, 1]), [[1, 0], [0, np.nan]]):
             with self.assertRaises(ValueError):
                 crystal.crystal_vector_coordinates([1, 2, 3], 0, deformation)
-

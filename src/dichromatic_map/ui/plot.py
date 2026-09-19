@@ -10,18 +10,19 @@ from typing import TYPE_CHECKING
 import numpy as np
 from ._qt import QtCore, QtGui, QtWidgets, pg
 from . import (
-    GRAIN_1_COLOR,
-    GRAIN_1_EDGE,
-    GRAIN_2_COLOR,
     COINCIDENCE_COLOR,
     BOUNDARY_COLOR,
     VECTOR_COLOR,
-    LAYER_SYMBOLS,
     MANUAL_CELL_COLOR,
     NEAR_COLOR,
     LOCAL_COLOR,
 )
-from ..crystal import layer_name, rotation_matrix_2d
+from .reference_axes import GrainReferenceAxes
+from .markers import grain_edge_color, marker_symbol
+from ..crystal import (
+    layer_name, rotation_matrix_2d,
+    in_plane_reference_directions, in_plane_reference_axes,
+)
 from ..state import BUFFER_FACTOR, VIEW_SCALE_MIN, VIEW_SCALE_MAX
 import pyqtgraph.exporters
 
@@ -100,12 +101,12 @@ class PatternPlot:
         self.plot_item.addItem(self.local_match_item)
         self.plot_item.addItem(self.local_link_item)
         self.manual_cell_item = pg.PlotCurveItem(
-            pen=pg.mkPen(GRAIN_1_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DashLine)
+            pen=pg.mkPen(self.owner.state.grain_colors[0], width=2.4, style=QtCore.Qt.PenStyle.DashLine)
         )
         self.manual_grain_cell_items = [
             self.manual_cell_item,
             pg.PlotCurveItem(
-                pen=pg.mkPen(GRAIN_2_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DotLine)
+                pen=pg.mkPen(self.owner.state.grain_colors[1], width=2.4, style=QtCore.Qt.PenStyle.DotLine)
             ),
         ]
         self.manual_vertex_item = self._ring_item(MANUAL_CELL_COLOR, diameter * 2.2)
@@ -169,6 +170,8 @@ class PatternPlot:
             item.hide()
             self.plot_item.addItem(item)
 
+        self.reference_axes_item = GrainReferenceAxes(self.view_box)
+
         self.legend = self.plot_item.addLegend(offset=(14, 14), colCount=3)
         self.legend.setBrush(pg.mkBrush(255, 255, 255, 225))
         self.legend.setPen(pg.mkPen("#cbd5e1"))
@@ -180,6 +183,40 @@ class PatternPlot:
         self.view_box.sigRangeChanged.connect(self.owner._on_view_range_changed)
         self.plot_widget.sigDeviceRangeChanged.connect(self._layout_title)
         self.view_box.sigResized.connect(self._layout_title)
+        self.view_box.sigResized.connect(self._update_reference_axes)
+
+    def _update_reference_axes(self, *_args):
+        state = self.owner.state
+        indices = in_plane_reference_directions(state.geometry.axis)
+        labels = tuple("[" + " ".join(map(str, vector)) + "]" for vector in indices)
+        directions = np.stack([
+            self._to_view(in_plane_reference_axes(sign * state.angle_deg / 2, deformation))
+            for sign, deformation in zip((1, -1), state.deformations)
+        ])
+        item = self.reference_axes_item
+        item.set_colors(state.grain_colors)
+        item.set_reference(directions, labels)
+        item.setVisible(state.show_reference_axes)
+        bounds = self.view_box.boundingRect()
+        # Parent directly to the ViewBox, outside its data transform. A small
+        # viewport may scale the panel down, but pan/zoom never changes its size.
+        scale = min(1.0, max(1.0, bounds.width() - 28) / item.boundingRect().width())
+        item.setScale(scale)
+        item.setPos(bounds.left() + 14, bounds.bottom() - 14 - scale * item.boundingRect().height())
+        self._position_vector_annotation()
+
+    def _position_vector_annotation(self):
+        if not self.vector_annotation.isVisible():
+            return
+        bounds = self.view_box.boundingRect()
+        self.vector_annotation.setTextWidth(-1)
+        natural_width = self.vector_annotation.textItem.boundingRect().width()
+        self.vector_annotation.setTextWidth(min(natural_width, max(1.0, bounds.width() - 28)))
+        bottom = bounds.bottom() - 14
+        if self.reference_axes_item.isVisible():
+            bottom = self.reference_axes_item.pos().y() - 10
+        position = self.view_box.mapToView(QtCore.QPointF(bounds.left() + 14, bottom))
+        self.vector_annotation.setPos(position)
 
     def _set_title(self, text):
         self.plot_item.setTitle(text)
@@ -235,20 +272,19 @@ class PatternPlot:
         self.coincidence_items = []
         diameter = self._base_marker_diameter()
         for layer in range(self.owner.state.geometry.layer_count):
-            symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
+            symbol = marker_symbol(self.owner.state.layer_symbols[layer])
             for grain in (0, 1):
+                color = self.owner.state.grain_colors[grain]
+                brush_color = QtGui.QColor(color)
+                brush_color.setAlpha(185 if grain == 0 else 0)
                 item = pg.ScatterPlotItem(
                     size=diameter * (1 if grain == 0 else 1.12),
                     symbol=symbol,
                     pen=pg.mkPen(
-                        GRAIN_1_EDGE if grain == 0 else GRAIN_2_COLOR,
+                        grain_edge_color(color, grain),
                         width=0.8 if grain == 0 else 1.5,
                     ),
-                    brush=(
-                        pg.mkBrush(22, 119, 210, 185)
-                        if grain == 0
-                        else pg.mkBrush(0, 0, 0, 0)
-                    ),
+                    brush=pg.mkBrush(brush_color),
                     pxMode=True,
                     clickable=False,
                 )
@@ -266,6 +302,32 @@ class PatternPlot:
             item.setZValue(2)
             self.coincidence_items.append(item)
             self.plot_item.addItem(item)
+        self._rebuild_legend()
+
+    def refresh_appearance(self):
+        """Restyle existing items without regenerating atoms or changing picks."""
+        state = self.owner.state
+        for grain, items in enumerate(self.grain_layer_items):
+            color = state.grain_colors[grain]
+            brush_color = QtGui.QColor(color)
+            brush_color.setAlpha(185 if grain == 0 else 0)
+            pen = pg.mkPen(grain_edge_color(color, grain), width=0.8 if grain == 0 else 1.5)
+            brush = pg.mkBrush(brush_color)
+            for layer, item in enumerate(items):
+                item.setPen(pen)
+                item.setBrush(brush)
+                item.setSymbol(marker_symbol(state.layer_symbols[layer]))
+        for layer, item in enumerate(self.coincidence_items):
+            item.setSymbol(marker_symbol(state.layer_symbols[layer]))
+        for color, item, style in zip(
+            state.grain_colors, self.manual_grain_cell_items,
+            (QtCore.Qt.PenStyle.DashLine, QtCore.Qt.PenStyle.DotLine),
+        ):
+            item.setPen(pg.mkPen(color, width=2.4, style=style))
+        self._local_overlay_key = None
+        self._draw_manual_cell()
+        self._update_local_overlay()
+        self._update_reference_axes()
         self._rebuild_legend()
 
     def _rebuild_legend(self):
@@ -347,9 +409,9 @@ class PatternPlot:
         ).reshape(-1, 2)
         if self.owner.state.manual_vertices:
             self.manual_vertex_item.setSymbol(
-                LAYER_SYMBOLS[
-                    self.owner.state.manual_vertices[0].layer % len(LAYER_SYMBOLS)
-                ]
+                marker_symbol(self.owner.state.layer_symbols[
+                    self.owner.state.manual_vertices[0].layer
+                ])
             )
         self._set_scatter(self.manual_vertex_item, points)
         displayed = self._to_view(points)
@@ -435,6 +497,7 @@ class PatternPlot:
             self.owner.local_active,
             session.display_rotation_deg,
             tuple(sorted(session.visible_layers)),
+            tuple(session.layer_symbols),
             tuple(np.asarray(session.selected_points).ravel()),
             self.owner._region_states(),
             session.grain_signature == self.owner._geometry_signature(),
@@ -448,7 +511,7 @@ class PatternPlot:
             self.local_match_item.setData(
                 pos=self._local_midpoints_view,
                 symbol=[
-                    LAYER_SYMBOLS[int(layer) % len(LAYER_SYMBOLS)]
+                    marker_symbol(session.layer_symbols[int(layer)])
                     for layer in pairs.layers[mask]
                 ],
             )
@@ -632,6 +695,7 @@ class PatternPlot:
             item.show()
 
     def _draw_vector(self) -> None:
+        self._update_reference_axes()
         if self.owner.state.selected_atoms:
             points = np.array(
                 [atom.position for atom in self.owner.state.selected_atoms]
@@ -670,16 +734,9 @@ class PatternPlot:
         )
         self.vector_arrow.setPolygon(polygon)
         self.vector_arrow.show()
-        x_min, x_max, y_min, y_max = self._view_range()
-        text_position = np.array(
-            [
-                x_min + 0.025 * (x_max - x_min),
-                y_min + 0.035 * (y_max - y_min),
-            ]
-        )
         self.vector_annotation.setText(self.owner._selected_vector_readout())
-        self.vector_annotation.setPos(*text_position)
         self.vector_annotation.show()
+        self._position_vector_annotation()
         self.owner._request_vector_annotation_repaint()
 
     def _line_box_intersections(

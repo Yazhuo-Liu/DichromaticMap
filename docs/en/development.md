@@ -16,9 +16,14 @@ point per row, so corresponding matrix operations use a transpose.
 | [strain.py](../../src/dichromatic_map/strain.py) | Automatic symmetric strain search and selected-cell fitting |
 | [compute.py](../../src/dichromatic_map/compute.py) | Worker entry points, executors and asynchronous search |
 | [state.py](../../src/dichromatic_map/state.py) | Parameters, geometry, selections, deformations and result state |
+| [appearance.py](../../src/dichromatic_map/appearance.py) | Qt-free grain colors, unique marker identifiers, validation and resizing |
+| [session.py](../../src/dichromatic_map/session.py) | Versioned session archive, validation and atomic persistence |
+| [exports.py](../../src/dichromatic_map/exports.py) | Recomputed count, vector and strain CSV tables |
+| [ui/session.py](../../src/dichromatic_map/ui/session.py) | File dialogs, control synchronization and session restoration |
 | [ui/window.py](../../src/dichromatic_map/ui/window.py) | Interaction, validation, task dispatch and result application |
 | [ui/plot.py](../../src/dichromatic_map/ui/plot.py) | Display transforms, buffered rendering, overlays and export |
 | [ui/controls.py](../../src/dichromatic_map/ui/controls.py) | Controls and visual resources |
+| [ui/markers.py](../../src/dichromatic_map/ui/markers.py) | Shared marker paths, layer icons and grain edge colors |
 
 The numerical modules use NumPy without importing Qt. `PatternState`, `ComputeSession`,
 `ControlDock` and `PatternPlot` hold separate parts of a viewer session; the window coordinates them.
@@ -51,12 +56,14 @@ It rejects the zero vector and reduced components with absolute value above 64.
 Let `D = d·d`. A transverse unit vector is constructed by crossing a reference direction
 with `d / sqrt(D)`; the second transverse vector completes a right-handed orthonormal frame.
 
-The columns of the primitive translation matrices below are expressed in half-index units:
+SC, FCC and BCC each describe a Bravais point lattice with one atom per primitive
+cell. There is no additional atom-basis or chemical-species array. The columns of
+the primitive translation matrices below are expressed in half-index units (a₀/2):
 
 ```text
-          [0 1 1]             [2 0 1]
-T_FCC =   [1 0 1]    T_BCC =  [0 2 1]
-          [1 1 0]             [0 0 1]
+          [0 1 1]             [2 0 1]             [2 0 0]
+T_FCC =   [1 0 1]    T_BCC =  [0 2 1]    T_SC =   [0 2 0]
+          [1 1 0]             [0 0 1]             [0 0 2]
 ```
 
 For the integer row `r = dᵀ T`, extended Euclidean steps construct a unimodular integer matrix
@@ -69,6 +76,7 @@ The shortest axial lattice translation has half-indices `κ d`, where:
 
 - FCC uses `κ=1` when `h+k+l` is even, otherwise `κ=2`.
 - BCC uses `κ=1` when all three components have the same parity, otherwise `κ=2`.
+- SC uses `κ=2`: all reference half-indices are even, so the physical repeat is `a₀ d`.
 
 The number of phases, axial repeat length and spacing are:
 
@@ -76,15 +84,59 @@ The number of phases, axial repeat length and spacing are:
 L = κ D / g,       H_axial = κ sqrt(D) / 2,       s = g / (2 sqrt(D)).
 ```
 
+For SC, the reduced axis has `gcd(d)=1`, hence `g=gcd(2d)=2`. Therefore
+`L=D`, `H_axial=sqrt(D)` and `s=1/sqrt(D)` in normalized units. The [100], [110],
+[111] and [112] layer counts are 1, 2, 3 and 6. SC uses the same integer-plane
+construction, phase offsets and resource limits as FCC/BCC.
+
 The first column of `T U` generates successive layer offsets. Integer planar translations
 bring each offset back into the planar fundamental parallelogram without changing its axial height.
 The implementation rejects geometries requiring more than 256 phases. Geometry arrays are
 read-only and cached by normalized lattice and axis, with up to 64 cached geometries.
 
+### Fixed-axis misorientation range
+
+The reference angle input uses the symmetry of the undeformed cubic lattice.
+SC, FCC and BCC have the same proper cubic point group: the 24 signed permutation
+matrices with determinant +1. For the reduced integer axis `d`, count the matrices
+`S` satisfying `S d = d` exactly. This directed-axis stabilizer has order `n`;
+operations sending `d` to `-d` are not counted as rotations about `d`.
+
+```text
+rotation period = 360° / n
+input interval  = [0°, 180° / n]
+```
+
+The second line also identifies `theta` and `-theta` by exchanging the grains.
+The ⟨100⟩, ⟨110⟩ and ⟨111⟩ families have orders 4, 2 and 3, respectively, so the
+input maxima are 45°, 90° and 60°. All other cubic axes, including ⟨112⟩, have
+order 1 and use 180°. The cubic rotation orders are illustrated in the
+[IUCr teaching pamphlet, *Projections of cubic crystals*](https://www.iucr.org/what-we-do/education/pamphlets/projections-of-cubic-crystals).
+Sign changes, integer rescaling and index permutations are handled through the
+axis parser and symmetry calculation, without relying on menu labels.
+
+This is a reduction within the chosen fixed-axis rotation family, not a global
+cubic disorientation minimization that can change the axis representation.
+Every valid supported cubic axis has a computable order. The general 0–180°
+interval is also the fallback when crystal symmetry information is unavailable.
+The public `misorientation_range(axis="110", lattice="FCC")` helper returns an
+immutable `AngleRange(maximum_deg, period_deg, symmetry_order)`; for an unknown
+lattice it returns `(180.0, None, None)` without claiming a known rotation period.
+Axis validation still applies, and geometry construction still rejects unsupported
+lattices.
+
+The GUI number field, slider, range hint and preset list use the same upper
+bound. Command-line angle validation rejects values outside that bound rather
+than folding them into the interval. The numerical geometry and rotation
+functions continue to use their supplied angles without this UI restriction.
+
 CSL menu presets use integer quaternions `(m, n d)` and
 `theta = 2 atan2(sqrt(D) n, m)`. For primitive quaternions, preset Σ is the odd part of
 `m² + D n²`. The [100]/[110] menus have selected entries; other axes use a bounded low-Σ menu.
-The menu and its display-angle matching tolerance do not establish exact cell commensurability.
+All menus are limited to the corresponding fixed-axis input interval; for example,
+the [100] Σ5 entry is approximately 36.87°, while its complementary 53.13° angle
+is outside the 0–45° interval. The menu and its display-angle matching tolerance
+do not establish exact cell commensurability.
 
 ## 3. Generating a finite projected region
 
@@ -142,9 +194,14 @@ alone does not certify a primitive periodic cell.
 
 ### Rational, layer-preserving common cell
 
-`exact_csl_cell` approximates `tan(theta/2)/sqrt(D)` by a rational `n/m`, with denominator
-at most 128 by default. It accepts the rational only if its reconstructed angle differs by
-at most `1e-9` degrees. An unrecognized angle returns `None`.
+`exact_csl_cell` approximates `tan(theta/2)/sqrt(D)` by a reduced rational `n/m`.
+The `max_denominator` parameter bounds both primitive coefficients `m` and `n`
+(default 128), preventing an arbitrarily large numerator near 180°. It accepts
+the rational only if its reconstructed angle differs by at most `1e-9` degrees.
+An unrecognized angle returns `None`; a mathematically commensurate rotation
+can remain unrecognized when its coefficients exceed the bound. The full 0–180°
+interval is supported: 0° and 180° use exact endpoint quaternions `(1, 0)` and
+`(0, d)`, respectively, without evaluating the singular tangent at 180°.
 
 The quaternion rotation is constructed as an integer numerator and denominator. Projecting
 it into the primitive planar basis gives the rational matrix `B2⁻¹ B1 = A/q`, where
@@ -374,6 +431,33 @@ require the layer to be visible in both grains. Local visibility checks both ori
 against the GB sides, not just the midpoint. A manual cell stores its layer and actual paired
 vertices, keeping its counting geometry independent of later display filters.
 
+The floating grain reference axes use the two transverse unit directions in
+`geometry.frame[:, :2]`, expressed as crystal direction labels `[uvw]`. They are
+perpendicular to the viewing axis and to each other; for [110] they are parallel
+to `[-1 1 0]` and `[0 0 1]`. `in_plane_reference_directions` derives their signed
+integer labels by cross products followed by greatest-common-divisor reduction;
+the labels describe directions, not primitive translation lengths.
+`in_plane_reference_axes` uses the two unit basis vectors as their normalized
+reference-plane components. For grain `g`, the displayed arrow directions are
+
+```text
+v_g,i = R_display R_polar(F_g) R(phi_g) e_i,
+phi_1 = +theta/2,    phi_2 = -theta/2,    i = 1, 2.
+```
+
+Using only the polar rotation of `F_g` keeps both arrows orthogonal. Applying
+`F_g` directly would draw the sheared/stretched lattice directions, which is a
+different quantity from this orientation reference. The overlay is anchored to
+the lower-left viewport with a fixed screen size, independently of the model
+origin and atom positions. Both grain frames share one fixed origin, with the
+selected grain colors (blue and orange by default) distinguishing them and no
+G1/G2 headings. The layout reserves space
+for the arrows and `[uvw]` labels independently of the current angle, so rotation
+does not recenter or resize the panel. Pan and zoom preserve its placement and
+size; geometry, reference angle, deformation and display rotation determine the
+arrow directions. `Grain reference axes` controls visibility, and the vector readout
+reserves space above it while visible. Enabled axes are included in plot export.
+
 The plot reuses local-pair scatter data, links, transformed midpoints and distances when only
 the viewport changes. The cache key includes pair-object identity, local-mode state, display
 rotation, shared layer visibility, GB endpoints and sides, geometry validity, buffer bounds
@@ -404,3 +488,85 @@ signatures and count-request keys similarly prevent stale results from replacing
 These resource bounds, candidate sampling and numerical tolerances are part of the implemented
 algorithm. They support interactive geometric analysis and do not establish relaxed structures,
 elastic equilibria or global optimality.
+
+## Appearance state and marker rendering
+
+`PatternState.grain_colors` stores two `#RRGGBB` strings; `layer_symbols` stores
+one unique marker identifier per axial layer, shared by both grains. The Qt-free
+`appearance.py` validates the color format and normalizes it to lowercase. It
+checks symbol count, membership and uniqueness, while allowing the two grain
+colors to match. The original twelve PyQtGraph symbols remain the defaults for
+the first twelve layers; later layers use `number:13` through `number:256`.
+All numbered identifiers from `number:1` through `number:256` are valid regardless
+of the current layer count, so an assigned numbered symbol survives a geometry
+change to fewer layers. Resizing preserves valid retained assignments and fills
+new layers from unused defaults.
+
+`ui/markers.py` resolves ordinary identifiers to built-in symbols and numbered
+identifiers to cached `QPainterPath` circles with numeral cutouts. It does not
+modify PyQtGraph's global symbol registry. The numerals use built-in seven-segment
+vector outlines rather than system fonts, so headless Qt environments cannot
+replace distinct numbers with identical missing-glyph boxes. Plot markers and control icons share
+this resolver. Grain colors also feed the reference axes, manual-cell outlines
+and legend; G1 keeps a filled style with a darker edge and G2 keeps an outline.
+
+The `APPEARANCE` controls disable symbols assigned to other layers and reject
+duplicate assignments in callbacks. Appearance updates repaint existing data and
+refresh affected icons and overlays. They do not invalidate physical geometry,
+matching or count results, schedule numerical work, or clear selections, strain
+or translations. `Reset appearance` changes only these style preferences.
+
+## Session persistence and numerical export
+
+`session.py` stores a `.dmap` ZIP archive with schema version 2. `session.json`
+contains explicit physical and display inputs, not a dump of `PatternState`:
+current lattice/axis/angle replace potentially stale launch parameters, arrays
+become ordinary JSON lists, and selected atom indices retain their grain and
+axial layer. Applied `StrainedCell` and `SelectedCellStrain` records include the
+original vertices and cutoff needed to undo a selected-cell fit. Interaction
+mode and partial selections are retained; rendering buffers, futures, worker
+counts and local paths are excluded. The selected automatic strain candidate is
+retained, while its other search candidates are omitted. Schema 2 adds
+`grain_colors` and `layer_symbols` to the explicit state fields. Schema 1 files
+still load with the default colors and unique layer symbols; saving them writes
+schema 2. Unsupported future versions and unexpected fields are rejected.
+
+`load_session` returns `SessionSnapshot(state, settings, view_range)`. The
+loader checks schema/version, required archive members and bounded sizes,
+finite numbers, array shapes, axis/layer/index validity, appearance formats and
+symbol uniqueness, deformation orientation, common-cell consistency, and
+selected-atom coordinates. It reads JSON directly
+without extracting files or unpickling objects; CSV outputs are not inputs to
+state restoration. `save_session` validates its own serialized payload and
+builds the numerical tables before writing a temporary archive beside the
+destination. A successful write is flushed and atomically replaces the target;
+failure leaves the previous file intact and removes the temporary file.
+
+`SessionController` checks viewport enumeration limits before replacing the
+window state. It stops old timers, invalidates geometry/search work and drops
+the previous count future's publication handle. Control signals are blocked
+while applying the validated state, preventing geometry changes from clearing
+imported selections. It then regenerates the plot, local pairs and manual counts
+from the restored inputs. The current worker configuration is retained. View
+bounds are given in display coordinates; aspect locking can enlarge a restored
+view on a differently proportioned viewport while preserving its center.
+
+`exports.build_export_tables` returns UTF-8 CSV text plus `README.txt`:
+
+- Counts are recomputed with `count_cell_atoms` for each actual grain polygon
+  and the picked layer, applying the saved GB filter only when enabled. No
+  cached or viewport count is reused. Unavailable half-open values are blank.
+- Vector xy components come from actual endpoint positions; the axial component
+  uses reference half-indices plus the selected periodic image. The same
+  physical displacement is converted to analysis/display, polar cubic and
+  deformed lattice coordinates. Cross-grain vectors use both grain frames.
+- Strain tables use the current per-grain deformation gradients and translations.
+  SVD gives `F = R U`; `E = (F.T F - I)/2` is exported in the reference analysis
+  plane and transformed to reference cubic coordinates. Rigid rotation and
+  principal engineering strains remain distinct quantities.
+
+Floating-point values use 17 significant digits. Headers and rows identify units
+and frames; a₀/Å and a₀²/Å² conversions use the saved lattice constant. Incomplete
+manual-cell or vector selections produce header-only tables, whereas an
+unstrained grain has a real identity F and zero E. Numerical export errors fail
+the save instead of silently writing partial or stale results.

@@ -118,6 +118,59 @@ def test_orientation_custom_axis_and_independent_layer_controls(gui):
     assert "22.00000000" in controls.angle_exact_label.text()
 
 
+def test_structure_switch_rebuilds_single_layer_sc_and_exact_cell(gui):
+    window = gui.window(lattice="FCC", axis="100")
+    controls, state, plot = window.controls, window.state, window.plot
+    for lattice, layers in (("BCC", 2), ("SC", 1), ("FCC", 2), ("SC", 1)):
+        controls.orientation_layers_tabs.setCurrentIndex(0)
+        index = controls.structure_combo.findData(lattice)
+        assert index >= 0, f"Structure chooser is missing {lattice}"
+        controls.structure_combo.setCurrentIndex(index)
+        gui.settle(window)
+        assert state.geometry.lattice == lattice
+        assert state.geometry.layer_count == layers
+        assert state.visible_grain_layers == [set(range(layers)), set(range(layers))]
+        assert [len(checks) for checks in controls.grain_layer_checks] == [layers, layers]
+        assert controls.axial_layer_checks_layout.count() == 2 * layers
+        assert [len(items) for items in plot.grain_layer_items] == [layers, layers]
+        assert len(plot.coincidence_items) == layers
+        assert all(
+            check.isChecked() for checks in controls.grain_layer_checks for check in checks
+        )
+        assert state.grain_signature == window._geometry_signature()
+
+    corners = pick_exact_cell(gui, window)
+    np.testing.assert_array_equal(state.manual_counts.half_open, [[5], [5]])
+    assert all(vertex.layer == 0 for vertex in state.manual_vertices)
+    assert not controls.manual_strain_button.isEnabled()
+    counts = state.manual_counts
+    controls.grain_layer_checks[0][0].click()
+    assert state.visible_grain_layers == [set(), {0}]
+    assert len(plot.grain_layer_items[0][0].points()) == 0
+    assert len(plot.grain_layer_items[1][0].points()) > 0
+    assert len(plot.coincidence_items[0].points()) == 0
+    assert state.manual_counts is counts  # Display filters do not change the counted layer.
+    controls.all_layers_button.click()
+    assert state.visible_grain_layers == [{0}, {0}]
+    assert len(plot.coincidence_items[0].points()) > 0
+
+    controls.rotation_spin.setValue(37)
+    plot.view_box.translateBy(x=30, y=-20)
+    controls.manual_fit_button.click()
+    gui.settle(window)
+    controls.pick_gb_button.click()
+    gui.click_plot(window, corners[0])
+    gui.click_plot(window, corners[1])
+    controls.region_checks[2].click()
+    controls.region_checks[3].click()
+    controls.manual_visible_check.click()
+    gui.settle(window)
+    np.testing.assert_array_equal(state.manual_counts.half_open, [[5], [0]])
+    controls.manual_visible_check.click()
+    gui.settle(window)
+    np.testing.assert_array_equal(state.manual_counts.half_open, [[5], [5]])
+
+
 def test_vector_and_boundary_picking_respect_display_rotation(gui):
     window = gui.window(lattice="BCC", axis="100", angle_deg=37)
     controls, state, plot = window.controls, window.state, window.plot
@@ -323,7 +376,7 @@ def test_local_cell_uses_actual_pair_polygons_and_restores_fit(gui, local_diamon
         assert vertex.source == "CSL"
         assert np.linalg.norm(state.coincident_points[1] - vertex.position, axis=1).min() < 1e-10
     details = controls.manual_strain_details.toPlainText()
-    assert "G1 (blue)" in details and "G2 (red)" in details
+    assert "\nG1\n" in details and "\nG2\n" in details
     assert "Four-pair alignment" in details
     controls.rotation_spin.setValue(41)
     plot.view_box.translateBy(x=20, y=-16)
@@ -429,10 +482,7 @@ def test_gui_export_dialog_writes_plot_png_and_theme_icons(gui, monkeypatch, tmp
         return str(output), "PNG image (*.png)"
 
     monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", choose_filename)
-    export = next(
-        button for button in window.findChildren(QtWidgets.QPushButton)
-        if button.text() == "Export plot as PNG…"
-    )
+    export = window.controls.export_button
     export.click()
     assert calls[0][1:] == (
         "Export dichromatic pattern", "dichromatic_pattern.png", "PNG image (*.png)"

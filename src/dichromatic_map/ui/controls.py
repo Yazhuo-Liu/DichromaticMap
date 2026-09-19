@@ -5,19 +5,14 @@ the control classes never generate atoms or own process pools.
 """
 
 from __future__ import annotations
-import math
 import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 from ._qt import QtCore, QtGui, QtWidgets, pg
-from . import (
-    GRAIN_1_COLOR,
-    GRAIN_1_EDGE,
-    GRAIN_2_COLOR,
-    LAYER_SYMBOLS,
-)
-from ..crystal import layer_name
+from .markers import marker_icon
+from ..appearance import DEFAULT_GRAIN_COLORS, available_layer_symbols, default_layer_symbols
+from ..crystal import SUPPORTED_LATTICES, layer_name
 from ..state import VIEW_SCALE_MIN, VIEW_SCALE_MAX, VIEW_SCALE_STOPS
 from ..strain import DEFAULT_STRAIN_PERCENT, DEFAULT_SEARCH_INDEX
 from ..matching import DEFAULT_LOCAL_DISTANCE
@@ -93,6 +88,11 @@ class CurrentPageTabWidget(QtWidgets.QTabWidget):
             for index in range(self.count())
         ]
         current_height = page_heights[self.currentIndex()]
+        page = self.currentWidget()
+        if page.hasHeightForWidth() and page.width() > 0:
+            # Wrapped help text must fit the actual dock width. Otherwise Qt
+            # can squeeze its label over the fixed-height layer-symbol list.
+            current_height = max(current_height, page.heightForWidth(page.width()))
         chrome_height = max(0, base.height() - max(page_heights, default=0))
         result = QtCore.QSize(base)
         result.setHeight(chrome_height + current_height)
@@ -129,85 +129,13 @@ class CurrentPageTabWidget(QtWidgets.QTabWidget):
             parent.updateGeometry()
 
 
-def layer_marker_icon(grain: int, layer: int, size: int = 18) -> QtGui.QIcon:
-    """Return a small marker matching the grain color and plotted layer shape."""
-
-    pixmap = QtGui.QPixmap(size, size)
-    pixmap.fill(QtCore.Qt.GlobalColor.transparent)
-    painter = QtGui.QPainter(pixmap)
-    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-    edge = QtGui.QColor(GRAIN_1_EDGE if grain == 0 else GRAIN_2_COLOR)
-    fill = QtGui.QColor(GRAIN_1_COLOR)
-    fill.setAlpha(190)
-    painter.setPen(QtGui.QPen(edge, 1.5))
-    painter.setBrush(QtGui.QBrush(fill) if grain == 0 else QtCore.Qt.BrushStyle.NoBrush)
-
-    center = QtCore.QPointF(size / 2, size / 2)
-    radius = size * 0.31
-    symbol = LAYER_SYMBOLS[layer % len(LAYER_SYMBOLS)]
-
-    def polygon(sides: int, rotation: float) -> QtGui.QPolygonF:
-        return QtGui.QPolygonF(
-            [
-                QtCore.QPointF(
-                    center.x() + radius * math.cos(rotation + 2 * math.pi * i / sides),
-                    center.y() + radius * math.sin(rotation + 2 * math.pi * i / sides),
-                )
-                for i in range(sides)
-            ]
-        )
-
-    if symbol == "o":
-        painter.drawEllipse(center, radius, radius)
-    elif symbol == "d":
-        painter.drawPolygon(polygon(4, 0.0))
-    elif symbol in {"t", "t1", "t2", "t3"}:
-        rotations = {
-            "t": -math.pi / 2,
-            "t1": math.pi / 2,
-            "t2": 0.0,
-            "t3": math.pi,
-        }
-        painter.drawPolygon(polygon(3, rotations[symbol]))
-    elif symbol == "s":
-        painter.drawPolygon(polygon(4, math.pi / 4))
-    elif symbol in {"p", "h"}:
-        painter.drawPolygon(polygon(5 if symbol == "p" else 6, -math.pi / 2))
-    elif symbol == "star":
-        points = []
-        for index in range(10):
-            point_radius = radius if index % 2 == 0 else radius * 0.43
-            angle = -math.pi / 2 + index * math.pi / 5
-            points.append(
-                QtCore.QPointF(
-                    center.x() + point_radius * math.cos(angle),
-                    center.y() + point_radius * math.sin(angle),
-                )
-            )
-        painter.drawPolygon(QtGui.QPolygonF(points))
-    else:
-        diagonal = symbol == "x"
-        offset = radius / math.sqrt(2) if diagonal else radius
-        if diagonal:
-            painter.drawLine(
-                QtCore.QPointF(center.x() - offset, center.y() - offset),
-                QtCore.QPointF(center.x() + offset, center.y() + offset),
-            )
-            painter.drawLine(
-                QtCore.QPointF(center.x() - offset, center.y() + offset),
-                QtCore.QPointF(center.x() + offset, center.y() - offset),
-            )
-        else:
-            painter.drawLine(
-                QtCore.QPointF(center.x() - radius, center.y()),
-                QtCore.QPointF(center.x() + radius, center.y()),
-            )
-            painter.drawLine(
-                QtCore.QPointF(center.x(), center.y() - radius),
-                QtCore.QPointF(center.x(), center.y() + radius),
-            )
-    painter.end()
-    return QtGui.QIcon(pixmap)
+def layer_marker_icon(grain: int, layer: int, size: int = 18, *, color=None, symbol=None) -> QtGui.QIcon:
+    """Return the plotted marker, retaining the default-style helper interface."""
+    if color is None:
+        color = DEFAULT_GRAIN_COLORS[grain]
+    if symbol is None:
+        symbol = default_layer_symbols(layer + 1)[layer]
+    return marker_icon(symbol, color, filled=grain == 0, size=size)
 
 
 class ControlDock:
@@ -246,7 +174,7 @@ class ControlDock:
         crystal_box = QtWidgets.QGroupBox("CRYSTAL / AXIS")
         crystal_layout = QtWidgets.QFormLayout(crystal_box)
         self.structure_combo = QtWidgets.QComboBox()
-        for lattice in ("FCC", "BCC"):
+        for lattice in SUPPORTED_LATTICES:
             self.structure_combo.addItem(lattice, lattice)
         self.structure_combo.setCurrentIndex(
             self.structure_combo.findData(self.owner.state.geometry.lattice)
@@ -346,10 +274,10 @@ class ControlDock:
         visibility_layout = visibility_box.content_layout
         self.region_checks: list[QtWidgets.QCheckBox] = []
         check_specs = (
-            ("G1 · Left", GRAIN_1_COLOR),
-            ("G1 · Right", GRAIN_1_COLOR),
-            ("G2 · Left", GRAIN_2_COLOR),
-            ("G2 · Right", GRAIN_2_COLOR),
+            ("G1 · Left", self.owner.state.grain_colors[0]),
+            ("G1 · Right", self.owner.state.grain_colors[0]),
+            ("G2 · Left", self.owner.state.grain_colors[1]),
+            ("G2 · Right", self.owner.state.grain_colors[1]),
         )
         for index, (label, color) in enumerate(check_specs):
             check = QtWidgets.QCheckBox(label)
@@ -365,6 +293,10 @@ class ControlDock:
         )
         orientation_box = self.orientation_section
         orientation_layout = orientation_box.content_layout
+        self.import_session_button = QtWidgets.QPushButton("Import session…")
+        self.import_session_button.setToolTip("Open a saved .dmap session, restoring its structure, selections and applied deformation.")
+        self.import_session_button.clicked.connect(self.owner._choose_session_import_path)
+        orientation_layout.addWidget(self.import_session_button)
         orientation_layout.addWidget(QtWidgets.QLabel("CSL preset"))
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItem("Custom angle", None)
@@ -377,7 +309,7 @@ class ControlDock:
         angle_row.addWidget(QtWidgets.QLabel("Misorientation"))
         angle_row.addStretch(1)
         self.angle_spin = QtWidgets.QDoubleSpinBox()
-        self.angle_spin.setRange(0.0, 90.0)
+        self.angle_spin.setRange(0.0, self.owner.state.angle_range.maximum_deg)
         self.angle_spin.setDecimals(2)
         self.angle_spin.setSingleStep(0.1)
         self.angle_spin.setSuffix("°")
@@ -387,7 +319,7 @@ class ControlDock:
         orientation_layout.addLayout(angle_row)
 
         self.angle_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.angle_slider.setRange(0, 9000)
+        self.angle_slider.setRange(0, round(self.owner.state.angle_range.maximum_deg * 100))
         self.angle_slider.setSingleStep(1)
         self.angle_slider.setPageStep(100)
         self.angle_slider.setValue(round(self.owner.state.angle_deg * 100.0))
@@ -396,6 +328,9 @@ class ControlDock:
         )
         self.angle_slider.sliderReleased.connect(self.owner._finish_angle_update)
         orientation_layout.addWidget(self.angle_slider)
+        self.angle_range_label = QtWidgets.QLabel()
+        self.angle_range_label.setObjectName("mutedLabel")
+        orientation_layout.addWidget(self.angle_range_label)
         self.angle_exact_label = QtWidgets.QLabel()
         self.angle_exact_label.setObjectName("mutedLabel")
         orientation_layout.addWidget(self.angle_exact_label)
@@ -599,6 +534,14 @@ class ControlDock:
 
         display_layout.removeWidget(self.worker_label)
         display_layout.removeWidget(self.worker_spin)
+        self.reference_axes_check = QtWidgets.QCheckBox("Grain reference axes")
+        self.reference_axes_check.setChecked(self.owner.state.show_reference_axes)
+        self.reference_axes_check.setToolTip(
+            "Show G1 and G2 crystal directions in the selected grain colors at the lower left. "
+            "The perpendicular reference axes follow each grain's polar rotation under strain."
+        )
+        self.reference_axes_check.toggled.connect(self.owner._on_reference_axes_toggled)
+        display_layout.addWidget(self.reference_axes_check, 4, 0, 1, 2)
         self.performance_section = CollapsibleSection(
             "PERFORMANCE", QtWidgets.QFormLayout, expanded=False
         )
@@ -634,6 +577,7 @@ class ControlDock:
         self.view_performance_tabs.setObjectName("controlTabs")
         self.view_performance_tabs.addTab(display_box.body, "VIEW")
         self.view_performance_tabs.addTab(self.performance_section.body, "PERFORMANCE")
+        self.view_performance_tabs.addTab(self._create_appearance_panel(), "APPEARANCE")
         self.view_performance_tabs.syncCurrentPageGeometry()
         self.view_performance_section.content_layout.addWidget(
             self.view_performance_tabs
@@ -655,7 +599,7 @@ class ControlDock:
         self.manual_pick_button.clicked.connect(self.owner._start_manual_cell)
         manual_layout.addWidget(self.manual_pick_button)
         manual_help = QtWidgets.QLabel(
-            "Pick 4 same-layer/symbol sites around the perimeter. Blue/red cells use their own atom vertices; count the picked layer only."
+            "Pick 4 same-layer/symbol sites around the perimeter. G1/G2 cells use their own atom vertices; count the picked layer only."
         )
         manual_help.setWordWrap(True)
         manual_help.setObjectName("mutedLabel")
@@ -819,9 +763,16 @@ class ControlDock:
         self.status_label.setMinimumHeight(112)
         layout.addWidget(self.status_label)
 
-        export_button = QtWidgets.QPushButton("Export plot as PNG…")
-        export_button.clicked.connect(self.owner._choose_export_path)
-        layout.addWidget(export_button)
+        export_row = QtWidgets.QHBoxLayout()
+        self.export_button = QtWidgets.QPushButton("Export PNG…")
+        self.export_button.setToolTip("Export plot as PNG")
+        self.export_button.clicked.connect(self.owner._choose_export_path)
+        self.save_session_button = QtWidgets.QPushButton("Save session…")
+        self.save_session_button.setToolTip("Save a .dmap file with restorable state and count, vector and strain CSV tables.")
+        self.save_session_button.clicked.connect(self.owner._choose_session_save_path)
+        export_row.addWidget(self.export_button)
+        export_row.addWidget(self.save_session_button)
+        layout.addLayout(export_row)
         layout.addStretch(1)
         self.owner._sync_near_controls()
         self.owner._sync_angle_controls()
@@ -837,6 +788,105 @@ class ControlDock:
                 )
             self.layer_combo.setCurrentIndex(self.owner.state.selected_layer + 1)
 
+    def _create_appearance_panel(self):
+        panel = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(panel)
+        colors = QtWidgets.QFormLayout()
+        self.grain_color_buttons = []
+        for grain in (0, 1):
+            button = QtWidgets.QPushButton()
+            button.setToolTip(f"Choose the color for G{grain + 1} atoms, outlines and reference axes.")
+            button.clicked.connect(lambda _checked=False, g=grain: self.owner._choose_grain_color(g))
+            colors.addRow(f"G{grain + 1} color", button)
+            self.grain_color_buttons.append(button)
+        layout.addLayout(colors)
+        label = QtWidgets.QLabel("Layer symbols · shared by G1 and G2")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        self.appearance_symbols_scroll = QtWidgets.QScrollArea()
+        self.appearance_symbols_scroll.setWidgetResizable(True)
+        self.appearance_symbols_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.appearance_symbols_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        rows = QtWidgets.QWidget()
+        self.appearance_symbols_layout = QtWidgets.QFormLayout(rows)
+        # Font metrics vary by platform. Stack long rows instead of letting
+        # their combined minimum widths overflow the vertical-only viewport.
+        self.appearance_symbols_layout.setRowWrapPolicy(
+            QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows
+        )
+        self.appearance_symbols_layout.setContentsMargins(0, 0, 4, 0)
+        self.appearance_symbols_scroll.setWidget(rows)
+        layout.addWidget(self.appearance_symbols_scroll)
+        help_text = QtWidgets.QLabel("Each layer needs a different symbol. Symbols already assigned to other layers are unavailable.")
+        help_text.setWordWrap(True)
+        layout.addWidget(help_text)
+        self.appearance_reset_button = QtWidgets.QPushButton("Reset appearance")
+        self.appearance_reset_button.setToolTip("Restore the original grain colors and default layer symbols.")
+        self.appearance_reset_button.clicked.connect(self.owner._reset_appearance)
+        layout.addWidget(self.appearance_reset_button)
+        self._rebuild_appearance_symbols()
+        return panel
+
+    @staticmethod
+    def _symbol_label(symbol):
+        names = {
+            "o": "Circle", "d": "Diamond", "t": "Triangle 1", "s": "Square",
+            "p": "Pentagon", "h": "Hexagon", "star": "Star", "+": "Plus",
+            "x": "Cross", "t1": "Triangle 2", "t2": "Triangle 3", "t3": "Triangle 4",
+        }
+        return names.get(symbol, "Circle " + symbol.removeprefix("number:"))
+
+    def _rebuild_appearance_symbols(self):
+        state = self.owner.state
+        while self.appearance_symbols_layout.rowCount():
+            self.appearance_symbols_layout.removeRow(0)
+        palette = list(dict.fromkeys(available_layer_symbols(state.geometry.layer_count) + state.layer_symbols))
+        icons = {symbol: marker_icon(symbol, "#334155", filled=False, size=22) for symbol in palette}
+        self.layer_symbol_combos = []
+        for layer in range(state.geometry.layer_count):
+            combo = QtWidgets.QComboBox()
+            combo.setIconSize(QtCore.QSize(22, 22))
+            combo.setMinimumContentsLength(10)
+            combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+            for symbol in palette:
+                combo.addItem(icons[symbol], self._symbol_label(symbol), symbol)
+            combo.setCurrentIndex(combo.findData(state.layer_symbols[layer]))
+            combo.currentIndexChanged.connect(
+                lambda index, layer_index=layer: self.owner._on_layer_symbol_changed(layer_index, index)
+            )
+            self.appearance_symbols_layout.addRow(f"Layer {layer_name(layer)}", combo)
+            self.layer_symbol_combos.append(combo)
+        self.appearance_symbols_layout.activate()
+        self.appearance_symbols_scroll.setFixedHeight(min(180, self.appearance_symbols_layout.sizeHint().height() + 2))
+        self._refresh_appearance_controls()
+        if hasattr(self, "view_performance_tabs"):
+            self.view_performance_tabs.updateGeometry()
+
+    def _refresh_appearance_controls(self):
+        state = self.owner.state
+        for grain, button in enumerate(self.grain_color_buttons):
+            color = state.grain_colors[grain]
+            swatch = QtGui.QPixmap(18, 18)
+            swatch.fill(QtGui.QColor(color))
+            button.setIcon(QtGui.QIcon(swatch))
+            button.setText(color)
+        used = set(state.layer_symbols)
+        for layer, combo in enumerate(self.layer_symbol_combos):
+            symbol = state.layer_symbols[layer]
+            with QtCore.QSignalBlocker(combo):
+                combo.setCurrentIndex(combo.findData(symbol))
+                for index in range(combo.count()):
+                    key = combo.itemData(index)
+                    available = key == symbol or key not in used
+                    combo.model().item(index).setEnabled(available)
+                    combo.setItemData(index, None if available else "Assigned to another layer", QtCore.Qt.ItemDataRole.ToolTipRole)
+        for grain, checks in enumerate(self.grain_layer_checks):
+            for layer, check in enumerate(checks):
+                check.setIcon(layer_marker_icon(grain, layer, color=state.grain_colors[grain], symbol=state.layer_symbols[layer]))
+        for index, check in enumerate(self.region_checks):
+            check.setStyleSheet(f"QCheckBox {{ color: {state.grain_colors[index // 2]}; font-weight: 600; }}")
+
     def _rebuild_layer_checks(self) -> None:
         if not hasattr(self, "axial_layer_checks_layout"):
             return
@@ -851,7 +901,10 @@ class ControlDock:
         for layer in range(self.owner.state.geometry.layer_count):
             for grain in (0, 1):
                 check = QtWidgets.QCheckBox(f"G{grain + 1} {layer_name(layer)}")
-                check.setIcon(layer_marker_icon(grain, layer))
+                check.setIcon(layer_marker_icon(
+                    grain, layer, color=self.owner.state.grain_colors[grain],
+                    symbol=self.owner.state.layer_symbols[layer],
+                ))
                 check.setIconSize(QtCore.QSize(18, 18))
                 check.setToolTip(
                     f"Show G{grain + 1} layer {layer_name(layer)} atoms · "
@@ -886,6 +939,8 @@ class ControlDock:
         self.axial_layer_scroll.setFixedHeight(scroll_height)
         if hasattr(self, "orientation_layers_tabs"):
             self.orientation_layers_tabs.updateGeometry()
+        if hasattr(self, "appearance_symbols_layout"):
+            self._rebuild_appearance_symbols()
 
 
 def create_application() -> QtWidgets.QApplication:

@@ -5,20 +5,25 @@ import argparse
 import multiprocessing
 import os
 from pathlib import Path
+from .crystal import SUPPORTED_LATTICES
 from .state import PatternParameters
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Standalone FCC/BCC integer-axis tilt-GB viewer; coordinates in a0"
+        description="Standalone FCC/BCC/SC integer-axis tilt-GB viewer; coordinates in a0"
     )
     parser.add_argument(
         "--angle",
         type=float,
         default=None,
-        help="degrees; default is Sigma9 for 110, Sigma5 for 100, lowest-Sigma preset otherwise",
+        help=(
+            "degrees in the axis-dependent range: <100> 0-45, <110> 0-90, "
+            "<111> 0-60, other cubic axes 0-180; default is Sigma9 for 110, "
+            "Sigma5 for 100, lowest-Sigma preset otherwise"
+        ),
     )
-    parser.add_argument("--lattice", choices=("FCC", "BCC"), default="FCC")
+    parser.add_argument("--lattice", choices=SUPPORTED_LATTICES, default="FCC")
     parser.add_argument(
         "--axis",
         default="110",

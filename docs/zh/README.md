@@ -2,13 +2,13 @@
 
 [English](../en/README.md) · [项目首页](../../README.md) · [开发细节](development.md)
 
-DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 FCC/BCC 倾转晶界双色图。
+DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FCC/BCC 倾转晶界双色图。
 它按轴向层显示两个晶粒，支持精确重合点、局部近邻配对、晶体向量测量、原子计数、
-均匀应变共同胞搜索和 PNG 导出。
+均匀应变共同胞搜索、PNG 导出，以及会话保存/恢复和数值表导出。
 
 使用指南：[认识界面](#gui-overview) · [第一次操作](#gui-quick-start) · [晶体与角度](#gui-orientation) ·
-[显示层](#gui-layers) · [视野](#gui-view) · [晶界](#gui-boundary) · [向量](#gui-vector) ·
-[Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [常见问题](#gui-troubleshooting)。
+[显示层](#gui-layers) · [视野](#gui-view) · [颜色与符号](#gui-appearance) · [晶界](#gui-boundary) · [向量](#gui-vector) ·
+[Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [会话与数值表](#gui-session) · [常见问题](#gui-troubleshooting)。
 
 ## 安装与启动
 
@@ -24,6 +24,7 @@ python -m dichromatic_map
 `dichromatic-map` 是等效的查看器启动命令；在项目根目录也可使用 `python main.py` 启动。
 
 ```bash
+python -m dichromatic_map --lattice SC --axis 100
 python -m dichromatic_map --lattice BCC --axis 100
 python -m dichromatic_map --axis "1 -1 3" --workers 4
 python -m dichromatic_map --help
@@ -32,16 +33,23 @@ python -m dichromatic_map --help
 图中坐标、视野尺寸和匹配距离均以参考晶格常数 a₀ 为单位，坐标 1 表示一个晶格常数。
 晶格常数设置给出 a₀ 的 Å 数值，不会改变归一化的图中坐标。
 
-支持 FCC/BCC、预定义 ⟨100⟩、⟨110⟩、⟨111⟩、⟨112⟩ 晶轴及自定义整数晶轴。
-每种几何对应各自的轴向层数和重复周期。
+支持三种立方 Bravais 晶格：简单立方 `SC`、面心立方 `FCC`（默认）和体心立方 `BCC`，
+以及预定义 ⟨100⟩、⟨110⟩、⟨111⟩、⟨112⟩ 晶轴和自定义整数晶轴。
+每种几何对应各自的轴向层数和重复周期。这里表示每个原胞含一个原子的点阵，
+不包含金刚石等带额外多原子基元的晶体结构。
+
+对于约分后的 SC 晶轴 [h k l]，一个轴向周期包含 h²+k²+l² 层，
+周期长度为 a₀√(h²+k²+l²)，层间距为 a₀/√(h²+k²+l²)。
+因此 SC [100]、[110]、[111]、[112] 分别有 1、2、3、6 层，SC [100] 只显示 A 层。
+三种晶格采用相同的逐层匹配、胞计数和应变操作规则。
 
 ### 命令行参数
 
 | 参数 | 含义与默认值 |
 | --- | --- |
-| `--lattice` | `FCC`（默认）或 `BCC` |
+| `--lattice` | `FCC`（默认）、`BCC` 或 `SC` |
 | `--axis` | 整数晶轴，默认 `110`；负数或多位数指标用引号和空格分隔，例如 `"1 -1 3"` |
-| `--angle` | 参考错取向角，范围 0–90°；未指定时 `110` 选 Σ9、`100` 选 Σ5，其他轴选最低 Σ 预设，无预设则为 0° |
+| `--angle` | 参考错取向角，范围随晶轴变化：⟨100⟩ 为 0–45°、⟨110⟩ 为 0–90°、⟨111⟩ 为 0–60°，其他立方晶轴为 0–180°；未指定时 `110` 选 Σ9、`100` 选 Σ5，其他轴选最低 Σ 预设，无预设则为 0° |
 | `--lattice-constant` | 参考晶格常数 a₀，单位 Å，默认 3.52 |
 | `--width`、`--height` | 基础视野尺寸，单位 a₀，默认 12、9 |
 | `--marker-size` | 原子标记尺寸参数，默认 32 |
@@ -62,7 +70,7 @@ python -m dichromatic_map --angle 22 --save pattern.png
 QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.png
 ```
 
-也可以在查看器中用 `Export plot as PNG…` 导出当前图，详见 [GUI 导出步骤](#gui-export)。
+也可以在查看器中用 `Export PNG…` 导出当前图，详见 [GUI 导出步骤](#gui-export)。
 
 <a id="gui-overview"></a>
 
@@ -78,7 +86,7 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 | 图标题、坐标轴和图例 | 查看晶格、晶轴、角度、当前 Near-CSL 状态，以及颜色和层符号 |
 | `ORIENTATION` / `LAYERS` 页签 | 切换晶体取向设置与逐层显示设置，默认打开 `ORIENTATION` |
 | `GB / VECTOR` | 选择 GB 参考线、测量向量；相关选项随选点操作出现 |
-| `VIEW / PERFORMANCE` | 展开后用 `VIEW` 调整视野，或用 `PERFORMANCE` 设置 `CPU workers` |
+| `VIEW / PERFORMANCE` | `VIEW` 调整视野和参考轴显示，`PERFORMANCE` 设置 `CPU workers`，`APPEARANCE` 设置晶粒颜色和层符号 |
 | `NEAR-CSL` | 局部近邻配对，或自动均匀应变共同胞搜索 |
 | `MANUAL COMMON CELL` | 选四点、计数，以及对局部配对胞施加应变 |
 | 面板底部状态区 | 当前选择提示、可见 G1/G2 原子数、同层 CSL 数和计算状态 |
@@ -88,15 +96,17 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 
 | 图中样式 | 含义 |
 | --- | --- |
-| 蓝色原子 / 橙红色原子 | 晶粒 G1 / G2 |
+| 实心原子标记 / 空心原子标记 | 晶粒 G1 / G2，默认分别为蓝色 / 橙红色 |
 | 圆、菱形、三角形等标记 | 不同轴向层；颜色相同而形状不同表示同一晶粒的不同层 |
 | 金色标记 | 同层精确 CSL 重合点 |
 | 紫色中点和短连线 | Local Near-CSL 配对及其两个实际原子位置 |
 | 绿色胞框 | 可用的自动共同平移胞 |
+| 左下角使用所选晶粒颜色的箭头 | 带 `[uvw]` 标签的两组面内正交晶粒参考方向 |
 | `B1`、`B2` / `P1`、`P2` / `C1`–`C4` | GB 参考点 / 测量端点 / 手动胞顶点 |
 
 多层几何的图例最多列出前 6 个已启用的层；更多层可在 `LAYERS` 中查看。
-层数较多时形状会循环使用，应结合层名称和勾选项判断。
+不同层的符号互不重复。前 12 层保留原有默认形状，更多层使用编号圆形；
+可在 `VIEW / PERFORMANCE → APPEARANCE` 中修改。
 
 <a id="gui-quick-start"></a>
 
@@ -107,11 +117,11 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 2. 等待状态区的 CSL `updating…` 消失。切换到 `LAYERS`，点击 `No layers`，
    再只勾选 `G1 A` 和 `G2 A`，使选点只涉及 A 层。
 3. 勾选 `Automatic common cell`，点击旁边的 `Fit cell`，查看该角度的共同胞。
-4. 在 `GB / VECTOR` 点击 `Measure vector   V`，先点击一个蓝色原子，再点击另一个位置的原子。
+4. 在 `GB / VECTOR` 点击 `Measure vector   V`，先点击一个 G1 原子（默认蓝色），再点击另一个位置的原子。
    图中出现 P1→P2 箭头和向量读数。两次点击之间仍可拖动平移或滚轮缩放。
 5. 若要练习计数，展开 `MANUAL COMMON CELL`，点击 `Pick 4 CSL vertices   M`，
    沿一个凸四边形的边界依次选 4 个金色标记，等待该层的 G1/G2 计数显示。
-6. 调整好视野后，滚动到面板底部点击 `Export plot as PNG…` 保存图片。
+6. 调整好视野后，滚动到面板底部点击 `Export PNG…` 保存图片。
 
 <a id="gui-orientation"></a>
 
@@ -119,15 +129,32 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 
 在 `ORIENTATION` 页签中操作：
 
-1. 在 `CRYSTAL / AXIS` 的 `Structure` 选择 `FCC` 或 `BCC`，选择后立即更新。
+1. 在 `CRYSTAL / AXIS` 的 `Structure` 选择 `FCC`、`BCC` 或 `SC`，选择后立即更新。
 2. 在 `Tilt / viewing axis` 选择预定义晶轴；如需自定义，选 `Custom [h k l]`，
    输入 `1 -1 3` 这样的 3 个整数，点击 `Apply axis` 或在输入框按 Enter。
    负数或多位数指标用空格分隔；无效输入会在该区域显示原因，当前晶体保持不变。
-3. 从 `CSL preset` 选择预设，或者修改 `Misorientation` 数值框 / 滑块，范围 0–90°。
+3. 从 `CSL preset` 选择预设，或者修改 `Misorientation` 数值框 / 滑块。
+   数值框、滑块及附近的范围提示随晶轴更新；预设菜单只保留该范围内的角度。
    数值框显示两位小数；预设保留精确角度，下面的 `Exact θ` 显示更多小数位。
    要使用某个精确 CSL 角，应直接选预设，不必抄写显示为两位小数的角度。
 4. 等待晶格和重合点更新后再选点。更换晶轴会选用该轴的默认角度，随后可重新选择预设。
 
+三种立方点阵 SC、FCC、BCC 使用相同的参考错取向角范围：
+
+| 倾转轴族 | 错取向角范围 | 绕该轴的旋转周期 |
+| --- | --- | --- |
+| ⟨100⟩ | 0–45° | 90° |
+| ⟨110⟩ | 0–90° | 180° |
+| ⟨111⟩ | 0–60° | 120° |
+| 其他晶轴，包括 ⟨112⟩ | 0–180° | 360° |
+
+自定义 `[h k l]` 会先约分，再按立方对称性确定范围，支持负指标和分量置换；
+例如 `0 -2 2` 使用 ⟨110⟩ 的范围。表中的范围上限是旋转周期的一半，
+因为交换两个晶粒会把正、负相对转角视为等价。这里始终保持所选倾转轴，
+不通过改变晶轴表示来求所有立方对称关系下的最小错取向角。
+若无法确定晶体对称性，则回退到通用的 0–180°。
+
+命令行 `--angle` 使用相同范围；超出范围会报错，不会自动改成对称等价角。
 选择 `Custom angle` 后还需调节角度数值；仅切换该选项不会改变当前角度。
 改变晶格、晶轴或参考错取向角会清除原有 GB、向量和手动胞选择，并重新计算已启用的 Near-CSL。
 如需保留当前图像，应在修改前导出。
@@ -166,7 +193,20 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 - `Field size` 控制显示范围相对于基础视野的倍率；倍率越大，显示区域越广。
   可拖动滑块，或直接点 `0.1×`、`0.5×`、`1×`、`2×`、`3×`、`5×`。
 - `Center view   C` 将当前视野中心移回原点，并保留当前视野大小。
+- `Grain reference axes` 默认勾选，在绘图区左下角显示两晶粒的参考方向；取消勾选可隐藏。
 - 要查看一个具体选区，自动胞使用 `LAYERS` 的 `Fit cell`，手动胞使用其面板内的 `Fit`。
+
+参考轴使用各晶粒所选的颜色（默认 G1 蓝色、G2 橙色），每个晶粒显示两条互相垂直的面内方向，
+标注晶体方向 `[uvw]`。
+例如沿 [110] 观察时，标签为 `[-1 1 0]` 和 `[0 0 1]`。四支箭头共用视野左下角的一个固定原点，
+通过颜色区分晶粒，不显示 G1/G2 标题。箭头旋转时，原点位置和面板尺寸保持不变；
+平移和缩放也不改变其屏幕尺寸与位置。它们不跟随原子平移，也不表示实际位置或向量长度。
+
+箭头随各晶粒的参考转角（错取向角的一半，分别取正负）和 `Display rotation` 旋转。
+施加应变后，还会跟随各晶粒极分解中的刚体旋转，保持参考轴相互垂直；
+它们用于表示正交参考方向，不代表剪切或拉伸后的实际晶格矢量。
+向量测量仍使用真实位移，其读数在参考轴可见时移到上方；隐藏参考轴可释放左下角空间。
+启用时，PNG 导出也包含这些参考轴。
 
 切换到 `PERFORMANCE` 页签可修改 `CPU workers`；`1` 表示单进程。
 较大的视野或搜索范围可能需要等待，底部 `Compute` 显示正在进行的计算，Near-CSL 面板显示匹配或搜索进度。
@@ -176,6 +216,23 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 
 状态区的 `Visible G1 / G2` 和 `Same-layer CSL` 描述当前视野及可见性条件下的数量，
 不能用来代替手动胞内的完整原子计数。
+
+<a id="gui-appearance"></a>
+
+## 选择晶粒颜色和层符号
+
+展开 `VIEW / PERFORMANCE`，打开第三个页签 `APPEARANCE`。
+
+1. 点击 G1 或 G2 的颜色按钮，打开颜色选择对话框，选好颜色后确认；取消时保留原颜色。
+   该晶粒的原子、参考轴、手动胞轮廓、层图标和图例同步更新，G1 仍使用实心标记，G2 仍使用空心标记。
+2. 在每一层旁边的符号下拉框中选择标记。同一层在两个晶粒中共用该符号，其 CSL 和局部配对标记也会同步。
+   不同层不能使用相同符号：已经分配给其他层的选项会禁用。要重新分配某个符号，先修改当前占用它的层。
+3. 点击 `Reset appearance` 恢复默认蓝色/橙色及原有的 12 种形状序列；超过 12 层时，额外层使用编号圆形，
+   保证每层符号都不同。也可以在下拉框中主动选择编号圆形。
+
+颜色和符号变化只更新绘图，不重新发起计算，也不清除选点、计数、应变或平移；PNG 使用所选样式。
+切换晶格或 tilt axis 时保留晶粒颜色以及仍然存在的层号对应的符号，新层分配尚未使用的默认符号。
+`Save session…` 会保存这些设置，`Import session…` 会恢复它们；旧版会话文件使用默认颜色和符号。
 
 <a id="gui-boundary"></a>
 
@@ -219,7 +276,8 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 需要指定晶粒或层时，先在 `LAYERS` 只保留目标显示项，再选对应端点。
 可以选完 P1 后调整显示层，再选 P2。
 
-箭头表示 P1→P2，读数显示在绘图区左下角。同晶粒选点显示该晶粒坐标，跨晶粒选点同时显示 G1、G2 坐标，
+箭头表示 P1→P2，读数显示在绘图区左下角；晶粒参考轴可见时，读数位于其上方。
+同晶粒选点显示该晶粒坐标，跨晶粒选点同时显示 G1、G2 坐标，
 两套坐标表示的是同一个实际空间位移。
 
 | 读数 | 含义 |
@@ -300,7 +358,7 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 2. 沿边界顺时针或逆时针依次选择四个同一轴向层的顶点。可以选金色精确 CSL 标记，
    也可以选紫色局部近邻配对中点，不能选普通原子。第一个顶点确定层，后续不同层的点击会被拒绝。
    隐藏点不可选。两晶粒各自的实际顶点均须构成非退化、不自交的凸四边形。
-3. 第四个顶点选定后自动闭合，蓝/红轮廓分别连接 G1/G2 的实际原子顶点。
+3. 第四个顶点选定后自动闭合，使用所选晶粒颜色的轮廓分别连接 G1/G2 的实际原子顶点。
    图右下角显示计数，面板中列出更多统计。
 4. 使用 `Undo vertex` 撤销最后一点并继续选点、`Clear` 清除胞与计数、`Fit` 缩放到两晶粒选区。
    `Fit` 仅在四点齐全时可用。`Esc` 暂停选择；未满四点时再按 `M` 可继续，已满四点时则开始新胞。
@@ -377,13 +435,52 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 1. 选好晶格、角度、可见层和 GB 两侧；按需要显示胞框、向量或手动计数。
 2. 调整平移、缩放和 `Display rotation`，使目标区域与标注出现在当前视野中。
    等待晶格、CSL、局部匹配及手动计数更新结束。
-3. 滚动到右侧面板底部，点击 `Export plot as PNG…`。
+3. 滚动到右侧面板底部，点击 `Export PNG…`。
 4. 在 `Export dichromatic pattern` 对话框中选择目录和 `.png` 文件名；默认名为
    `dichromatic_pattern.png`，保存类型为 `PNG image (*.png)`。确认保存，或取消以返回查看器。
 
-导出的是当前绘图区，宽度为 1800 像素，包含图标题、坐标轴、图例、显示旋转及当前可见标注。
+导出的是当前绘图区，宽度为 1800 像素，包含图标题、坐标轴、图例、显示旋转、启用的晶粒参考轴及当前可见标注。
 右侧控制面板和其中的详细文本不在图片内；需要保存应变详情时，可从其只读文本框选择复制。
 自动胞或手动胞超出当前视野时，先用对应的 `Fit cell` 或 `Fit` 再导出。
+
+<a id="gui-session"></a>
+
+## 保存/恢复会话与导出数值表
+
+1. 完成需要保留的选点和应变操作；若要保存正在计算的结果，请先等待计算完成。
+2. 滚动到右侧 `Controls` 底部，点击 `Export PNG…` 旁的 `Save session…`。
+3. 在文件对话框中选择目录和以 `.dmap` 结尾的文件名并保存。只生成一个文件；
+   取消对话框不会改变当前会话。
+4. 恢复时，在 `ORIENTATION` 页点击 `Import session…` 并选择该 `.dmap` 文件。
+   导入会替换当前窗口的会话，需要保留现有工作时请先保存。文件损坏或版本不支持时，
+   当前会话保持不变。
+
+保存内容包括晶格、整数 tilt axis、完整精度的参考角度、晶格常数、GB 端点、向量端点及轴向周期像、
+手动胞顶点、两晶粒的变形梯度和平移、已应用的共同胞，以及用于 `Restore original local structure`
+的原始顶点。可见晶粒/层、GB 两侧筛选、手动计数选项、Near-CSL 和应变限值、显示旋转、
+参考轴显隐、晶粒颜色、各层符号及视野也会恢复；旧版会话文件使用默认外观。
+窗口宽高比不同时，恢复的视野保留中心并按需扩展，以覆盖原区域且不拉伸晶格。
+尚未完成的选点可以继续；原子缓存和计数在导入后重新计算。
+CPU workers 保留当前计算机的设置。应变搜索只保存已应用的候选胞，不保存整个候选列表；
+若保存时启用了搜索但未应用任何胞，导入后保持未应变状态，修改搜索参数即可重新搜索。
+
+`.dmap` 是标准 ZIP 压缩文件，可用 ZIP 工具打开，或复制一份并将副本扩展名改为 `.zip` 后解压：
+
+| 文件 | 内容 |
+| --- | --- |
+| `session.json` | 供导入恢复使用、带格式版本的状态数据 |
+| `counts.csv` | 两晶粒在手动选定层中的内部、边界、闭合及可用的半开计数，面积与 GB 筛选标记 |
+| `vectors.csv` | P1→P2 在分析/显示坐标及相关晶粒极分解/晶格坐标中的分量，轴向周期像与长度 |
+| `strain.csv` | 各晶粒的变形梯度、极分解旋转/伸长、Green–Lagrange 应变、主应变、平移及参考/当前角度 |
+| `README.txt` | 各表的单位、坐标约定及缺失结果规则 |
+
+CSV 可用表格软件或 Python 的 `csv` 模块读取。长度标明 a₀ 或 Å，面积标明 a₀² 或 Å²，
+应变张量为无量纲。向量表区分当前空间分量与晶格 `[uvw]` 坐标。
+计数针对完整选区重新计算，应用所选的 GB 两侧筛选，不依赖当前视野。
+手动胞不足四个顶点时，`counts.csv` 只有表头；向量不足两个端点时，`vectors.csv` 只有表头。
+未应变晶粒的变形梯度为单位矩阵、应变为零。修改 CSV 不会改变导入恢复的状态。
+
+PNG 仍单独保存图像；`.dmap` 保存数值状态和表格，需要图片时请另外导出 PNG。
 
 ## 使用 Python 数值库
 
@@ -427,6 +524,23 @@ print("G1/G2 layer-0 half-open counts:", counts.half_open[:, 0])
 这里的正方形只是计数区域，不表示已经证明晶体周期性。
 匹配使用传入的投影原子柱；计数覆盖完整多边形，与前面生成的观察矩形无关。
 
+简单立方示例：未旋转的 SC [100] 晶格中，边长为 2 a₀ 的正方形按半开约定
+每晶粒包含 4 个原子；若把全部边界原子也计入，则每晶粒有 9 个：
+
+```python
+import numpy as np
+from dichromatic_map import get_geometry, count_cell_atoms
+
+geometry = get_geometry("SC", "100")
+vertices = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+counts = count_cell_atoms(
+    vertices, 0, (np.eye(2), np.eye(2)), lattice="SC", axis="100", layer=0
+)
+print(geometry.layer_count)                         # 1
+print(counts.half_open[:, 0])                       # [4 4]
+print((counts.interior + counts.boundary)[:, 0])     # [9 9]
+```
+
 ### API 说明
 
 以下六个函数可直接从 `dichromatic_map` 导入：
@@ -434,13 +548,15 @@ print("G1/G2 layer-0 half-open counts:", counts.half_open[:, 0])
 | 函数 | 输入与结果 |
 | --- | --- |
 | `get_geometry(lattice="FCC", axis="110")` | 返回平面基矢、轴向周期、层数及相关晶体几何信息 |
+| `misorientation_range(axis="110", lattice="FCC")` | 返回不可变的 `AngleRange`，包含 `maximum_deg`、`period_deg`、`symmetry_order`；[110] 分别返回 90°、180°、2 |
 | `projected_columns(width, height, rotation_deg, ...)` | 返回 `positions`（N×2，单位 a₀）、从 0 开始的 `layers` 和参考 `half_indices`（N×3，单位 a₀/2）；可指定视野中心、2×2 变形和平移 |
 | `same_layer_coincidence_sites(grain_1, grain_2, tolerance)` | 按层返回重合位置，每层一个 N×2 数组；容差单位为 a₀ |
 | `local_near_pairs(grain1, grain2, distance=0.05, ...)` | 返回实际端点 `first`/`second`、层标签、`midpoints` 和 `distances`；局部配对结果不包含精确重合对 |
-| `exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110")` | 对识别出的公度角返回保持层相位的共同平移胞，否则返回 `None`；它在保层平面内为原胞，不一定是三维原胞 |
+| `exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110")` | 对识别出的公度角返回保持层相位的共同平移胞，否则返回 `None`；`max_denominator` 同时限制四元数互素系数 m、n；共同胞在保层平面内为原胞，不一定是三维原胞 |
 | `count_cell_atoms(vertices, angle, deformations, ...)` | 接收共享的 4×2 多边形或两晶粒各自的 2×4×2 多边形、两个 2×2 变形、可选平移和层索引；返回分晶粒、分层计数及每晶粒面积 |
 
 参考错取向角 `angle` 的单位为度，G1/G2 分别旋转 `+angle/2`、`−angle/2`。
+数值库中的几何和旋转函数仍按传入角度计算，不受查看器中约化输入范围的限制。
 投影原子柱的变形作用于晶粒旋转之后，平移作用于变形之后。
 `exact_csl_cell(...).cell` 的两列分别为共同胞的两个矢量，单位为 a₀。
 
