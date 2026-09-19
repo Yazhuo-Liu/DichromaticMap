@@ -150,7 +150,7 @@ numbered circles. Customize them in `VIEW / PERFORMANCE → APPEARANCE`.
 ## Setting the crystal and orientation
 
 In `ORIENTATION`, use `CRYSTAL / AXIS` to choose `Structure` (`FCC`, `BCC` or `SC`)
-and `Tilt / viewing axis` (⟨100⟩, ⟨110⟩, ⟨111⟩ or ⟨112⟩). For another axis,
+and `View axis` (⟨100⟩, ⟨110⟩, ⟨111⟩ or ⟨112⟩). For another axis,
 choose `Custom [h k l]`, enter three integers such as `1 -1 3`, then click
 `Apply axis` or press Enter. An invalid axis displays a message below the field;
 the existing geometry remains in use. Separate signed or multi-digit indices

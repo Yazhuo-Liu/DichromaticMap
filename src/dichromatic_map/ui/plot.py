@@ -54,6 +54,8 @@ class PatternPlot:
         self.view_box = PatternViewBox()
         self.plot_widget = pg.PlotWidget(viewBox=self.view_box)
         self.plot_item = self.plot_widget.getPlotItem()
+        # Keep axis strokes inside the viewport, including at fractional DPI.
+        self.plot_item.layout.setContentsMargins(8, 8, 12, 8)
         self.owner.setCentralWidget(self.plot_widget)
         self.plot_widget.setBackground("#f8fafc")
         self.plot_item.hideButtons()
@@ -183,6 +185,14 @@ class PatternPlot:
         self.view_box.sigRangeChanged.connect(self.owner._on_view_range_changed)
         self.plot_widget.sigDeviceRangeChanged.connect(self._layout_title)
         self.view_box.sigResized.connect(self._layout_title)
+        # Tick labels can grow during layout without resizing the ViewBox.
+        # Defer a refit until the current layout has finished, since a direct
+        # call here can be discarded by _layout_title's reentrancy guard.
+        self._title_layout_timer = QtCore.QTimer(self.owner)
+        self._title_layout_timer.setSingleShot(True)
+        self._title_layout_timer.timeout.connect(self._layout_title)
+        for name in ("left", "right"):
+            self.plot_item.getAxis(name).geometryChanged.connect(self._title_layout_timer.start)
         self.view_box.sigResized.connect(self._update_reference_axes)
 
     def _update_reference_axes(self, *_args):

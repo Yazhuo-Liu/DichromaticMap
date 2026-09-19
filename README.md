@@ -73,7 +73,7 @@ outlines represent G2. Marker shapes distinguish axial layers, and gold outlines
 same-layer exact coincidences.
 
 1. **Choose the grains.** In **ORIENTATION**, select **Structure** (`FCC`, `BCC` or `SC`) and
-   **Tilt / viewing axis**, then choose a **CSL preset** or enter a
+   **View axis**, then choose a **CSL preset** or enter a
    **Misorientation**. For a custom axis, choose **Custom [h k l]**, enter an
    integer triple such as `1 -1 3`, and click **Apply axis** or press Enter.
    The angle range follows the axis: 0–45° for ⟨100⟩, 0–90° for ⟨110⟩,

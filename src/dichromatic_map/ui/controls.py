@@ -147,8 +147,8 @@ class ControlDock:
     def _create_control_dock(self) -> None:
         dock = QtWidgets.QDockWidget("Controls", self.owner)
         dock.setFeatures(QtWidgets.QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
-        dock.setMinimumWidth(320)
-        dock.setMaximumWidth(410)
+        dock.setMinimumWidth(300)
+        dock.setMaximumWidth(500)
         self.owner.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, dock)
 
         scroll = QtWidgets.QScrollArea()
@@ -173,6 +173,7 @@ class ControlDock:
 
         crystal_box = QtWidgets.QGroupBox("CRYSTAL / AXIS")
         crystal_layout = QtWidgets.QFormLayout(crystal_box)
+        crystal_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
         self.structure_combo = QtWidgets.QComboBox()
         for lattice in SUPPORTED_LATTICES:
             self.structure_combo.addItem(lattice, lattice)
@@ -186,7 +187,7 @@ class ControlDock:
         axis_index = self.axis_combo.findData(self.owner.state.geometry.axis)
         self.axis_combo.setCurrentIndex(axis_index if axis_index >= 0 else 4)
         crystal_layout.addRow("Structure", self.structure_combo)
-        crystal_layout.addRow("Tilt / viewing axis", self.axis_combo)
+        crystal_layout.addRow("View axis", self.axis_combo)
         self.custom_axis_row = QtWidgets.QWidget()
         custom_layout = QtWidgets.QHBoxLayout(self.custom_axis_row)
         custom_layout.setContentsMargins(0, 0, 0, 0)
@@ -776,6 +777,7 @@ class ControlDock:
         layout.addStretch(1)
         self.owner._sync_near_controls()
         self.owner._sync_angle_controls()
+        self.owner.resizeDocks([dock], [400], QtCore.Qt.Orientation.Horizontal)
 
     def _populate_layer_combo(self):
         with QtCore.QSignalBlocker(self.layer_combo):

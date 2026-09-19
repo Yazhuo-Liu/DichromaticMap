@@ -113,7 +113,7 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 ### 第一次操作：显示一个精确 CSL 胞并测量向量
 
 1. 用 `python -m dichromatic_map` 启动。在 `ORIENTATION` 中确认 `Structure` 为 `FCC`，
-   `Tilt / viewing axis` 为 `⟨110⟩`，从 `CSL preset` 选择 Σ9。
+   `View axis` 为 `⟨110⟩`，从 `CSL preset` 选择 Σ9。
 2. 等待状态区的 CSL `updating…` 消失。切换到 `LAYERS`，点击 `No layers`，
    再只勾选 `G1 A` 和 `G2 A`，使选点只涉及 A 层。
 3. 勾选 `Automatic common cell`，点击旁边的 `Fit cell`，查看该角度的共同胞。
@@ -130,7 +130,7 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 在 `ORIENTATION` 页签中操作：
 
 1. 在 `CRYSTAL / AXIS` 的 `Structure` 选择 `FCC`、`BCC` 或 `SC`，选择后立即更新。
-2. 在 `Tilt / viewing axis` 选择预定义晶轴；如需自定义，选 `Custom [h k l]`，
+2. 在 `View axis` 选择预定义晶轴；如需自定义，选 `Custom [h k l]`，
    输入 `1 -1 3` 这样的 3 个整数，点击 `Apply axis` 或在输入框按 Enter。
    负数或多位数指标用空格分隔；无效输入会在该区域显示原因，当前晶体保持不变。
 3. 从 `CSL preset` 选择预设，或者修改 `Misorientation` 数值框 / 滑块。

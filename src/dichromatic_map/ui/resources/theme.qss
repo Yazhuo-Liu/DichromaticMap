@@ -4,6 +4,11 @@ QMainWindow, QDockWidget, QScrollArea, QWidget {
     font-family: "Inter", "Noto Sans", "DejaVu Sans";
     font-size: 10pt;
 }
+QMainWindow::separator {
+    width: 12px;
+    height: 12px;
+    background: #eef2f7;
+}
 QPlainTextEdit#manualStrainDetails {
     font-family: "DejaVu Sans Mono", "Consolas", monospace;
     font-size: 9pt;
