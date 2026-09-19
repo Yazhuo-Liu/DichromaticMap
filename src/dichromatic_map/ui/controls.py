@@ -809,6 +809,11 @@ class ControlDock:
         self.appearance_symbols_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         rows = QtWidgets.QWidget()
         self.appearance_symbols_layout = QtWidgets.QFormLayout(rows)
+        # Font metrics vary by platform. Stack long rows instead of letting
+        # their combined minimum widths overflow the vertical-only viewport.
+        self.appearance_symbols_layout.setRowWrapPolicy(
+            QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows
+        )
         self.appearance_symbols_layout.setContentsMargins(0, 0, 4, 0)
         self.appearance_symbols_scroll.setWidget(rows)
         layout.addWidget(self.appearance_symbols_scroll)
