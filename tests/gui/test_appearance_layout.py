@@ -82,6 +82,7 @@ try:
     gui.settle(window)
     assert window.width() <= 1040
     assert len(controls.layer_symbol_combos) == 38
+    assert len(controls.layer_size_spins) == 38
     scroll = controls.appearance_symbols_scroll
     rows = scroll.widget()
 
@@ -99,19 +100,21 @@ try:
         timeout=5, diagnostics=diagnostics,
     )
     assert scroll.verticalScrollBar().maximum() > 0, diagnostics()
-    for combo in controls.layer_symbol_combos:
-        left = combo.mapTo(rows, QtCore.QPoint()).x()
-        assert 0 <= left and left + combo.width() <= scroll.viewport().width(), diagnostics()
-        assert combo.width() >= combo.minimumSizeHint().width(), diagnostics()
+    for widget in controls.layer_symbol_combos + controls.layer_size_spins:
+        left = widget.mapTo(rows, QtCore.QPoint()).x()
+        assert 0 <= left and left + widget.width() <= scroll.viewport().width(), diagnostics()
+        assert widget.width() >= widget.minimumSizeHint().width(), diagnostics()
 
-    last = controls.layer_symbol_combos[-1]
-    scroll.ensureWidgetVisible(last, 0, 0)
+    # Scroll to the bottom as a user would. Qt's ensureWidgetVisible uses
+    # a spin box's cursor rectangle rather than its full frame and buttons.
+    scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+    for last in (controls.layer_symbol_combos[-1], controls.layer_size_spins[-1]):
 
-    def last_layer_is_visible():
-        top_left = last.mapTo(scroll.viewport(), QtCore.QPoint())
-        return scroll.viewport().rect().contains(QtCore.QRect(top_left, last.size()))
+        def last_layer_is_visible():
+            top_left = last.mapTo(scroll.viewport(), QtCore.QPoint())
+            return scroll.viewport().rect().contains(QtCore.QRect(top_left, last.size()))
 
-    gui.wait_for(window, last_layer_is_visible, timeout=5, diagnostics=diagnostics)
+        gui.wait_for(window, last_layer_is_visible, timeout=5, diagnostics=diagnostics)
     assert scroll.verticalScrollBar().value() > 0, diagnostics()
 finally:
     gui.close()

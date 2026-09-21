@@ -13,7 +13,8 @@ strain.
 - Simple cubic (SC), face-centered cubic (FCC) and body-centered cubic (BCC)
   lattices with ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ and custom integer tilt axes.
 - Independent grain/layer visibility, grain-boundary side filtering,
-  display rotation, floating grain reference axes, custom grain colors and unique layer symbols.
+  display rotation, floating grain reference axes, custom grain colors and unique
+  layer symbols with adjustable sizes.
 - Same-layer exact coincidence-site lattice (CSL) detection and local near-pair
   matching.
 - Vector measurements in both grain coordinate frames, including axial
@@ -96,11 +97,13 @@ same-layer exact coincidences.
    They mark perpendicular reference directions and follow grain and display
    rotation; under strain they follow only the polar rigid rotation.
    The **PERFORMANCE** tab contains **CPU workers**.
-4. **Choose colors and symbols.** Open **VIEW / PERFORMANCE → APPEARANCE**.
+4. **Choose colors, symbols and sizes.** Open **VIEW / PERFORMANCE → APPEARANCE**.
    Click the G1 or G2 color button to choose that grain's color, and use each
    layer's symbol menu to choose its shape for both grains. Symbols already used
-   by other layers are disabled. **Reset appearance** restores the original
-   colors and shapes; layers beyond the first twelve use distinct numbered
+   by other layers are disabled. Set a layer's **Size** from **25% to 400%** to
+   scale its marker diameter in both grains; **100%** keeps the original size.
+   **Reset appearance** restores the original colors, shapes and sizes;
+   layers beyond the first twelve use distinct numbered
    circles. Changes preserve selections, counts and applied strain, and appear
    in PNG exports.
 5. **Measure a vector.** In **GB / VECTOR**, click **Measure vector** (`V`),
@@ -127,7 +130,7 @@ same-layer exact coincidences.
 
 9. **Save or restore a session.** Click **Save session…** beside **Export PNG…**
    to save one `.dmap` file containing the current structure, selections, applied
-   strain/translations, display settings including colors and symbols, and numerical
+   strain/translations, display settings including colors, symbols and sizes, and numerical
    CSV tables. In **ORIENTATION**, use **Import session…** to restore it in the current window.
    The file is a standard ZIP archive; open it with a ZIP tool to read
    `counts.csv`, `vectors.csv` and `strain.csv`.

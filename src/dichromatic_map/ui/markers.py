@@ -5,7 +5,27 @@ from functools import lru_cache
 from ._qt import QtCore, QtGui, pg
 from . import GRAIN_1_COLOR, GRAIN_1_EDGE, LAYER_SYMBOLS
 from ..crystal import MAX_LAYERS
+from pyqtgraph.graphicsItems.LegendItem import ItemSample
 from pyqtgraph.graphicsItems.ScatterPlotItem import drawSymbol
+
+
+class LayerLegendSample(ItemSample):
+    """Keep enlarged plot symbols inside the legend's fixed sample area."""
+
+    def paint(self, painter, *args):
+        if not isinstance(self.item, pg.ScatterPlotItem) or not self.item.isVisible():
+            return super().paint(painter, *args)
+        options = self.item.opts
+        painter.save()
+        try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            painter.translate(10, 10)
+            drawSymbol(
+                painter, options["symbol"], min(options["size"], 16.0),
+                pg.mkPen(options["pen"]), pg.mkBrush(options["brush"]),
+            )
+        finally:
+            painter.restore()
 
 
 # Seven-segment numeral outlines keep numbered markers independent of the

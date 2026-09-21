@@ -9,7 +9,7 @@ vector measurements, atom counting, uniform-strain common cells, PNG export and 
 
 GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 [Crystal and orientation](#gui-orientation) · [Layers](#gui-layers) ·
-[Navigation](#gui-view) · [Colors and symbols](#gui-appearance) · [GB reference](#gui-boundary) · [Vectors](#gui-vector) ·
+[Navigation](#gui-view) · [Colors, symbols and sizes](#gui-appearance) · [GB reference](#gui-boundary) · [Vectors](#gui-vector) ·
 [Near-CSL](#gui-near-csl) · [Manual cells](#gui-manual-cell) ·
 [Selected-cell strain](#gui-selected-strain) · [Export](#gui-export) · [Sessions and tables](#gui-session) ·
 [Troubleshooting](#gui-troubleshooting).
@@ -102,7 +102,7 @@ and export button.
 | `ORIENTATION` | Choose FCC/BCC/SC, a viewing axis, a CSL preset or a custom angle; rotate the display |
 | `LAYERS` | Show individual G1/G2 axial layers and the automatic common cell |
 | `GB / VECTOR` | Pick a GB reference line, clip either grain to its sides, or measure a vector |
-| `VIEW / PERFORMANCE` | Use `VIEW` for navigation and reference axes, `PERFORMANCE` for `CPU workers`, and `APPEARANCE` for grain colors and layer symbols |
+| `VIEW / PERFORMANCE` | Use `VIEW` for navigation and reference axes, `PERFORMANCE` for `CPU workers`, and `APPEARANCE` for grain colors, layer symbols and sizes |
 | `NEAR-CSL` | Enable local near-pair matching or search for a strained periodic cell |
 | `MANUAL COMMON CELL` | Select four common sites, count atoms, and optionally apply selected-cell strain |
 | Status card | Read the next picking instruction, visible atom/CSL counts, and calculation status |
@@ -256,7 +256,7 @@ atom positions before picking.
 
 <a id="gui-appearance"></a>
 
-## Choosing grain colors and layer symbols
+## Choosing grain colors, layer symbols and sizes
 
 Expand `VIEW / PERFORMANCE` and open its third tab, `APPEARANCE`.
 
@@ -268,17 +268,24 @@ Expand `VIEW / PERFORMANCE` and open its third tab, `APPEARANCE`.
    applies to that layer in both grains, including its CSL and local-pair markers.
    Other layers must use different symbols: choices already assigned elsewhere
    are disabled. Change the other layer first to free a symbol for reuse.
-3. Click `Reset appearance` to restore the blue/orange grain colors and the
-   original sequence of twelve shapes. Additional layers receive numbered
+3. Set each layer's `Size` to a percentage from **25% to 400%**. The default,
+   **100%**, preserves the original appearance; 50% halves the marker diameter
+   and 200% doubles it. The setting applies to that layer in both grains and
+   its CSL and local-pair markers. G1/G2 styling and the usual response to zoom
+   are preserved. Each layer's size is independent of the other layers.
+4. Click `Reset appearance` to restore the blue/orange grain colors, the
+   original sequence of twelve shapes, and every size to 100%. Additional layers receive numbered
    circles, keeping all layer symbols distinct. Numbered circles are also
    available as explicit choices.
 
 Appearance changes update the drawing without restarting calculations or clearing
 picked points, counts, strain or translations. PNG export uses the selected styles.
-Changing the lattice or tilt axis keeps the grain colors and the symbol assignments
-for retained layer indices; new layers receive unused defaults. `Save session…`
+Changing the lattice or view axis keeps the grain colors, symbol assignments
+and sizes for retained layer indices; new layers receive unused default symbols
+and a size of 100%. `Save session…`
 saves these choices, and `Import session…` restores them. Older session files open
-with the default colors and symbols.
+with a size of 100% if they have no saved sizes; files without saved colors and
+symbols also use the defaults for those settings.
 
 <a id="gui-boundary"></a>
 
@@ -533,7 +540,9 @@ cell vertices, each grain's deformation gradient and translation, applied common
 cell, and the original vertices needed by `Restore original local structure`.
 It also retains grain/layer and GB-side visibility, selected-cell counting options,
 Near-CSL and strain limits, display rotation, reference-axis visibility, grain
-colors, layer symbols and the view. Older session files use the default appearance.
+colors, layer symbols, per-layer sizes and the view. Older session files use
+100% sizes when no sizes were saved, and default colors and symbols when those
+settings were not saved.
 If the window has a different aspect ratio, the restored view keeps its center
 and expands as needed to include the saved region without distorting the lattice.
 Partial selections are retained so picking can continue. Worker count stays at the

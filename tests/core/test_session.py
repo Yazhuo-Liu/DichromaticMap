@@ -27,6 +27,7 @@ def populated_state():
     state.show_reference_axes = False
     state.grain_colors = ["#116633", "#9922aa"]
     state.layer_symbols = ["number:256", "star", "t2"]
+    state.layer_size_scales = [0.25, 1.75, 4.0]
     state.selected_layer = 1
     state.visible_grain_layers = [{0, 2}, {1, 2}]
     state.visible_layers = {2}
@@ -98,6 +99,7 @@ def test_roundtrip_full_state_and_partial_picking_without_cached_results(tmp_pat
     assert not after.show_reference_axes
     assert after.grain_colors == before.grain_colors == ["#116633", "#9922aa"]
     assert after.layer_symbols == before.layer_symbols == ["number:256", "star", "t2"]
+    assert after.layer_size_scales == before.layer_size_scales == [0.25, 1.75, 4.0]
     assert after.selected_layer == 1
     assert after.visible_grain_layers == [{0, 2}, {1, 2}]
     assert after.visible_layers == {2}
@@ -119,10 +121,12 @@ def test_roundtrip_full_state_and_partial_picking_without_cached_results(tmp_pat
                                   before.manual_vertices[0].grain_positions)
     after.translations[0, 0] = 99
     assert before.translations[0, 0] == 0.12
+    after.layer_size_scales[1] = 2.0
+    assert before.layer_size_scales[1] == 1.75
     with zipfile.ZipFile(path) as archive:
         assert set(archive.namelist()) == {"session.json", "counts.csv", "vectors.csv", "strain.csv", "README.txt"}
         data = archive.read("session.json").decode()
-        assert json.loads(data)["schema_version"] == 2
+        assert json.loads(data)["schema_version"] == 3
         assert "grain_signature" not in data and "worker" not in data and "buffer_bounds" not in data
         assert archive.read("vectors.csv").decode().strip()
 
@@ -186,6 +190,14 @@ def test_save_uses_current_geometry_and_exact_angle_not_launch_parameters(tmp_pa
     lambda p: p["state"].update(layer_symbols=["o", "d", "number:257"]),
     lambda p: p["state"].update(layer_symbols=["o", "d", "unknown"]),
     lambda p: p["state"].pop("grain_colors"),
+    lambda p: p["state"].pop("layer_size_scales"),
+    lambda p: p["state"].update(layer_size_scales=[1, 1]),
+    lambda p: p["state"].update(layer_size_scales=[1, True, 1]),
+    lambda p: p["state"].update(layer_size_scales=[1, "2", 1]),
+    lambda p: p["state"].update(layer_size_scales=[1, float("nan"), 1]),
+    lambda p: p["state"].update(layer_size_scales=[1, float("inf"), 1]),
+    lambda p: p["state"].update(layer_size_scales=[1, 0.24, 1]),
+    lambda p: p["state"].update(layer_size_scales=[1, 4.01, 1]),
     lambda p: p["state"].update(near_method="unknown"),
     lambda p: p["state"].update(interaction_mode="unknown"),
     lambda p: p["state"]["manual_vertices"][0].update(grain_positions=None),
@@ -315,6 +327,7 @@ def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(t
     before = PatternState(PatternParameters(lattice="SC", axis=axis, angle_deg=17.5))
     before.display_rotation_deg = 12.75
     before.grain_colors = ["#abcdef", "#112233"]
+    before.layer_size_scales = [1.75] * before.geometry.layer_count
     path = tmp_path / "legacy.dmap"
     session.save_session(path, before, SETTINGS, VIEW)
 
@@ -322,6 +335,7 @@ def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(t
         payload["schema_version"] = 1
         payload["state"].pop("grain_colors")
         payload["state"].pop("layer_symbols")
+        payload["state"].pop("layer_size_scales")
 
     rewrite_metadata(path, downgrade)
     after = session.load_session(path).state
@@ -330,19 +344,47 @@ def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(t
     assert after.grain_colors == list(DEFAULT_GRAIN_COLORS)
     assert after.layer_symbols == default_layer_symbols(after.geometry.layer_count)
     assert len(set(after.layer_symbols)) == after.geometry.layer_count
+    assert after.layer_size_scales == [1.0] * after.geometry.layer_count
     if axis == "1 1 6":
         assert after.geometry.layer_count == 38
     session.save_session(path, after, SETTINGS, VIEW)
     with zipfile.ZipFile(path) as archive:
-        assert json.loads(archive.read("session.json"))["schema_version"] == 2
+        assert json.loads(archive.read("session.json"))["schema_version"] == 3
 
 
-def test_schema_1_does_not_accept_unversioned_appearance_fields(tmp_path):
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_schema_does_not_accept_unversioned_appearance_fields(tmp_path, version):
     path = tmp_path / "wrong-version.dmap"
     session.save_session(path, populated_state(), SETTINGS, VIEW)
-    rewrite_metadata(path, lambda payload: payload.update(schema_version=1))
+    rewrite_metadata(path, lambda payload: payload.update(schema_version=version))
     with pytest.raises(ValueError, match="state fields"):
         session.load_session(path)
+
+
+def test_schema_2_retains_colors_symbols_and_physical_state_with_default_sizes(tmp_path):
+    before = populated_state()
+    path = tmp_path / "legacy-appearance.dmap"
+    session.save_session(path, before, SETTINGS, VIEW)
+
+    def downgrade(payload):
+        payload["schema_version"] = 2
+        payload["state"].pop("layer_size_scales")
+
+    rewrite_metadata(path, downgrade)
+    after = session.load_session(path).state
+    assert after.grain_colors == before.grain_colors
+    assert after.layer_symbols == before.layer_symbols
+    assert after.layer_size_scales == [1.0] * after.geometry.layer_count
+    assert after.parameters == before.parameters
+    assert after.angle_deg == before.angle_deg
+    assert after.display_rotation_deg == before.display_rotation_deg
+    np.testing.assert_array_equal(after.deformations, before.deformations)
+    np.testing.assert_array_equal(after.translations, before.translations)
+    session.save_session(path, after, SETTINGS, VIEW)
+    with zipfile.ZipFile(path) as archive:
+        metadata = json.loads(archive.read("session.json"))
+        assert metadata["schema_version"] == 3
+        assert metadata["state"]["layer_size_scales"] == [1.0] * after.geometry.layer_count
 
 
 @pytest.mark.parametrize("field,value", [
@@ -350,6 +392,11 @@ def test_schema_1_does_not_accept_unversioned_appearance_fields(tmp_path):
     ("layer_symbols", ["o", "o"]),
     ("layer_symbols", ["o"]),
     ("layer_symbols", ["o", "unknown"]),
+    ("layer_size_scales", [1]),
+    ("layer_size_scales", [True, 1]),
+    ("layer_size_scales", [0.2, 1]),
+    ("layer_size_scales", [1, 5]),
+    ("layer_size_scales", [float("nan"), 1]),
 ])
 def test_invalid_appearance_save_preserves_existing_destination(tmp_path, field, value):
     path = tmp_path / "existing.dmap"

@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from ._qt import QtCore, QtGui, QtWidgets, pg
 from .markers import marker_icon
-from ..appearance import DEFAULT_GRAIN_COLORS, available_layer_symbols, default_layer_symbols
+from ..appearance import (
+    DEFAULT_GRAIN_COLORS,
+    MAX_LAYER_SIZE_SCALE,
+    MIN_LAYER_SIZE_SCALE,
+    available_layer_symbols,
+    default_layer_symbols,
+)
 from ..crystal import SUPPORTED_LATTICES, layer_name
 from ..state import VIEW_SCALE_MIN, VIEW_SCALE_MAX, VIEW_SCALE_STOPS
 from ..strain import DEFAULT_STRAIN_PERCENT, DEFAULT_SEARCH_INDEX
@@ -802,7 +808,7 @@ class ControlDock:
             colors.addRow(f"G{grain + 1} color", button)
             self.grain_color_buttons.append(button)
         layout.addLayout(colors)
-        label = QtWidgets.QLabel("Layer symbols · shared by G1 and G2")
+        label = QtWidgets.QLabel("Layer symbols and sizes · shared by G1 and G2")
         label.setWordWrap(True)
         layout.addWidget(label)
         self.appearance_symbols_scroll = QtWidgets.QScrollArea()
@@ -819,11 +825,14 @@ class ControlDock:
         self.appearance_symbols_layout.setContentsMargins(0, 0, 4, 0)
         self.appearance_symbols_scroll.setWidget(rows)
         layout.addWidget(self.appearance_symbols_scroll)
-        help_text = QtWidgets.QLabel("Each layer needs a different symbol. Symbols already assigned to other layers are unavailable.")
+        help_text = QtWidgets.QLabel(
+            "Each layer needs a different symbol. Symbols already assigned to other layers are unavailable. "
+            "Size 100% keeps the default; sizes still adjust with zoom."
+        )
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
         self.appearance_reset_button = QtWidgets.QPushButton("Reset appearance")
-        self.appearance_reset_button.setToolTip("Restore the original grain colors and default layer symbols.")
+        self.appearance_reset_button.setToolTip("Restore the original grain colors, default layer symbols and 100% sizes.")
         self.appearance_reset_button.clicked.connect(self.owner._reset_appearance)
         layout.addWidget(self.appearance_reset_button)
         self._rebuild_appearance_symbols()
@@ -845,6 +854,7 @@ class ControlDock:
         palette = list(dict.fromkeys(available_layer_symbols(state.geometry.layer_count) + state.layer_symbols))
         icons = {symbol: marker_icon(symbol, "#334155", filled=False, size=22) for symbol in palette}
         self.layer_symbol_combos = []
+        self.layer_size_spins = []
         for layer in range(state.geometry.layer_count):
             combo = QtWidgets.QComboBox()
             combo.setIconSize(QtCore.QSize(22, 22))
@@ -859,6 +869,23 @@ class ControlDock:
             )
             self.appearance_symbols_layout.addRow(f"Layer {layer_name(layer)}", combo)
             self.layer_symbol_combos.append(combo)
+            size_spin = QtWidgets.QDoubleSpinBox()
+            size_spin.setRange(100 * MIN_LAYER_SIZE_SCALE, 100 * MAX_LAYER_SIZE_SCALE)
+            size_spin.setDecimals(1)
+            size_spin.setSingleStep(10)
+            size_spin.setSuffix(" %")
+            size_spin.setKeyboardTracking(False)
+            size_spin.setValue(100 * state.layer_size_scales[layer])
+            size_spin.setToolTip(
+                f"Size of layer {layer_name(layer)} symbols in both grains, relative to the default."
+            )
+            size_spin.valueChanged.connect(
+                lambda percentage, layer_index=layer: self.owner._on_layer_size_changed(layer_index, percentage)
+            )
+            # Keep the size on its own row so the symbols remain readable
+            # in narrow docks and with wider fallback font metrics.
+            self.appearance_symbols_layout.addRow("Size", size_spin)
+            self.layer_size_spins.append(size_spin)
         self.appearance_symbols_layout.activate()
         self.appearance_symbols_scroll.setFixedHeight(min(180, self.appearance_symbols_layout.sizeHint().height() + 2))
         self._refresh_appearance_controls()
@@ -883,6 +910,9 @@ class ControlDock:
                     available = key == symbol or key not in used
                     combo.model().item(index).setEnabled(available)
                     combo.setItemData(index, None if available else "Assigned to another layer", QtCore.Qt.ItemDataRole.ToolTipRole)
+        for layer, spin in enumerate(self.layer_size_spins):
+            with QtCore.QSignalBlocker(spin):
+                spin.setValue(100 * state.layer_size_scales[layer])
         for grain, checks in enumerate(self.grain_layer_checks):
             for layer, check in enumerate(checks):
                 check.setIcon(layer_marker_icon(grain, layer, color=state.grain_colors[grain], symbol=state.layer_symbols[layer]))

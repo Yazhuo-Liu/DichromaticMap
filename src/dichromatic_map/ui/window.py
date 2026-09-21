@@ -11,7 +11,15 @@ from pathlib import Path
 from dataclasses import replace
 import numpy as np
 from ._qt import QtCore, QtGui, QtWidgets
-from ..appearance import DEFAULT_GRAIN_COLORS, default_layer_symbols, resize_layer_symbols
+from ..appearance import (
+    DEFAULT_GRAIN_COLORS,
+    MAX_LAYER_SIZE_SCALE,
+    MIN_LAYER_SIZE_SCALE,
+    default_layer_size_scales,
+    default_layer_symbols,
+    resize_layer_size_scales,
+    resize_layer_symbols,
+)
 from .session import SessionController
 from ..crystal import (
     get_geometry,
@@ -345,9 +353,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.state.layer_symbols[layer] = symbol
         self._refresh_appearance()
 
+    def _on_layer_size_changed(self, layer, percentage):
+        scale = float(percentage) / 100.0
+        if not MIN_LAYER_SIZE_SCALE <= scale <= MAX_LAYER_SIZE_SCALE:
+            with QtCore.QSignalBlocker(self.controls.layer_size_spins[layer]):
+                self.controls.layer_size_spins[layer].setValue(100 * self.state.layer_size_scales[layer])
+            return
+        if scale == self.state.layer_size_scales[layer]:
+            return
+        self.state.layer_size_scales[layer] = scale
+        self.plot.refresh_marker_sizes()
+
     def _reset_appearance(self, *_args):
         self.state.grain_colors = list(DEFAULT_GRAIN_COLORS)
         self.state.layer_symbols = default_layer_symbols(self.state.geometry.layer_count)
+        self.state.layer_size_scales = default_layer_size_scales(self.state.geometry.layer_count)
         self._refresh_appearance()
 
     def _refresh_appearance(self):
@@ -1033,6 +1053,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._clear_lattice_selections()
         self.state.geometry = geometry
         self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, geometry.layer_count)
+        self.state.layer_size_scales = resize_layer_size_scales(self.state.layer_size_scales, geometry.layer_count)
         self.state.angle_range = misorientation_range(geometry.axis, geometry.lattice)
         self.state.render_error = None
         self.state.parameters = replace(

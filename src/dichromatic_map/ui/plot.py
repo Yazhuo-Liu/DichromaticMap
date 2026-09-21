@@ -18,7 +18,7 @@ from . import (
     LOCAL_COLOR,
 )
 from .reference_axes import GrainReferenceAxes
-from .markers import grain_edge_color, marker_symbol
+from .markers import LayerLegendSample, grain_edge_color, marker_symbol
 from ..crystal import (
     layer_name, rotation_matrix_2d,
     in_plane_reference_directions, in_plane_reference_axes,
@@ -45,8 +45,11 @@ class PatternPlot:
         self.owner = owner
         self._laying_out_title = False
         self._marker_diameter = None
+        self._marker_size_scales = None
         self._local_overlay_pairs = None
         self._local_overlay_key = None
+        self._local_marker_size_key = None
+        self._local_layers = np.empty(0, dtype=int)
         self._local_midpoints_view = np.empty((0, 2))
         self._local_distances = np.empty(0)
 
@@ -174,7 +177,7 @@ class PatternPlot:
 
         self.reference_axes_item = GrainReferenceAxes(self.view_box)
 
-        self.legend = self.plot_item.addLegend(offset=(14, 14), colCount=3)
+        self.legend = self.plot_item.addLegend(offset=(14, 14), colCount=3, sampleType=LayerLegendSample)
         self.legend.setBrush(pg.mkBrush(255, 255, 255, 225))
         self.legend.setPen(pg.mkPen("#cbd5e1"))
         self._create_layer_items()
@@ -283,12 +286,13 @@ class PatternPlot:
         diameter = self._base_marker_diameter()
         for layer in range(self.owner.state.geometry.layer_count):
             symbol = marker_symbol(self.owner.state.layer_symbols[layer])
+            layer_diameter = diameter * self.owner.state.layer_size_scales[layer]
             for grain in (0, 1):
                 color = self.owner.state.grain_colors[grain]
                 brush_color = QtGui.QColor(color)
                 brush_color.setAlpha(185 if grain == 0 else 0)
                 item = pg.ScatterPlotItem(
-                    size=diameter * (1 if grain == 0 else 1.12),
+                    size=layer_diameter * (1 + 0.12 * grain + 0.05 * (layer % 2)),
                     symbol=symbol,
                     pen=pg.mkPen(
                         grain_edge_color(color, grain),
@@ -302,7 +306,7 @@ class PatternPlot:
                 self.grain_layer_items[grain].append(item)
                 self.plot_item.addItem(item)
             item = pg.ScatterPlotItem(
-                size=diameter * 2.3,
+                size=layer_diameter * (2.3 + 0.15 * (layer % 2)),
                 symbol=symbol,
                 pen=pg.mkPen(COINCIDENCE_COLOR, width=2.2),
                 brush=pg.mkBrush(0, 0, 0, 0),
@@ -335,6 +339,7 @@ class PatternPlot:
         ):
             item.setPen(pg.mkPen(color, width=2.4, style=style))
         self._local_overlay_key = None
+        self.refresh_marker_sizes()
         self._draw_manual_cell()
         self._update_local_overlay()
         self._update_reference_axes()
@@ -395,6 +400,20 @@ class PatternPlot:
     def _base_marker_diameter(self) -> float:
         return max(5.0, float(np.sqrt(self.owner.state.parameters.marker_size) * 1.55))
 
+    def _view_marker_diameter(self) -> float:
+        _center, width, _height = self._view_geometry()
+        scale = max(VIEW_SCALE_MIN, width / self.owner.state.parameters.width)
+        return max(3.5, self._base_marker_diameter() / scale**0.22)
+
+    def refresh_marker_sizes(self):
+        """Apply layer diameter preferences without regenerating geometry."""
+        self._update_marker_sizes()
+
+    def _update_manual_marker_size(self, diameter):
+        vertices = self.owner.state.manual_vertices
+        scale = self.owner.state.layer_size_scales[vertices[0].layer] if vertices else 1.0
+        self.manual_vertex_item.setSize(diameter * 2.2 * scale)
+
     def _to_view(self, points):
         return (
             np.asarray(points)
@@ -414,6 +433,7 @@ class PatternPlot:
 
     def _draw_manual_cell(self):
         self.owner._sync_manual_strain_controls()
+        self._update_manual_marker_size(self._view_marker_diameter())
         points = np.array(
             [v.position for v in self.owner.state.manual_vertices]
         ).reshape(-1, 2)
@@ -518,6 +538,8 @@ class PatternPlot:
             mask = self.owner._local_pair_mask()
             self._local_midpoints_view = self._to_view(pairs.midpoints[mask])
             self._local_distances = pairs.distances[mask]
+            self._local_layers = pairs.layers[mask]
+            self._local_marker_size_key = None
             self.local_match_item.setData(
                 pos=self._local_midpoints_view,
                 symbol=[
@@ -532,6 +554,11 @@ class PatternPlot:
             self.local_link_item.setData(links[:, 0], links[:, 1], connect="pairs")
             self._local_overlay_pairs = pairs
             self._local_overlay_key = key
+        size_key = (self._view_marker_diameter(), tuple(session.layer_size_scales))
+        if size_key != self._local_marker_size_key:
+            sizes = size_key[0] * 2.0 * np.asarray(session.layer_size_scales)[self._local_layers]
+            self.local_match_item.setSize(sizes)
+            self._local_marker_size_key = size_key
         if not self.owner.local_active:
             return
         x0, x1, y0, y1 = self._view_range()
@@ -649,24 +676,28 @@ class PatternPlot:
         )
 
     def _update_marker_sizes(self) -> None:
-        _center, width, _height = self._view_geometry()
-        scale = max(VIEW_SCALE_MIN, width / self.owner.state.parameters.width)
-        diameter = max(3.5, self._base_marker_diameter() / scale**0.22)
+        diameter = self._view_marker_diameter()
+        scales = tuple(self.owner.state.layer_size_scales)
         if (
             self._marker_diameter is not None
             and abs(diameter - self._marker_diameter) <= 1e-12 * diameter
+            and scales == self._marker_size_scales
         ):
             return
         self._marker_diameter = diameter
+        self._marker_size_scales = scales
         for grain, grain_items in enumerate(self.grain_layer_items):
             for layer, item in enumerate(grain_items):
-                item.setSize(diameter * (1 + 0.12 * grain + 0.05 * (layer % 2)))
+                item.setSize(diameter * scales[layer] * (1 + 0.12 * grain + 0.05 * (layer % 2)))
         for layer, item in enumerate(self.coincidence_items):
-            item.setSize(diameter * (2.3 + 0.15 * (layer % 2)))
+            item.setSize(diameter * scales[layer] * (2.3 + 0.15 * (layer % 2)))
         self.boundary_endpoint_item.setSize(diameter * 2.2)
         self.vector_endpoint_item.setSize(diameter * 2.35)
         self.local_match_item.setSize(diameter * 2.0)
-        self.manual_vertex_item.setSize(diameter * 2.2)
+        self._update_manual_marker_size(diameter)
+        self._update_local_overlay()
+        for sample, _label in self.legend.items:
+            sample.update()
 
     def _set_scatter(self, item: pg.ScatterPlotItem, points: np.ndarray) -> None:
         if len(points):

@@ -16,7 +16,7 @@ point per row, so corresponding matrix operations use a transpose.
 | [strain.py](../../src/dichromatic_map/strain.py) | Automatic symmetric strain search and selected-cell fitting |
 | [compute.py](../../src/dichromatic_map/compute.py) | Worker entry points, executors and asynchronous search |
 | [state.py](../../src/dichromatic_map/state.py) | Parameters, geometry, selections, deformations and result state |
-| [appearance.py](../../src/dichromatic_map/appearance.py) | Qt-free grain colors, unique marker identifiers, validation and resizing |
+| [appearance.py](../../src/dichromatic_map/appearance.py) | Qt-free grain colors, unique marker identifiers, per-layer size scales, validation and resizing |
 | [session.py](../../src/dichromatic_map/session.py) | Versioned session archive, validation and atomic persistence |
 | [exports.py](../../src/dichromatic_map/exports.py) | Recomputed count, vector and strain CSV tables |
 | [ui/session.py](../../src/dichromatic_map/ui/session.py) | File dialogs, control synchronization and session restoration |
@@ -502,6 +502,12 @@ of the current layer count, so an assigned numbered symbol survives a geometry
 change to fewer layers. Resizing preserves valid retained assignments and fills
 new layers from unused defaults.
 
+`PatternState.layer_size_scales` stores one diameter multiplier per axial layer,
+shared by both grains. Each value must be finite and within `[0.25, 4.0]`;
+`1.0` preserves the original size. Geometry changes retain scales for surviving
+layer indices and initialize new layers to `1.0`. This preference belongs to the
+layer, so changing its symbol does not reset its size.
+
 `ui/markers.py` resolves ordinary identifiers to built-in symbols and numbered
 identifiers to cached `QPainterPath` circles with numeral cutouts. It does not
 modify PyQtGraph's global symbol registry. The numerals use built-in seven-segment
@@ -510,15 +516,26 @@ replace distinct numbers with identical missing-glyph boxes. Plot markers and co
 this resolver. Grain colors also feed the reference axes, manual-cell outlines
 and legend; G1 keeps a filled style with a darker edge and G2 keeps an outline.
 
-The `APPEARANCE` controls disable symbols assigned to other layers and reject
+Rendering multiplies the existing zoom-dependent marker diameter by the layer's
+size scale, then applies the existing grain, alternating-layer and coincidence
+factors. Local-pair markers also use their layer's scale. The multiplier changes
+display diameters, not atom coordinates, crystallographic lengths or numerical
+matching thresholds. A scale of `1.0` reproduces the existing zoom response and
+relative G1/G2 sizes. PNG export uses the same styled plot items.
+Legend samples cap large symbols to keep them inside their boxes and clear of
+neighboring labels; this does not change the plotted sizes.
+
+The `APPEARANCE` controls expose size scales as percentages from 25% to 400%,
+disable symbols assigned to other layers and reject
 duplicate assignments in callbacks. Appearance updates repaint existing data and
 refresh affected icons and overlays. They do not invalidate physical geometry,
 matching or count results, schedule numerical work, or clear selections, strain
-or translations. `Reset appearance` changes only these style preferences.
+or translations. `Reset appearance` restores these style preferences, including
+all size scales to `1.0`.
 
 ## Session persistence and numerical export
 
-`session.py` stores a `.dmap` ZIP archive with schema version 2. `session.json`
+`session.py` stores a `.dmap` ZIP archive with schema version 3. `session.json`
 contains explicit physical and display inputs, not a dump of `PatternState`:
 current lattice/axis/angle replace potentially stale launch parameters, arrays
 become ordinary JSON lists, and selected atom indices retain their grain and
@@ -526,15 +543,16 @@ axial layer. Applied `StrainedCell` and `SelectedCellStrain` records include the
 original vertices and cutoff needed to undo a selected-cell fit. Interaction
 mode and partial selections are retained; rendering buffers, futures, worker
 counts and local paths are excluded. The selected automatic strain candidate is
-retained, while its other search candidates are omitted. Schema 2 adds
-`grain_colors` and `layer_symbols` to the explicit state fields. Schema 1 files
-still load with the default colors and unique layer symbols; saving them writes
-schema 2. Unsupported future versions and unexpected fields are rejected.
+retained, while its other search candidates are omitted. Schema 2 added
+`grain_colors` and `layer_symbols` to the explicit state fields; schema 3 adds
+`layer_size_scales`. Schema 1 and 2 files still load with size scales of `1.0`;
+schema 1 also uses the default colors and unique layer symbols. Saving writes
+schema 3. Unsupported future versions and unexpected fields are rejected.
 
 `load_session` returns `SessionSnapshot(state, settings, view_range)`. The
 loader checks schema/version, required archive members and bounded sizes,
 finite numbers, array shapes, axis/layer/index validity, appearance formats and
-symbol uniqueness, deformation orientation, common-cell consistency, and
+symbol uniqueness and size-scale bounds, deformation orientation, common-cell consistency, and
 selected-atom coordinates. It reads JSON directly
 without extracting files or unpickling objects; CSV outputs are not inputs to
 state restoration. `save_session` validates its own serialized payload and

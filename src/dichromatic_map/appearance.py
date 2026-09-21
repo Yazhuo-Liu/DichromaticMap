@@ -1,12 +1,17 @@
-"""Qt-free grain colours and unique, portable layer marker identifiers."""
+"""Qt-free grain colours, unique marker identifiers and per-layer size scales."""
 
 from __future__ import annotations
 
+import math
+from numbers import Real
 import re
 
 from .crystal import MAX_LAYERS
 
 DEFAULT_GRAIN_COLORS = ("#1677d2", "#e35d35")
+DEFAULT_LAYER_SIZE_SCALE = 1.0
+MIN_LAYER_SIZE_SCALE = 0.25
+MAX_LAYER_SIZE_SCALE = 4.0
 BASE_SYMBOLS = ("o", "d", "t", "s", "p", "h", "star", "+", "x", "t1", "t2", "t3")
 _ALL_SYMBOLS = frozenset(BASE_SYMBOLS) | {
     f"number:{number}" for number in range(1, MAX_LAYERS + 1)
@@ -29,6 +34,41 @@ def default_layer_symbols(count: int) -> list[str]:
     return list(BASE_SYMBOLS[:count]) + [
         f"number:{number}" for number in range(len(BASE_SYMBOLS) + 1, count + 1)
     ]
+
+
+def default_layer_size_scales(count: int) -> list[float]:
+    """Retain the established marker diameter for every layer by default."""
+    return [DEFAULT_LAYER_SIZE_SCALE] * _layer_count(count)
+
+
+def _valid_size_scale(value) -> bool:
+    return (
+        isinstance(value, Real) and not isinstance(value, bool)
+        and MIN_LAYER_SIZE_SCALE <= value <= MAX_LAYER_SIZE_SCALE
+        and math.isfinite(value)
+    )
+
+
+def validate_layer_size_scales(scales, count: int) -> list[float]:
+    """Validate and copy finite diameter multipliers, one per geometry layer."""
+    count = _layer_count(count)
+    if not isinstance(scales, (list, tuple)) or len(scales) != count:
+        raise ValueError("Layer size scales must match the geometry layer count")
+    if any(not _valid_size_scale(scale) for scale in scales):
+        raise ValueError(
+            "Layer size scales must be finite numbers between "
+            f"{MIN_LAYER_SIZE_SCALE:g} and {MAX_LAYER_SIZE_SCALE:g}"
+        )
+    return [float(scale) for scale in scales]
+
+
+def resize_layer_size_scales(existing, count: int) -> list[float]:
+    """Retain valid layer sizes, using the original diameter for new layers."""
+    result = default_layer_size_scales(count)
+    for index, scale in enumerate(existing[:count]):
+        if _valid_size_scale(scale):
+            result[index] = float(scale)
+    return result
 
 
 def available_layer_symbols(count: int) -> list[str]:

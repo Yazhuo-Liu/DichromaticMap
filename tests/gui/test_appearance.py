@@ -70,6 +70,14 @@ def test_appearance_color_dialog_cancel_and_reset_keep_existing_defaults(gui, mo
     assert controls.view_performance_tabs.tabText(1) == "PERFORMANCE"
     assert tuple(state.grain_colors) == (GRAIN_1_COLOR, GRAIN_2_COLOR)
     assert tuple(state.layer_symbols) == LAYER_SYMBOLS[:2]
+    assert state.layer_size_scales == [1.0, 1.0]
+    assert [spin.value() for spin in controls.layer_size_spins] == [100.0, 100.0]
+    diameter = plot._view_marker_diameter()
+    for layer in range(2):
+        for grain in (0, 1):
+            assert plot.grain_layer_items[grain][layer].opts["size"] == pytest.approx(
+                diameter * (1 + 0.12 * grain + 0.05 * (layer % 2))
+            )
     assert plot.grain_layer_items[0][0].opts["pen"].color().name() == GRAIN_1_EDGE
     assert all(button.isVisible() for button in controls.grain_color_buttons)
     original_icon = controls.grain_layer_checks[0][0].icon().pixmap(18, 18).toImage()
@@ -89,10 +97,15 @@ def test_appearance_color_dialog_cancel_and_reset_keep_existing_defaults(gui, mo
     controls.grain_color_buttons[0].click()
     assert tuple(state.grain_colors) == ("#7024bd", "#269244")
     select_symbol(window, 0, "star")
+    controls.layer_size_spins[0].setValue(200)
+    controls.layer_size_spins[1].setValue(50)
     controls.appearance_reset_button.click()
     gui.settle(window)
     assert tuple(state.grain_colors) == (GRAIN_1_COLOR, GRAIN_2_COLOR)
     assert tuple(state.layer_symbols) == LAYER_SYMBOLS[:2]
+    assert state.layer_size_scales == [1.0, 1.0]
+    assert [spin.value() for spin in controls.layer_size_spins] == [100.0, 100.0]
+    assert plot.grain_layer_items[0][0].opts["size"] == pytest.approx(plot._view_marker_diameter())
     assert [combo.currentData() for combo in controls.layer_symbol_combos] == list(LAYER_SYMBOLS[:2])
     assert plot.grain_layer_items[0][0].opts["pen"].color().name() == GRAIN_1_EDGE
     assert reference_arrow_colors(plot.reference_axes_item) == [GRAIN_1_COLOR] * 2 + [GRAIN_2_COLOR] * 2
@@ -147,8 +160,10 @@ def test_appearance_changes_preserve_counted_cell_vector_and_generated_grains(gu
         pytest.fail("Appearance changes must not regenerate crystal geometry")
 
     monkeypatch.setattr(window, "_start_parallel_regeneration", unexpected_regeneration)
+    manual_size = plot.manual_vertex_item.opts["size"]
     choose_color(monkeypatch, window, 0, "#7024bd")
     select_symbol(window, 0, "star")
+    controls.layer_size_spins[0].setValue(200)
     gui.settle(window)
     assert all(actual is expected for actual, expected in zip(state.grains, grains))
     assert state.manual_counts is counts
@@ -157,10 +172,11 @@ def test_appearance_changes_preserve_counted_cell_vector_and_generated_grains(gu
     np.testing.assert_array_equal(window._selected_vector_displacement(), vector)
     np.testing.assert_allclose(plot.view_box.viewRange(), view_range, atol=1e-12)
     assert plot.manual_vertex_item.opts["symbol"] == "star"
+    assert plot.manual_vertex_item.opts["size"] == pytest.approx(manual_size * 2)
     assert plot.vector_arrow.isVisible()
 
 
-def test_layer_symbol_updates_existing_local_pairs_without_recomputing(gui):
+def test_layer_symbol_updates_existing_local_pairs_without_recomputing(gui, monkeypatch):
     window = gui.window(lattice="FCC", axis="110", angle_deg=22)
     gui.select_layer(window, 1)
     window.controls.near_section.toggle.setChecked(True)
@@ -176,6 +192,18 @@ def test_layer_symbol_updates_existing_local_pairs_without_recomputing(gui):
     assert window.state.local_pairs is pairs
     np.testing.assert_array_equal(np.column_stack(item.getData()), positions)
     assert all(symbol == "star" for symbol in item.data["symbol"])
+    original_sizes = item.data["size"].copy()
+
+    def unexpected_rebuild(*args, **kwargs):
+        pytest.fail("Size changes must not recompute pairs or rebuild their coordinates")
+
+    monkeypatch.setattr(window, "_start_local_matching", unexpected_rebuild)
+    monkeypatch.setattr(item, "setData", unexpected_rebuild)
+    window.controls.layer_size_spins[1].setValue(175)
+    gui.settle(window)
+    assert window.state.local_pairs is pairs
+    np.testing.assert_array_equal(np.column_stack(item.getData()), positions)
+    np.testing.assert_allclose(item.data["size"], original_sizes * 1.75)
 
 
 def test_custom_axis_markers_do_not_repeat_and_appearance_fits_small_window(gui):
@@ -221,18 +249,24 @@ def test_geometry_switch_keeps_colors_and_reuses_unique_layer_prefix(gui, monkey
     open_appearance(gui, window)
     choose_color(monkeypatch, window, 1, "#269244")
     select_symbol(window, 0, "t")  # This is the default for the newly added third layer.
+    controls.layer_size_spins[0].setValue(175)
+    controls.layer_size_spins[1].setValue(50)
     controls.axis_combo.setCurrentIndex(controls.axis_combo.findData("111"))
     gui.settle(window)
     assert state.grain_colors[1] == "#269244"
     assert state.layer_symbols[:2] == ["t", "d"]
     assert len(set(state.layer_symbols)) == state.geometry.layer_count == 3
     assert [combo.currentData() for combo in controls.layer_symbol_combos] == list(state.layer_symbols)
+    assert state.layer_size_scales == [1.75, 0.5, 1.0]
+    assert [spin.value() for spin in controls.layer_size_spins] == [175.0, 50.0, 100.0]
     controls.structure_combo.setCurrentIndex(controls.structure_combo.findData("SC"))
     controls.axis_combo.setCurrentIndex(controls.axis_combo.findData("100"))
     gui.settle(window)
     assert list(state.layer_symbols) == ["t"]
     assert state.grain_colors[1] == "#269244"
     assert len(controls.layer_symbol_combos) == 1
+    assert state.layer_size_scales == [1.75]
+    assert [spin.value() for spin in controls.layer_size_spins] == [175.0]
 
 
 def test_session_restores_colors_symbols_and_appearance_controls(gui, monkeypatch, tmp_path):
@@ -242,6 +276,8 @@ def test_session_restores_colors_symbols_and_appearance_controls(gui, monkeypatc
     choose_color(monkeypatch, source, 1, "#269244")
     select_symbol(source, 0, "star")
     select_symbol(source, 2, "number:7")
+    for spin, value in zip(source.controls.layer_size_spins, (25, 175, 400)):
+        spin.setValue(value)
     gui.settle(source)
     output = tmp_path / "appearance.dmap"
     source.save_session(output)
@@ -250,11 +286,17 @@ def test_session_restores_colors_symbols_and_appearance_controls(gui, monkeypatc
     gui.settle(restored)
     assert restored.state.grain_colors == source.state.grain_colors
     assert restored.state.layer_symbols == source.state.layer_symbols
+    assert restored.state.layer_size_scales == source.state.layer_size_scales == [0.25, 1.75, 4.0]
+    assert [spin.value() for spin in restored.controls.layer_size_spins] == [25.0, 175.0, 400.0]
     assert [combo.currentData() for combo in restored.controls.layer_symbol_combos] == list(source.state.layer_symbols)
     assert reference_arrow_colors(restored.plot.reference_axes_item) == ["#7024bd"] * 2 + ["#269244"] * 2
     for layer in range(3):
         assert restored.plot.grain_layer_items[0][layer].opts["brush"].color().name() == "#7024bd"
         assert restored.plot.grain_layer_items[1][layer].opts["pen"].color().name() == "#269244"
+        for grain in (0, 1):
+            assert restored.plot.grain_layer_items[grain][layer].opts["size"] == pytest.approx(
+                source.plot.grain_layer_items[grain][layer].opts["size"], rel=1e-6,
+            )
 
 
 def test_png_export_contains_selected_grain_colors(gui, monkeypatch, tmp_path):
@@ -269,3 +311,75 @@ def test_png_export_contains_selected_grain_colors(gui, monkeypatch, tmp_path):
     for color in ("#7024bd", "#269244"):
         rgb = np.array(QtGui.QColor(color).getRgb()[:3])
         assert np.count_nonzero(np.max(np.abs(pixels - rgb), axis=2) <= 3) > 30
+    window.controls.layer_size_spins[0].setValue(200)
+    gui.settle(window)
+    larger_output = tmp_path / "larger.png"
+    window.plot.save(larger_output)
+    larger_pixels = image_array(larger_output)[:, :, :3].astype(int)
+    rgb = np.array(QtGui.QColor("#269244").getRgb()[:3])
+    before = np.count_nonzero(np.max(np.abs(pixels - rgb), axis=2) <= 3)
+    after = np.count_nonzero(np.max(np.abs(larger_pixels - rgb), axis=2) <= 3)
+    assert after > before * 1.3
+
+
+def test_layer_sizes_are_independent_and_survive_symbol_and_zoom_changes(gui):
+    window = gui.window(lattice="BCC", axis="111", angle_deg=20)
+    open_appearance(gui, window)
+    controls, state, plot = window.controls, window.state, window.plot
+    original = np.array([
+        [item.opts["size"] for item in items]
+        for items in (*plot.grain_layer_items, plot.coincidence_items)
+    ])
+    for spin, value in zip(controls.layer_size_spins, (25, 150, 400)):
+        spin.setValue(value)
+    gui.settle(window)
+    sizes = np.array([
+        [item.opts["size"] for item in items]
+        for items in (*plot.grain_layer_items, plot.coincidence_items)
+    ])
+    np.testing.assert_allclose(sizes, original * [0.25, 1.5, 4.0])
+    select_symbol(window, 1, "star")
+    assert state.layer_size_scales == [0.25, 1.5, 4.0]
+    controls.view_slider.setValue(200)
+    gui.settle(window)
+    enlarged = np.array([
+        [item.opts["size"] for item in items]
+        for items in (*plot.grain_layer_items, plot.coincidence_items)
+    ])
+    controls.appearance_reset_button.click()
+    gui.settle(window)
+    defaults = np.array([
+        [item.opts["size"] for item in items]
+        for items in (*plot.grain_layer_items, plot.coincidence_items)
+    ])
+    np.testing.assert_allclose(enlarged, defaults * [0.25, 1.5, 4.0])
+    assert defaults[0, 0] < original[0, 0]  # Existing zoom scaling still applies.
+
+
+def test_large_symbols_fit_inside_legend_samples(gui):
+    window = gui.window(lattice="BCC", axis="111", angle_deg=20)
+    open_appearance(gui, window)
+    for spin in window.controls.layer_size_spins:
+        spin.setValue(400)
+    gui.settle(window)
+    for sample, _label in window.plot.legend.items:
+        if sample.item not in (
+            *window.plot.grain_layer_items[0], *window.plot.grain_layer_items[1],
+            *window.plot.coincidence_items,
+        ):
+            continue
+        original_size = sample.item.opts["size"]
+        canvas = QtGui.QImage(100, 100, QtGui.QImage.Format_RGBA8888)
+        canvas.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(canvas)
+        try:
+            painter.translate(40, 40)
+            sample.paint(painter, None)
+        finally:
+            painter.end()
+        pixels = np.frombuffer(canvas.constBits(), dtype=np.uint8).reshape(100, 100, 4)
+        y, x = np.where(pixels[:, :, 3] > 0)
+        assert len(x) > 0
+        assert x.min() >= 40 and x.max() < 60
+        assert y.min() >= 40 and y.max() < 60
+        assert sample.item.opts["size"] == original_size
