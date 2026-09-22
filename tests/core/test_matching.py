@@ -51,6 +51,16 @@ class LocalMatchingTests(unittest.TestCase):
         pairs = matching.local_near_pairs(first, second, 0.5)
         np.testing.assert_array_equal(pairs.second, [[0.01, 0]])
 
+    def test_default_local_distance_accepts_near_pairs_within_one_tenth_a0(self):
+        first = self.grain([[0, 0], [1, 0], [2, 0]])
+        second = self.grain([[0.075, 0], [1.125, 0], [2, 0]])
+
+        pairs = matching.local_near_pairs(first, second)
+        np.testing.assert_array_equal(pairs.first, [[0, 0]])
+        np.testing.assert_array_equal(pairs.second, [[0.075, 0]])
+        # Explicit cutoffs remain honored; exact coincidences stay excluded.
+        self.assertEqual(len(matching.local_near_pairs(first, second, 0.05).layers), 0)
+
     def test_mutual_assignment_layers_cutoff_and_exact_exclusion(self):
         first = self.grain([[0, 0], [0.02, 0], [1, 0], [2, 0], [3, 0]], [0, 0, 1, 2, 3])
         second = self.grain([[0.005, 0], [1, 0], [2.01, 0], [3, 0]], [0, 0, 2, 3])

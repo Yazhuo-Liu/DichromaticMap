@@ -9,7 +9,7 @@ import numpy as np
 from .crystal import ProjectedGrain, get_geometry, congruence_kernel
 from .cells import StrainedCell, bases, determinant, reduce_cell
 
-DEFAULT_LOCAL_DISTANCE = 0.05  # pair separation in a0, not a strain percentage
+DEFAULT_LOCAL_DISTANCE = 0.1  # pair separation in a0, not a strain percentage
 COINCIDENCE_TOLERANCE_FACTOR = 1.0e-6
 
 

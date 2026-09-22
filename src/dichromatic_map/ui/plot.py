@@ -821,8 +821,61 @@ class PatternPlot:
             ]
         )
 
-    def save(self, output_path: Path) -> None:
+    def save(self, output_path: Path, *, clean: bool = False) -> None:
+        """Export the complete plot, or only the visible grain atoms."""
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        if clean:
+            self._save_atoms(output_path)
+            return
         exporter = pyqtgraph.exporters.ImageExporter(self.plot_item)
         exporter.parameters()["width"] = 1800
-        exporter.export(str(output_path))
+        if exporter.export(str(output_path)) is False:
+            raise OSError(f"Could not save PNG to {output_path}")
+
+    def _save_atoms(self, output_path: Path) -> None:
+        # Render copies in a separate scene. Hiding annotations in the live
+        # scene could trigger layout/range changes, and ImageExporter renders
+        # neighboring scene items even when its target is only the ViewBox.
+        view = pg.GraphicsView(
+            useOpenGL=False, background=self.plot_widget.backgroundBrush()
+        )
+        try:
+            root = pg.GraphicsWidget()
+            view.setCentralItem(root)
+            bounds = QtCore.QRectF(self.view_box.rect())
+            # Keep a 1:1 scene-to-screen transform so export resolution scales
+            # the pixel-sized symbols exactly as it does in the live canvas.
+            view.setRange(bounds, padding=0, disableAutoPixel=False)
+            box = pg.ViewBox(parent=root, enableMouse=False, enableMenu=False)
+            box.setGeometry(bounds)
+            box.invertX(self.view_box.state["xInverted"])
+            box.invertY(self.view_box.state["yInverted"])
+            box.setRange(self.view_box.viewRect(), padding=0)
+
+            atoms = {item for grain in self.grain_layer_items for item in grain}
+            # Follow the original insertion/stacking order, including layers
+            # with overlapping symbols from different grains.
+            for original in self.view_box.childGroup.childItems():
+                if original not in atoms or not original.isVisible():
+                    continue
+                x, y = original.getData()
+                visible = original.data["visible"]
+                item = pg.ScatterPlotItem(
+                    x=x[visible], y=y[visible], **original.opts
+                )
+                item.setZValue(original.zValue())
+                item.setOpacity(original.opacity())
+                box.addItem(item)
+
+            # The hidden view receives no paint event to apply its pending
+            # data-to-canvas transform before ImageExporter renders the scene.
+            box.updateMatrix()
+            # The plain root widget provides an exact crop; a ViewBox's own
+            # boundingRect includes an extra half-pixel for its border.
+            exporter = pyqtgraph.exporters.ImageExporter(root)
+            exporter.parameters()["width"] = 1800
+            if exporter.export(str(output_path)) is False:
+                raise OSError(f"Could not save PNG to {output_path}")
+        finally:
+            view.close()
+            view.deleteLater()

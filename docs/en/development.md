@@ -228,7 +228,7 @@ cached with a bounded 256-entry cache.
 Implementation: `_nearest_in_radius` and `local_near_pairs` in
 [matching.py](../../src/dichromatic_map/matching.py).
 
-The cutoff `r` must satisfy `0 < r <= 0.5`; its default is 0.05 a₀. Each layer is processed
+The cutoff `r` must satisfy `0 < r <= 0.5`; its default is 0.1 a₀. Each layer is processed
 independently. Bin coordinates are measured relative to the common minimum of both point sets.
 Within an overflow-checked padded rectangle, the bin `(ix,iy)` is encoded as one scalar integer:
 
@@ -456,7 +456,8 @@ for the arrows and `[uvw]` labels independently of the current angle, so rotatio
 does not recenter or resize the panel. Pan and zoom preserve its placement and
 size; geometry, reference angle, deformation and display rotation determine the
 arrow directions. `Grain reference axes` controls visibility, and the vector readout
-reserves space above it while visible. Enabled axes are included in plot export.
+reserves space above it while visible. Enabled axes are included in normal plot export;
+clean PNG export omits them.
 
 The plot reuses local-pair scatter data, links, transformed midpoints and distances when only
 the viewport changes. The cache key includes pair-object identity, local-mode state, display
@@ -521,7 +522,7 @@ size scale, then applies the existing grain, alternating-layer and coincidence
 factors. Local-pair markers also use their layer's scale. The multiplier changes
 display diameters, not atom coordinates, crystallographic lengths or numerical
 matching thresholds. A scale of `1.0` reproduces the existing zoom response and
-relative G1/G2 sizes. PNG export uses the same styled plot items.
+relative G1/G2 sizes. PNG export preserves these marker styles.
 Legend samples cap large symbols to keep them inside their boxes and clear of
 neighboring labels; this does not change the plotted sizes.
 
@@ -532,6 +533,21 @@ refresh affected icons and overlays. They do not invalidate physical geometry,
 matching or count results, schedule numerical work, or clear selections, strain
 or translations. `Reset appearance` restores these style preferences, including
 all size scales to `1.0`.
+
+## PNG rendering
+
+`PatternPlot.save(path)` exports the normal annotated `PlotItem` at a width of
+1800 pixels. `save(path, clean=True)` builds an unshown `GraphicsView` and
+`ViewBox` containing copies of the currently visible G1/G2 scatter data and
+styles. It copies the live view range, pixel dimensions and background, retaining
+rotation, visibility filters, colors, symbols and sizes. The export scene has no
+title, axes, grid, border or annotation items, so reference axes, legends, readouts,
+CSL/local-pair overlays, cells, GB lines and vectors are absent.
+
+The separate scene leaves live item visibility, view geometry and physical state
+untouched, and its temporary resources are released even if export fails. The
+`Clean PNG (atoms only)` checkbox is an export preference, initially unchecked;
+it is not part of the session schema.
 
 ## Session persistence and numerical export
 
@@ -548,6 +564,8 @@ retained, while its other search candidates are omitted. Schema 2 added
 `layer_size_scales`. Schema 1 and 2 files still load with size scales of `1.0`;
 schema 1 also uses the default colors and unique layer symbols. Saving writes
 schema 3. Unsupported future versions and unexpected fields are rejected.
+Saved local-pair distance values are independent of the new-session default of
+0.1 a₀ and load without modification.
 
 `load_session` returns `SessionSnapshot(state, settings, view_range)`. The
 loader checks schema/version, required archive members and bounded sizes,

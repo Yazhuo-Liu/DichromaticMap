@@ -2282,14 +2282,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.session.choose_import_path()
 
     def _choose_export_path(self) -> None:
+        clean = self.controls.clean_export_check.isChecked()
         filename, _filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "Export dichromatic pattern",
-            "dichromatic_pattern.png",
+            "Export atoms only" if clean else "Export dichromatic pattern",
+            "dichromatic_atoms.png" if clean else "dichromatic_pattern.png",
             "PNG image (*.png)",
         )
         if filename:
-            self.plot.save(Path(filename))
+            try:
+                self.plot.save(Path(filename), clean=clean)
+            except Exception as error:
+                QtWidgets.QMessageBox.warning(self, "PNG export failed", str(error))
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
         self.manual_count_timer.stop()

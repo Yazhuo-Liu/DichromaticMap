@@ -70,7 +70,8 @@ python -m dichromatic_map --angle 22 --save pattern.png
 QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.png
 ```
 
-也可以在查看器中用 `Export PNG…` 导出当前图，详见 [GUI 导出步骤](#gui-export)。
+也可以在查看器中用 `Export PNG…` 导出当前图；勾选按钮上方的 `Clean PNG (atoms only)`
+可只导出可见原子符号，详见 [GUI 导出步骤](#gui-export)。
 
 <a id="gui-overview"></a>
 
@@ -206,7 +207,7 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 施加应变后，还会跟随各晶粒极分解中的刚体旋转，保持参考轴相互垂直；
 它们用于表示正交参考方向，不代表剪切或拉伸后的实际晶格矢量。
 向量测量仍使用真实位移，其读数在参考轴可见时移到上方；隐藏参考轴可释放左下角空间。
-启用时，PNG 导出也包含这些参考轴。
+启用时，普通 PNG 导出也包含这些参考轴；纯净导出不包含参考轴。
 
 切换到 `PERFORMANCE` 页签可修改 `CPU workers`；`1` 表示单进程。
 较大的视野或搜索范围可能需要等待，底部 `Compute` 显示正在进行的计算，Near-CSL 面板显示匹配或搜索进度。
@@ -313,13 +314,13 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 
 | 方法 | 作用 | 默认值 |
 | --- | --- | --- |
-| `Local matching · no bulk strain` | 将距离阈值内、同层且互为最近邻的原子配对，保留原子位置 | 距离 0.05 a₀ |
+| `Local matching · no bulk strain` | 将距离阈值内、同层且互为最近邻的原子配对，保留原子位置 | 距离 0.1 a₀ |
 | `Homogeneous strain + periodic cell` | 在不增加刚体旋转的均匀面内应变下搜索共同平移胞 | 主应变上限 2%；整数搜索范围 ±12 |
 
 ### 局部匹配：查看原子配对而不改变结构
 
 1. 在 `Method` 选择 `Local matching · no bulk strain`，点击 `Enable Near-CSL`。
-2. 设置 `Local pair distance`，默认 0.05 a₀，范围 0.0001–0.5 a₀；参数改变后自动重新匹配。
+2. 设置 `Local pair distance`，默认 0.1 a₀，范围 0.0001–0.5 a₀；参数改变后自动重新匹配。
 3. 在 `LAYERS` 中使目标层同时在 G1/G2 可见，等待紫色标记和连线出现。
 4. 阅读 Near-CSL 面板的 `Visible near pairs` 和 `d/a₀ min / mean / max`，分别为当前视野内
    近邻对数和配对距离的最小值、均值、最大值；精确 CSL 对不计入紫色配对。
@@ -440,13 +441,20 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 1. 选好晶格、角度、可见层和 GB 两侧；按需要显示胞框、向量或手动计数。
 2. 调整平移、缩放和 `Display rotation`，使目标区域与标注出现在当前视野中。
    等待晶格、CSL、局部匹配及手动计数更新结束。
-3. 滚动到右侧面板底部，点击 `Export PNG…`。
-4. 在 `Export dichromatic pattern` 对话框中选择目录和 `.png` 文件名；默认名为
-   `dichromatic_pattern.png`，保存类型为 `PNG image (*.png)`。确认保存，或取消以返回查看器。
+3. 滚动到右侧面板底部。保留 `Clean PNG (atoms only)` 未勾选可导出带标注的图；
+   勾选它可只导出可见的 G1/G2 原子符号。然后点击 `Export PNG…`。
+4. 在文件对话框中选择目录和 `.png` 文件名。普通导出的对话框标题为 `Export dichromatic pattern`，
+   默认文件名为 `dichromatic_pattern.png`；纯净导出的标题为 `Export atoms only`，
+   默认文件名为 `dichromatic_atoms.png`。保存类型为 `PNG image (*.png)`；确认保存，或取消以返回查看器。
 
-导出的是当前绘图区，宽度为 1800 像素，包含图标题、坐标轴、图例、显示旋转、启用的晶粒参考轴及当前可见标注。
+导出图片宽度为 1800 像素。普通导出包含当前绘图区的图标题、坐标轴、图例、显示旋转、启用的晶粒参考轴及当前可见标注。
 右侧控制面板和其中的详细文本不在图片内；需要保存应变详情时，可从其只读文本框选择复制。
 自动胞或手动胞超出当前视野时，先用对应的 `Fit cell` 或 `Fit` 再导出。
+
+`Clean PNG (atoms only)` 默认不勾选。勾选后保留当前视野、显示旋转、晶粒/层显隐、GB 两侧筛选、
+原子的颜色、符号和大小，以及当前绘图区背景；移除浮动图例、晶粒参考轴、读数框、标题、坐标轴、网格、边框、
+CSL 高亮、局部配对标记与连线、胞框、GB 线和向量标注。导出不会改变实时视图、选点或数值状态。
+该选项仅用于 PNG 导出，不写入 `.dmap` 会话文件。
 
 <a id="gui-session"></a>
 
@@ -465,6 +473,7 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 的原始顶点。可见晶粒/层、GB 两侧筛选、手动计数选项、Near-CSL 和应变限值、显示旋转、
 参考轴显隐、晶粒颜色、各层符号和大小及视野也会恢复；旧版会话文件未保存大小时使用 100%，
 未保存颜色和符号时使用相应默认设置。
+会话中已保存的局部配对距离保持原值；0.1 a₀ 默认值用于新会话。
 窗口宽高比不同时，恢复的视野保留中心并按需扩展，以覆盖原区域且不拉伸晶格。
 尚未完成的选点可以继续；原子缓存和计数在导入后重新计算。
 CPU workers 保留当前计算机的设置。应变搜索只保存已应用的候选胞，不保存整个候选列表；
@@ -509,7 +518,7 @@ grain1 = projected_columns(12, 9, angle / 2, lattice="FCC", axis="110")
 grain2 = projected_columns(12, 9, -angle / 2, lattice="FCC", axis="110")
 
 sites = same_layer_coincidence_sites(grain1, grain2, tolerance=1e-6)
-pairs = local_near_pairs(grain1, grain2, distance=0.05)
+pairs = local_near_pairs(grain1, grain2, distance=0.1)
 print("Exact sites per layer:", [len(layer_sites) for layer_sites in sites])
 print("Local near pairs:", len(pairs.layers))
 
@@ -557,7 +566,7 @@ print((counts.interior + counts.boundary)[:, 0])     # [9 9]
 | `misorientation_range(axis="110", lattice="FCC")` | 返回不可变的 `AngleRange`，包含 `maximum_deg`、`period_deg`、`symmetry_order`；[110] 分别返回 90°、180°、2 |
 | `projected_columns(width, height, rotation_deg, ...)` | 返回 `positions`（N×2，单位 a₀）、从 0 开始的 `layers` 和参考 `half_indices`（N×3，单位 a₀/2）；可指定视野中心、2×2 变形和平移 |
 | `same_layer_coincidence_sites(grain_1, grain_2, tolerance)` | 按层返回重合位置，每层一个 N×2 数组；容差单位为 a₀ |
-| `local_near_pairs(grain1, grain2, distance=0.05, ...)` | 返回实际端点 `first`/`second`、层标签、`midpoints` 和 `distances`；局部配对结果不包含精确重合对 |
+| `local_near_pairs(grain1, grain2, distance=0.1, ...)` | 返回实际端点 `first`/`second`、层标签、`midpoints` 和 `distances`；局部配对结果不包含精确重合对 |
 | `exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110")` | 对识别出的公度角返回保持层相位的共同平移胞，否则返回 `None`；`max_denominator` 同时限制四元数互素系数 m、n；共同胞在保层平面内为原胞，不一定是三维原胞 |
 | `count_cell_atoms(vertices, angle, deformations, ...)` | 接收共享的 4×2 多边形或两晶粒各自的 2×4×2 多边形、两个 2×2 变形、可选平移和层索引；返回分晶粒、分层计数及每晶粒面积 |
 

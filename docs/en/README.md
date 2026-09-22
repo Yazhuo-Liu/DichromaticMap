@@ -81,7 +81,9 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 ```
 
 The viewer's `Export PNG…` button saves the current plot, including
-display rotation and annotations.
+display rotation and annotations. Check `Clean PNG (atoms only)` above the
+button for an image containing only the visible atom symbols; see
+[Saving the current plot](#gui-export).
 
 <a id="gui-overview"></a>
 
@@ -246,7 +248,7 @@ and `Display rotation`. With strain applied, they also follow the grain's polar
 rigid rotation and remain perpendicular. They are an orthogonal reference frame,
 not the actual sheared or stretched lattice vectors. Vector measurements report
 actual displacements; their readout is placed above the axes while the overlay
-is visible. PNG export includes the axes when enabled.
+is visible. Normal PNG export includes the axes when enabled; clean export omits them.
 
 In `PERFORMANCE`, `CPU workers` controls calculation processes. Changing it
 refreshes calculations. More workers can help larger views and searches but
@@ -364,13 +366,13 @@ initially; the active button reads `Disable Near-CSL`.
 
 | Method | What it does | Defaults |
 | --- | --- | --- |
-| `Local matching · no bulk strain` | Pairs same-layer, mutually nearest atoms within a distance threshold; preserves atom positions | Distance 0.05 a₀ |
+| `Local matching · no bulk strain` | Pairs same-layer, mutually nearest atoms within a distance threshold; preserves atom positions | Distance 0.1 a₀ |
 | `Homogeneous strain + periodic cell` | Searches for a common translation cell under uniform in-plane strain without adding rigid rotation | Principal-strain limit 2%; integer search extent ±12 |
 
 ### Local matching without moving atoms
 
 1. Choose `Local matching · no bulk strain` and enable Near-CSL.
-2. Set `Local pair distance` (0.0001–0.5 a₀). Results refresh automatically
+2. Set `Local pair distance` (default 0.1 a₀; range 0.0001–0.5 a₀). Results refresh automatically
    when it changes; there is no separate Run button.
 3. Enable the desired layer in both grains. Purple midpoint markers identify
    near pairs; dotted links connect their actual atoms. Read the result box
@@ -510,16 +512,27 @@ transformation, not a stress-free configuration or an energy relaxation.
 1. Finish choosing the angle, layers, view and annotations, then wait for
    pending calculations and counts. Use display rotation and the appropriate
    `Fit` action to arrange the image.
-2. Scroll to the bottom of `Controls` and click `Export PNG…`.
-3. In the `Export dichromatic pattern` dialog, choose a folder and a `.png`
-   filename (default `dichromatic_pattern.png`), then save. Cancel closes the
-   dialog without saving.
+2. Scroll to the bottom of `Controls`. Leave `Clean PNG (atoms only)` unchecked
+   for the annotated plot, or check it for just the visible G1/G2 atom symbols.
+   Then click `Export PNG…`.
+3. Choose a folder and a `.png` filename, then save. Normal export opens
+   `Export dichromatic pattern` with the default name `dichromatic_pattern.png`;
+   clean export opens `Export atoms only` with `dichromatic_atoms.png`.
+   Cancel closes the dialog without saving.
 
-The PNG is 1800 pixels wide and contains the plot, title, axes, legend and
-currently displayed annotations, including display rotation and enabled grain
-reference axes. Controls and
-their detailed result boxes are outside the exported plot; copy their text
-separately when needed. PNG is an image export, not a saved interactive session.
+The PNG is 1800 pixels wide. Normal export contains the plot, title, axes, legend
+and currently displayed annotations, including display rotation and enabled grain
+reference axes. Controls and their detailed result boxes are outside the exported
+plot; copy their text separately when needed.
+
+`Clean PNG (atoms only)` is off by default. When enabled, the image preserves the
+current view, display rotation, grain/layer and GB-side filtering, atom colors,
+symbols and sizes, and the plot background. It omits floating legends, reference
+axes and readouts, the title, coordinate axes, grid and border, CSL highlights,
+local-pair markers and links, cell outlines, GB lines and vector annotations.
+Exporting leaves the live view, selections and numerical state unchanged. This
+checkbox only affects PNG export and is not stored in `.dmap` sessions.
+PNG is an image export, not a saved interactive session.
 
 <a id="gui-session"></a>
 
@@ -543,6 +556,8 @@ Near-CSL and strain limits, display rotation, reference-axis visibility, grain
 colors, layer symbols, per-layer sizes and the view. Older session files use
 100% sizes when no sizes were saved, and default colors and symbols when those
 settings were not saved.
+Explicitly saved local-pair distances are restored unchanged; the 0.1 a₀ default
+applies to new sessions.
 If the window has a different aspect ratio, the restored view keeps its center
 and expands as needed to include the saved region without distorting the lattice.
 Partial selections are retained so picking can continue. Worker count stays at the
@@ -596,7 +611,7 @@ grain1 = projected_columns(12, 9, angle / 2, lattice="FCC", axis="110")
 grain2 = projected_columns(12, 9, -angle / 2, lattice="FCC", axis="110")
 
 sites = same_layer_coincidence_sites(grain1, grain2, tolerance=1e-6)
-pairs = local_near_pairs(grain1, grain2, distance=0.05)
+pairs = local_near_pairs(grain1, grain2, distance=0.1)
 print("Exact sites per layer:", [len(layer_sites) for layer_sites in sites])
 print("Local near pairs:", len(pairs.layers))
 
@@ -646,7 +661,7 @@ These six functions are available directly from `dichromatic_map`:
 | `misorientation_range(axis="110", lattice="FCC")` | Returns an immutable `AngleRange` with `maximum_deg`, `period_deg` and `symmetry_order`; for [110], these are 90°, 180° and 2 |
 | `projected_columns(width, height, rotation_deg, ...)` | Returns `positions` (N×2, in a₀), zero-based `layers` and reference `half_indices` (N×3, in a₀/2); accepts a view center, a 2×2 deformation and a uniform translation |
 | `same_layer_coincidence_sites(grain_1, grain_2, tolerance)` | Returns one N×2 array of coincidence positions per layer; tolerance is in a₀ |
-| `local_near_pairs(grain1, grain2, distance=0.05, ...)` | Returns actual endpoints `first`/`second`, layer labels, `midpoints` and `distances`; excludes exact pairs from the local overlay |
+| `local_near_pairs(grain1, grain2, distance=0.1, ...)` | Returns actual endpoints `first`/`second`, layer labels, `midpoints` and `distances`; excludes exact pairs from the local overlay |
 | `exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110")` | Returns a layer-preserving common translation cell for recognized commensurate angles, otherwise `None`; `max_denominator` bounds both primitive quaternion coefficients `m` and `n`; the cell is primitive within the layer-preserving plane, not necessarily in 3D |
 | `count_cell_atoms(vertices, angle, deformations, ...)` | Accepts a shared 4×2 polygon or two 2×4×2 per-grain polygons, two 2×2 deformations, optional translations and a layer index; returns per-grain/per-layer counts and per-grain areas |
 

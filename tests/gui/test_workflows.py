@@ -471,6 +471,8 @@ def test_spawned_updates_publish_only_the_latest_geometry(gui):
 
 def test_gui_export_dialog_writes_plot_png_and_theme_icons(gui, monkeypatch, tmp_path):
     window = gui.window(lattice="BCC", axis="100")
+    assert window.controls.local_distance_spin.value() == 0.1
+    assert not window.controls.clean_export_check.isChecked()
     pick_exact_cell(gui, window)
     window.controls.rotation_spin.setValue(32)
     gui.settle(window)

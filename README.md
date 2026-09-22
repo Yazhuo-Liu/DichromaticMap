@@ -21,7 +21,8 @@ strain.
   periodic images.
 - Manual common cells with separate G1/G2 atom counts and optional uniform
   strain fitting.
-- Automatic homogeneous-strain common-cell search and PNG export.
+- Automatic homogeneous-strain common-cell search and PNG export, with an
+  atoms-only option.
 - Save and restore sessions, with count, vector and strain CSV tables in one file.
 - NumPy-based numerical functions usable independently of the viewer.
 
@@ -127,6 +128,9 @@ same-layer exact coincidences.
 8. **Export the figure.** Scroll to **Export PNG…**, choose a file
    name and save. The PNG contains the plot with its current layers, rotation,
    reference axes when enabled, and annotations; the controls are excluded.
+   For just the visible G1/G2 atom symbols, first check **Clean PNG (atoms only)**
+   above the button. This keeps the current view and atom styles while omitting
+   annotations, axes, grid and border. The live view stays unchanged.
 
 9. **Save or restore a session.** Click **Save session…** beside **Export PNG…**
    to save one `.dmap` file containing the current structure, selections, applied
@@ -144,7 +148,7 @@ For inexact orientations, expand **NEAR-CSL**, select a **Method**, and click
 
 | Method | How to use it | Effect |
 | --- | --- | --- |
-| **Local matching · no bulk strain** | Adjust **Local pair distance**; inspect purple midpoint markers and use them for manual cell picks | Finds nearby same-layer pairs while preserving the atom positions |
+| **Local matching · no bulk strain** | Adjust **Local pair distance** (default 0.1 a₀); inspect purple midpoint markers and use them for manual cell picks | Finds nearby same-layer pairs while preserving the atom positions |
 | **Homogeneous strain + periodic cell** | Set **Max principal strain** and **Search index bound**, then choose a returned candidate | Automatically applies the first result, or the candidate you select, to both grains |
 
 A manually selected local cell containing at least one near pair can also be
@@ -168,7 +172,7 @@ from dichromatic_map import get_geometry, projected_columns, local_near_pairs
 geometry = get_geometry("FCC", "110")
 grain1 = projected_columns(12, 9, rotation_deg=11, lattice="FCC", axis="110")
 grain2 = projected_columns(12, 9, rotation_deg=-11, lattice="FCC", axis="110")
-pairs = local_near_pairs(grain1, grain2, distance=0.05)
+pairs = local_near_pairs(grain1, grain2, distance=0.1)
 
 print("Axial layers:", geometry.layer_count)
 print("Near pairs:", len(pairs.layers))

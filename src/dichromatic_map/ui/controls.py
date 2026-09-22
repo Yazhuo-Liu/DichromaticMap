@@ -770,6 +770,12 @@ class ControlDock:
         self.status_label.setMinimumHeight(112)
         layout.addWidget(self.status_label)
 
+        self.clean_export_check = QtWidgets.QCheckBox("Clean PNG (atoms only)")
+        self.clean_export_check.setToolTip(
+            "Export only visible grain atoms with their current colors, symbols and sizes. "
+            "Hide annotations, reference axes, legend, grid, axes and analysis overlays in the PNG."
+        )
+        layout.addWidget(self.clean_export_check)
         export_row = QtWidgets.QHBoxLayout()
         self.export_button = QtWidgets.QPushButton("Export PNG…")
         self.export_button.setToolTip("Export plot as PNG")
