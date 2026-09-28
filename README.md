@@ -2,6 +2,13 @@
 
 [English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
 
+If you find DichromaticMap helpful, please cite:
+
+> K.Q. Ding, Y.Z. Liu, Y. Zhang, L.H. Wang, X.D. Han, T. Zhu,
+> “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain
+> boundaries,” *arXiv preprint* arXiv:2609.14673 (2026).
+> [https://doi.org/10.48550/arXiv.2609.14673](https://doi.org/10.48550/arXiv.2609.14673)
+
 DichromaticMap provides a Python library and an interactive viewer for
 layer-resolved SC/FCC/BCC tilt grain-boundary dichromatic patterns. Use it to
 inspect two overlaid grains, identify coincidence sites, measure crystal

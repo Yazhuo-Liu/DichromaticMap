@@ -501,6 +501,44 @@ def test_gui_export_dialog_writes_plot_png_and_theme_icons(gui, monkeypatch, tmp
         assert not QtGui.QIcon(str(path)).pixmap(12, 12).isNull()
 
 
+def test_interactive_close_thanks_user_and_shows_clickable_citation(gui, monkeypatch):
+    window = gui.window(lattice="SC", axis="100")
+    messages = []
+    order = []
+    original_compute_close = window.compute.close
+
+    def close_compute():
+        order.append("workers")
+        original_compute_close()
+
+    def record_message(message):
+        order.append("message")
+        messages.append(message)
+        return QtWidgets.QMessageBox.StandardButton.Ok
+
+    monkeypatch.setattr(window.compute, "close", close_compute)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "exec", record_message)
+    window._show_close_citation = True
+    window.close()
+    gui.app.processEvents()
+
+    assert len(messages) == 1
+    message = messages[0]
+    # Native macOS message boxes intentionally omit their window title.  The
+    # user-facing reminder lives in the rich-text body on every Qt platform.
+    assert "Thank you for using DichromaticMap" in message.text()
+    assert window_module.CITATION_TEXT in message.text()
+    assert f'href="{window_module.CITATION_DOI}"' in message.text()
+    assert message.textInteractionFlags() & QtCore.Qt.TextInteractionFlag.LinksAccessibleByMouse
+    assert any(label.openExternalLinks() for label in message.findChildren(QtWidgets.QLabel))
+    assert window.compute.executor is None
+    assert order == ["message", "workers"]
+
+    # A repeated programmatic close must not show the modal reminder twice.
+    window.close()
+    assert len(messages) == 1
+
+
 def test_automatic_strain_candidate_applies_and_disable_restores_grains(gui):
     window = gui.window(lattice="FCC", axis="110", angle_deg=39.5)
     controls, state = window.controls, window.state

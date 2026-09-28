@@ -78,7 +78,11 @@ def main() -> None:
         axis=arguments.axis,
     )
     application = create_application()
-    window = DichromaticPatternWindow(parameters, worker_count=arguments.workers)
+    window = DichromaticPatternWindow(
+        parameters,
+        worker_count=arguments.workers,
+        show_close_citation=arguments.save is None,
+    )
     window.show()
     application.processEvents()
     if arguments.save is not None:

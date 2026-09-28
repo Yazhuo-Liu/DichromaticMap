@@ -2,6 +2,13 @@
 
 [English](../en/README.md) · [项目首页](../../README.md) · [开发细节](development.md)
 
+如果 DichromaticMap 对你的工作有帮助，请引用：
+
+> K.Q. Ding, Y.Z. Liu, Y. Zhang, L.H. Wang, X.D. Han, T. Zhu,
+> “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain
+> boundaries,” *arXiv preprint* arXiv:2609.14673 (2026).
+> [https://doi.org/10.48550/arXiv.2609.14673](https://doi.org/10.48550/arXiv.2609.14673)
+
 DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FCC/BCC 倾转晶界双色图。
 它按轴向层显示两个晶粒，支持精确重合点、局部近邻配对、晶体向量测量、原子计数、
 均匀应变共同胞搜索、PNG 导出，以及会话保存/恢复和数值表导出。

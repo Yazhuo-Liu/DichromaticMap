@@ -85,7 +85,9 @@ class GuiHarness:
         from dichromatic_map.ui.window import DichromaticPatternWindow
 
         window = DichromaticPatternWindow(
-            PatternParameters(**parameters), worker_count=workers
+            PatternParameters(**parameters),
+            worker_count=workers,
+            show_close_citation=False,
         )
         self.windows.append(window)
         window.show()

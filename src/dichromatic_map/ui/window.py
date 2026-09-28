@@ -56,6 +56,13 @@ from ..matching import same_layer_coincidence_sites
 from .controls import ControlDock
 from .plot import PatternPlot
 
+CITATION_DOI = "https://doi.org/10.48550/arXiv.2609.14673"
+CITATION_TEXT = (
+    "K.Q. Ding, Y.Z. Liu, Y. Zhang, L.H. Wang, X.D. Han, T. Zhu, "
+    "Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain "
+    "boundaries, arXiv preprint arXiv:2609.14673 (2026)."
+)
+
 
 def _component_property(component, name):
     """Compatibility view onto a component's field, without copying state."""
@@ -259,9 +266,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     save = _component_property("plot", "save")
 
     def __init__(
-        self, parameters: PatternParameters, worker_count: int | None = None
+        self,
+        parameters: PatternParameters,
+        worker_count: int | None = None,
+        *,
+        show_close_citation: bool = True,
     ) -> None:
         super().__init__()
+        self._show_close_citation = bool(show_close_citation)
         self.state = PatternState(parameters)
         self.compute = ComputeSession()
         self.plot = PatternPlot(self)
@@ -2296,6 +2308,27 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.warning(self, "PNG export failed", str(error))
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
+        if self._show_close_citation:
+            # Disable first so a nested or repeated close request cannot show
+            # a second modal dialog while this one is active.
+            self._show_close_citation = False
+            message = QtWidgets.QMessageBox(self)
+            message.setWindowTitle("Thank you for using DichromaticMap")
+            message.setIcon(QtWidgets.QMessageBox.Icon.Information)
+            message.setTextFormat(QtCore.Qt.TextFormat.RichText)
+            message.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextBrowserInteraction
+            )
+            message.setText(
+                "<p>Thank you for using DichromaticMap.</p>"
+                "<p>If you find it helpful, please cite:</p>"
+                f"<p>{html.escape(CITATION_TEXT)}<br>"
+                f'<a href="{CITATION_DOI}">{CITATION_DOI}</a></p>'
+            )
+            message.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
+            for label in message.findChildren(QtWidgets.QLabel):
+                label.setOpenExternalLinks(True)
+            message.exec()
         self.manual_count_timer.stop()
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
