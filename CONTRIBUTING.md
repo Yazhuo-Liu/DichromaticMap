@@ -74,6 +74,12 @@ The default command runs all suites.
 Tests remain in the source repository for contributors; they are not installed
 with the end-user wheel. Keep generated build artifacts out of contributions.
 
+## Release builds
+
+See [Building and publishing a release](docs/releases/README.md) for the
+Python 3.12 build environment, portable executable checks, GitHub draft-release
+workflow and separate PyPI upload steps.
+
 ## 中文说明
 
 问题反馈请使用 [GitHub Issues](https://github.com/Yazhuo-Liu/DichromaticMap/issues)

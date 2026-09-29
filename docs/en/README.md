@@ -23,7 +23,14 @@ GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 
 ## Installation and launch
 
-Requires Python 3.10 or later. Download the project and run the following from
+For a viewer without installing Python, download the archive for your OS and
+architecture from [GitHub Releases](https://github.com/Yazhuo-Liu/DichromaticMap/releases).
+Extract the entire archive, then open `DichromaticMap.exe` (Windows),
+`DichromaticMap.app` (macOS), or `DichromaticMap` (Linux). Keep its supporting
+files together. These portable builds include Python and the GUI dependencies;
+see [v0.2.2 downloads](../releases/v0.2.2.md#downloads) for platform and signing details.
+
+The Python package requires Python 3.10 or later. Download the project and run the following from
 its root directory to install the library and viewer:
 
 ```bash
@@ -385,8 +392,9 @@ initially; the active button reads `Disable Near-CSL`.
    near pairs; dotted links connect their actual atoms. Read the result box
    below the controls and zoom in if links are too short to distinguish.
 4. Use purple sites, optionally mixed with gold exact sites in the same layer,
-   for the manual-cell workflow below. Finish choosing the distance before
-   picking: changing it clears a cell containing local pairs.
+   for the manual-cell workflow below. You can adjust `Local pair distance`
+   while picking: existing vertices stay selected as the candidate markers refresh.
+   Increase it to expose a later corner, then continue picking after the update.
 
 The threshold is a distance in a₀, not a strain percentage. Pairing is a
 same-layer operation, not a cross-layer 3D neighbor search. It leaves atoms in
@@ -434,6 +442,30 @@ geometric change, not an atomic relaxation or elastic-energy minimum.
    picking without discarding points. Press `M` to resume an incomplete cell;
    pressing it after four vertices starts a new cell.
 
+For exact CSL sites or local near pairs in the original lattices, you can also
+complete a cell from fewer picks. Exact CSL completion needs no Near-CSL mode:
+
+- After two vertices, click `Complete by symmetry…` to preview candidates from
+  the paired edge. Choose a candidate to see the two grain outlines, atoms per
+  selected layer, original areas and pair distances, required principal strain,
+  and polar rotations. All vertices use circles; labels with `(auto)` mark automatically completed vertices.
+- After three vertices in perimeter order, click `Complete parallelogram…` to
+  generate the fourth vertex separately in each grain.
+- `Use candidate` completes the selection without applying strain. Candidates
+  must pass the `Selected-cell strain limit` and `Rotation limit / grain` checks;
+  these controls become available after the second pick. If a fit exceeds a
+  limit, close the preview and adjust the limits or the selection. Cancel keeps
+  the original picks and picking mode. Exact CSL cells already coincide and
+  need no strain; near cells can be aligned afterward with the existing button.
+
+Generated vertices are actual same-layer lattice sites and can exceed the
+`Local pair distance` cutoff. Their labels record `symmetry` or `closure` when
+the pair is not exactly coincident. They support counting, Undo, strain/restore
+and session saving. Symmetry completion does not guarantee a primitive or
+globally smallest cell; if it finds no independent second direction, pick a
+third vertex and use parallelogram completion. All four vertices may still be
+picked manually.
+
 Overlapping markers from different layers are rejected: isolate one layer and
 try again. Wrong-layer, repeated or invalid fourth vertices are also rejected
 without removing accepted points. Read the message in the manual-cell panel
@@ -466,8 +498,9 @@ rotation do not change counts or clear unfinished selections.
 
 A geometric selection, including a parallelogram, does not itself prove
 periodicity or establish a primitive CSL cell or Σ. Changing lattice, axis,
-reference angle or physical strain invalidates it. A cell containing local
-pairs also clears when the local threshold changes or that method is left.
+reference angle or physical strain invalidates it. Changing the local threshold
+preserves selected atom pairs and counts, even when a smaller threshold hides
+their near-pair markers. Leaving local matching clears cells containing local pairs.
 The apply/restore workflow below preserves its own paired selection.
 
 <a id="gui-selected-strain"></a>
@@ -475,7 +508,7 @@ The apply/restore workflow below preserves its own paired selection.
 ## Applying strain to a selected cell
 
 This option becomes available after selecting four same-layer vertices in
-local matching, including at least one purple near pair. Gold exact vertices
+local matching, including at least one near or generated pair. Gold exact vertices
 in the same layer may be mixed in. Selecting a cell alone does not deform it;
 this is separate from automatic `Homogeneous strain + periodic cell` search.
 

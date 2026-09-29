@@ -255,6 +255,47 @@ The algorithm avoids allocating a complete pairwise distance matrix. Its cost st
 on bin occupancy; dense bins require more candidate comparisons. Local pairs neither move
 atoms nor establish periodic translations.
 
+Manual cell vertices store copies of both atom endpoints when picked. Changing
+the local cutoff refreshes candidate markers while preserving these vertices,
+counts and the current picking mode, including when a smaller cutoff hides a
+selected pair. Leaving local matching still invalidates selections using local
+pairs. `manual_local_cutoff` records the cutoff at the most recent local-vertex
+pick; it is not a validity condition for saved vertices.
+
+### Manual cell completion
+
+`completion.cell_completion_candidates` accepts two or three paired vertices
+in unstrained analysis coordinates, verified against the selected layer's
+offset and integer planar lattice coordinates. For two vertices it enumerates
+signed cubic coordinate permutations preserving the axial line, projects them
+into the plane, and verifies BOTH grain translation lattices. Each map must
+have integer lattice coefficients with determinant ±1 in both grains.
+Operations may preserve grain labels or exchange them: the second edges are
+`bg=S ag` or `b1=S a2, b2=S a1`, respectively. These vector operations start at
+each grain's own picked atom, retaining nonzero-layer offsets and shifted origins.
+
+The corners are `p`, `p+a`, `p+a+b`, `p+b`. Three perimeter vertices instead
+give `p4=p1+p3-p2` in each grain. Integer-coordinate construction bypasses the
+overlay distance cutoff without snapping to other atoms. Degenerate cells,
+opposite grain orientations and duplicates are removed. Areas are unstrained;
+atom counts are absolute integer determinants for one selected layer.
+Candidates need not be primitive or exhaustive.
+
+Each candidate is evaluated with `strain_selected_cell` under the current
+strain and rotation limits, including the pure symmetric solve at 0°.
+Fit failures remain visible with reasons. This least-change fit is not an
+exhaustive feasibility test or an elastic-energy minimum. A separate GUI
+preview accepts only passing candidates, adding vertices without applying
+strain. Cancel preserves the partial selection. A geometry/selection/limits
+key prevents stale previews from overwriting later state. Generated
+noncoincident vertices retain `symmetry` or `closure` provenance through
+count, undo, session saving and strain/restore.
+
+Completion availability depends on two or three selected vertices and the
+original lattice geometry, independently of the Near-CSL toggle and method.
+Exact CSL selections use the same completion pipeline and retain `CSL` labels
+for coincident generated pairs. They do not require applying a strain fit.
+
 ## 6. Automatic homogeneous-strain cell search
 
 Implementation: `candidate_vectors`, `solve_cells_chunk`, `pareto_cells` in
@@ -551,7 +592,7 @@ it is not part of the session schema.
 
 ## Session persistence and numerical export
 
-`session.py` stores a `.dmap` ZIP archive with schema version 3. `session.json`
+`session.py` stores a `.dmap` ZIP archive with schema version 4. `session.json`
 contains explicit physical and display inputs, not a dump of `PatternState`:
 current lattice/axis/angle replace potentially stale launch parameters, arrays
 become ordinary JSON lists, and selected atom indices retain their grain and
@@ -562,8 +603,10 @@ counts and local paths are excluded. The selected automatic strain candidate is
 retained, while its other search candidates are omitted. Schema 2 added
 `grain_colors` and `layer_symbols` to the explicit state fields; schema 3 adds
 `layer_size_scales`. Schema 1 and 2 files still load with size scales of `1.0`;
-schema 1 also uses the default colors and unique layer symbols. Saving writes
-schema 3. Unsupported future versions and unexpected fields are rejected.
+schema 1 also uses the default colors and unique layer symbols. Schema 4 adds
+the `symmetry` and `closure` vertex source values; schemas 1–3 still load with
+their original source values. Saving writes schema 4. Unsupported future
+versions and unexpected fields are rejected.
 Saved local-pair distance values are independent of the new-session default of
 0.1 a₀ and load without modification.
 

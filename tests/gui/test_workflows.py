@@ -395,7 +395,74 @@ def test_local_cell_uses_actual_pair_polygons_and_restores_fit(gui, local_diamon
     np.testing.assert_array_equal(state.manual_counts.half_open, [[0, 40], [0, 40]])
 
 
-def test_rejected_strain_and_threshold_changes_keep_consistent_state(gui, local_diamond):
+def test_local_threshold_changes_preserve_picks_and_allow_larger_cell(gui, local_diamond):
+    # Extend the second edge of the known FCC [110] cell. Its first two
+    # corners fit a 0.05 cutoff, while the next two need a larger threshold.
+    original = local_diamond[1]
+    origin = original[:, 0]
+    first_edge = original[:, 1] - origin
+    second_edge = 3 * (original[:, 3] - origin)
+    vertices = np.stack(
+        (origin, origin + first_edge, origin + first_edge + second_edge,
+         origin + second_edge), axis=1,
+    )
+    midpoints = vertices.mean(axis=0)
+    distances = np.linalg.norm(vertices[0] - vertices[1], axis=1)
+    assert np.all(distances[:2] < 0.05)
+    assert np.all((distances[2:] > 0.05) & (distances[2:] < 0.15))
+
+    window = gui.window(lattice="FCC", axis="110", angle_deg=22, width=40, height=50)
+    controls, state = window.controls, window.state
+    gui.select_layer(window, 1)
+    controls.near_section.toggle.setChecked(True)
+    controls.local_distance_spin.setValue(0.05)
+    controls.near_button.click()
+    gui.settle(window)
+    controls.manual_section.toggle.setChecked(True)
+    controls.manual_pick_button.click()
+    for point in midpoints[:2]:
+        gui.click_plot(window, point)
+    assert len(state.manual_vertices) == 2
+    picked = tuple(state.manual_vertices)
+    picked_polygons = window._manual_grain_polygons().copy()
+    for point in midpoints[2:]:
+        assert not any(np.linalg.norm(candidate.position - point) < 1e-8
+                       for candidate in window._common_site_candidates())
+
+    for cutoff in (0.0001, 0.15):
+        assert controls.local_distance_spin.isEnabled()
+        controls.local_distance_spin.setValue(cutoff)
+        assert len(state.manual_vertices) == 2
+        assert all(actual is expected for actual, expected in zip(state.manual_vertices, picked))
+        assert state.interaction_mode == "cell"
+        gui.settle(window)
+        assert controls.manual_pick_button.isChecked()
+        np.testing.assert_array_equal(window._manual_grain_polygons(), picked_polygons)
+
+    for index, point in enumerate(midpoints[2:], start=3):
+        gui.click_plot(window, point)
+        assert len(state.manual_vertices) == index
+    gui.settle(window)
+    np.testing.assert_allclose(window._manual_grain_polygons(), vertices, atol=1e-12)
+    original_counts = state.manual_counts.half_open.copy()
+
+    # A completed selection also survives when its markers disappear, and
+    # the saved atom endpoints still support strain application and restore.
+    controls.local_distance_spin.setValue(0.0001)
+    gui.settle(window)
+    assert controls.manual_strain_button.isEnabled()
+    controls.manual_strain_button.click()
+    gui.settle(window)
+    assert state.manual_strain_fit is not None, controls.manual_strain_note.text()
+    controls.manual_strain_button.click()
+    gui.settle(window)
+    np.testing.assert_allclose(window._manual_grain_polygons(), vertices, atol=1e-12)
+    np.testing.assert_array_equal(state.manual_counts.half_open, original_counts)
+    assert controls.local_distance_spin.value() == 0.0001
+
+
+@pytest.mark.parametrize("leave_local", ["disable", "strain"])
+def test_rejected_strain_and_threshold_changes_keep_consistent_state(gui, local_diamond, leave_local):
     window = pick_local_cell(gui, local_diamond)
     controls, state = window.controls, window.state
     original_vertices = state.manual_vertices
@@ -408,6 +475,14 @@ def test_rejected_strain_and_threshold_changes_keep_consistent_state(gui, local_
     for grain, expected in zip(state.grains, original_atoms):
         np.testing.assert_array_equal(grain.positions, expected)
     controls.local_distance_spin.setValue(0.06)
+    gui.settle(window)
+    assert state.manual_vertices is original_vertices
+    assert state.manual_counts is not None
+    assert controls.manual_strain_button.isEnabled()
+    if leave_local == "disable":
+        controls.near_button.click()
+    else:
+        controls.near_method_combo.setCurrentIndex(controls.near_method_combo.findData("strain"))
     gui.settle(window)
     assert state.manual_vertices == []
     assert state.manual_counts is None

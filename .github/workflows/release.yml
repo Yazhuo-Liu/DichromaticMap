@@ -1,0 +1,136 @@
+name: Release packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  OPENBLAS_NUM_THREADS: "1"
+  OMP_NUM_THREADS: "1"
+  QT_QPA_PLATFORM: offscreen
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  python:
+    name: Python distributions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Check version and release notes
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import tomllib
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert Path(f"docs/releases/v{version}.md").is_file()
+          if os.environ["GITHUB_REF_TYPE"] == "tag":
+              assert os.environ["GITHUB_REF_NAME"] == f"v{version}", "Tag and package version differ"
+          PY
+      - name: Build and check wheel and source distribution
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check --strict dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-python
+          path: dist/*
+          if-no-files-found: error
+
+  executable:
+    name: Executable / ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: windows-2022
+            platform: windows-x86_64
+          - os: macos-15
+            platform: macos-arm64
+          - os: macos-15-intel
+            platform: macos-x86_64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Qt system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-xkb1 libxkbcommon-x11-0
+      - name: Install application and build dependencies
+        run: python -m pip install ".[gui,bundle]"
+      - name: Build, extract and smoke-test the executable archive
+        run: python scripts/build_executable.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/DichromaticMap-*
+          if-no-files-found: error
+          compression-level: 0
+
+  assemble:
+    name: Checksums and draft release
+    needs: [tests, python, executable]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify all six packages and create SHA256SUMS.txt
+        run: python scripts/release_checksums.py dist --complete
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-all
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+      - name: Create or refresh a draft GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [ "$draft" != "true" ]; then
+              echo "The release is already published; refusing to replace its assets."
+              exit 1
+            fi
+            gh release edit "$RELEASE_TAG" --title "DichromaticMap $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/* --verify-tag --draft --title "DichromaticMap $RELEASE_TAG" --notes-file "docs/releases/$RELEASE_TAG.md"
+          fi

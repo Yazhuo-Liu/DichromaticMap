@@ -606,7 +606,9 @@ class ControlDock:
         self.manual_pick_button.clicked.connect(self.owner._start_manual_cell)
         manual_layout.addWidget(self.manual_pick_button)
         manual_help = QtWidgets.QLabel(
-            "Pick 4 same-layer/symbol sites around the perimeter. G1/G2 cells use their own atom vertices; count the picked layer only."
+            "Pick same-layer/symbol CSL or near-pair sites around the perimeter. "
+            "Complete by symmetry after 2 vertices, or close a parallelogram after 3. "
+            "G1/G2 cells use their own atom vertices; count the picked layer only."
         )
         manual_help.setWordWrap(True)
         manual_help.setObjectName("mutedLabel")
@@ -626,6 +628,15 @@ class ControlDock:
         ):
             manual_actions.addWidget(button)
         manual_layout.addLayout(manual_actions)
+        self.manual_complete_button = QtWidgets.QPushButton("Complete by symmetry…")
+        self.manual_complete_button.setEnabled(False)
+        self.manual_complete_button.setToolTip(
+            "Preview same-layer cell candidates from two paired vertices, or complete a parallelogram "
+            "from three. Generated vertices may exceed the local distance cutoff. "
+            "Candidates are checked against the selected-cell strain and rotation limits."
+        )
+        self.manual_complete_button.clicked.connect(self.owner._complete_manual_cell)
+        manual_layout.addWidget(self.manual_complete_button)
         self.manual_visible_check = QtWidgets.QCheckBox(
             "Apply GB side visibility to counts"
         )
@@ -648,7 +659,7 @@ class ControlDock:
         self.manual_strain_button.setEnabled(False)
         self.manual_strain_button.clicked.connect(self.owner._toggle_manual_strain)
         self.manual_strain_button.setToolTip(
-            "Available after picking four same-layer vertices in Local matching, including at least one near pair. "
+            "Available after selecting four same-layer vertices in Local matching, including at least one near or generated pair. "
             "Align all four pairs by bulk strain and bounded small rotations, then recompute exact CSL."
         )
         manual_layout.addWidget(self.manual_strain_button)
@@ -720,7 +731,8 @@ class ControlDock:
         self.local_distance_spin.setValue(DEFAULT_LOCAL_DISTANCE)
         self.local_distance_spin.setSuffix(" a₀")
         self.local_distance_spin.setToolTip(
-            "Maximum pair separation d, not strain. A midpoint alignment would move each atom by d/2."
+            "Maximum pair separation d, not strain. A midpoint alignment would move each atom by d/2. "
+            "Adjust while picking cell vertices; already selected atom pairs are preserved."
         )
         self.local_distance_spin.setEnabled(False)
         self.local_distance_spin.valueChanged.connect(self.owner._queue_near_search)

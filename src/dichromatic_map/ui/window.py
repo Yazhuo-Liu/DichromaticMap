@@ -21,6 +21,8 @@ from ..appearance import (
     resize_layer_symbols,
 )
 from .session import SessionController
+from .completion import CellCompletionDialog
+from ..completion import cell_completion_candidates
 from ..crystal import (
     get_geometry,
     projected_columns,
@@ -469,10 +471,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._set_mode("cell")
 
     def _invalidate_manual_local_source(self):
-        if any(vertex.source == "local" for vertex in self.state.manual_vertices) and (
-            not self.local_active
-            or self.state.manual_local_cutoff
-            != self.controls.local_distance_spin.value()
+        # Picked vertices own their original atom endpoints. A new cutoff
+        # refreshes available markers, not the existing selection or its mode.
+        if not self.local_active and any(
+            vertex.source != "CSL" for vertex in self.state.manual_vertices
         ):
             self._clear_manual_cell()
 
@@ -493,11 +495,17 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         ready = (
             self.local_active
             and len(self.state.manual_vertices) == 4
-            and any(vertex.source == "local" for vertex in self.state.manual_vertices)
+            and any(vertex.source != "CSL" for vertex in self.state.manual_vertices)
+        )
+        completable = self._manual_completion_available()
+        self.controls.manual_complete_button.setEnabled(completable)
+        self.controls.manual_complete_button.setText(
+            "Complete parallelogram…" if len(self.state.manual_vertices) == 3
+            else "Complete by symmetry…"
         )
         self.controls.manual_strain_button.setEnabled(active or ready)
-        self.controls.manual_strain_limit.setEnabled(ready and not active)
-        self.controls.manual_rotation_limit.setEnabled(ready and not active)
+        self.controls.manual_strain_limit.setEnabled((ready or completable) and not active)
+        self.controls.manual_rotation_limit.setEnabled((ready or completable) and not active)
         self.controls.manual_strain_button.setText(
             "Restore original local structure"
             if active
@@ -533,7 +541,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if not (
             self.local_active
             and len(self.state.manual_vertices) == 4
-            and any(vertex.source == "local" for vertex in self.state.manual_vertices)
+            and any(vertex.source != "CSL" for vertex in self.state.manual_vertices)
         ):
             self._manual_pick_warning(
                 "First select four same-layer vertices using Local matching."
@@ -643,6 +651,82 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             )
         return candidates
+
+    def _manual_completion_available(self):
+        # Completion operates on original lattice coordinates. It does not
+        # depend on the Near-CSL toggle or the selected matching method.
+        return (
+            self.state.manual_strain_fit is None
+            and self.state.near_cell is None
+            and len(self.state.manual_vertices) in (2, 3)
+        )
+
+    def _manual_completion_key(self):
+        return (
+            self._geometry_signature(),
+            tuple((vertex.layer, vertex.source) for vertex in self.state.manual_vertices),
+            tuple(self._manual_grain_polygons().ravel()),
+            self.controls.manual_strain_limit.value(),
+            self.controls.manual_rotation_limit.value(),
+        )
+
+    def _complete_manual_cell(self, *_args):
+        if not self._manual_completion_available():
+            return
+        key = self._manual_completion_key()
+        try:
+            candidates = cell_completion_candidates(
+                self._manual_grain_polygons(), self.state.angle_deg,
+                lattice=self.state.geometry.lattice, axis=self.state.geometry.axis,
+                layer=self.state.manual_vertices[0].layer,
+                percent=self.controls.manual_strain_limit.value(),
+                max_rotation_deg=self.controls.manual_rotation_limit.value(),
+            )
+        except ValueError as error:
+            self._manual_pick_warning(str(error))
+            return
+        if not candidates:
+            self._manual_pick_warning(
+                "No non-degenerate symmetry cell found. Pick a third vertex for parallelogram completion."
+                if len(self.state.manual_vertices) == 2 else
+                "These three paired vertices cannot form compatible non-degenerate parallelograms."
+            )
+            return
+        dialog = CellCompletionDialog(
+            candidates, len(self.state.manual_vertices), self.state.grain_colors,
+            self.state.display_rotation_deg, parent=self,
+        )
+        dialog.accepted.connect(lambda: self._accept_manual_completion(dialog, key))
+        dialog.open()
+
+    def _accept_manual_completion(self, dialog, key):
+        if not self._manual_completion_available() or key != self._manual_completion_key():
+            self._manual_pick_warning("Selection changed; generate a new completion preview.")
+            return
+        candidate = dialog.selected_candidate
+        if candidate.fit is None:
+            return
+        count = len(self.state.manual_vertices)
+        layer = self.state.manual_vertices[0].layer
+        generated = []
+        for pair in candidate.vertices[:, count:].transpose(1, 0, 2):
+            source = ("CSL" if np.linalg.norm(pair[0] - pair[1]) <= COINCIDENCE_TOLERANCE_FACTOR
+                      else candidate.source)
+            generated.append(CellVertex(pair.mean(axis=0), layer, source, pair.copy()))
+        self.state.manual_vertices = self.state.manual_vertices + generated
+        self.plot._draw_manual_cell()
+        self._set_mode("idle")
+        self._queue_manual_count()
+        if all(vertex.source == "CSL" for vertex in self.state.manual_vertices):
+            self.controls.manual_strain_note.setText(
+                "Exact CSL cell completed; all four pairs already coincide. No strain is needed."
+            )
+        else:
+            self.controls.manual_strain_note.setText(
+                f"Cell completed: max principal strain {100 * candidate.fit.cell.max_strain:.6f}%; "
+                f"rotations G1 {candidate.fit.rotations_deg[0]:+.6f}°, G2 {candidate.fit.rotations_deg[1]:+.6f}°. "
+                "Original atom positions retained. Use Apply bulk strain to align the cell."
+            )
 
     def _cell_layer_label(self, layer):
         symbol = self.state.layer_symbols[layer]

@@ -26,8 +26,9 @@ strain.
   matching.
 - Vector measurements in both grain coordinate frames, including axial
   periodic images.
-- Manual common cells with separate G1/G2 atom counts and optional uniform
-  strain fitting.
+- Manual common cells with symmetry completion after the first edge,
+  parallelogram completion after three vertices, separate G1/G2 atom counts
+  and optional uniform strain fitting.
 - Automatic homogeneous-strain common-cell search and PNG export, with an
   atoms-only option.
 - Save and restore sessions, with count, vector and strain CSV tables in one file.
@@ -45,7 +46,14 @@ periodicity.
 
 ## Install and launch
 
-Requires Python 3.10 or later. Install the library and viewer from PyPI:
+Portable Windows, macOS (Apple Silicon / Intel) and Linux applications are
+available as assets on [GitHub Releases](https://github.com/Yazhuo-Liu/DichromaticMap/releases).
+Extract the complete archive for your system and open `DichromaticMap.exe`,
+`DichromaticMap.app` or `DichromaticMap`. These include Python and the viewer
+dependencies. See the [v0.2.2 release notes](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/releases/v0.2.2.md)
+for platform and signing details.
+
+For a Python installation, Python 3.10 or later is required. Install from PyPI:
 
 ```bash
 python -m pip install "dichromatic-map[gui]"
@@ -132,6 +140,10 @@ same-layer exact coincidences.
    the complete selected cell, including portions outside the current view.
    **Apply GB side visibility to counts** optionally restricts those counts
    to the displayed grain sides.
+   After two vertices, **Complete by symmetry…** previews possible cells;
+   after three, **Complete parallelogram…** generates the fourth vertex.
+   Both work for exact CSL and local near pairs. Generated vertices are marked
+   `(auto)` in the preview; accepting a candidate does not apply strain.
 8. **Export the figure.** Scroll to **Export PNG…**, choose a file
    name and save. The PNG contains the plot with its current layers, rotation,
    reference axes when enabled, and annotations; the controls are excluded.
@@ -213,6 +225,9 @@ or [yliu3500@gatech.edu](mailto:yliu3500@gatech.edu). Contributions can be
 submitted as a pull request or by email; see the [contribution guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/CONTRIBUTING.md).
 This project is developed by volunteers and does not currently accept external
 donations.
+
+Maintainers can follow the [release build instructions](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/releases/README.md)
+to build Python packages and native applications or prepare a draft release.
 
 ## License
 

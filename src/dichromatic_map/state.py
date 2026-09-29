@@ -44,7 +44,7 @@ class SelectedAtom:
 class CellVertex:
     position: np.ndarray  # unrotated model coordinates
     layer: int
-    source: str  # exact CSL or local near-pair midpoint
+    source: str  # CSL, local near pair, symmetry, or parallelogram closure
     grain_positions: np.ndarray | None = None  # (G1, G2) actual endpoints
 
 

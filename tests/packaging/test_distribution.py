@@ -40,7 +40,7 @@ def distributions():
         project.mkdir()
         for name in ("pyproject.toml", "MANIFEST.in", "README.md", "LICENSE", "CONTRIBUTING.md", "main.py"):
             shutil.copy2(ROOT / name, project / name)
-        for name in ("src", "tests", "scripts", "docs"):
+        for name in ("src", "tests", "scripts", "docs", "packaging"):
             shutil.copytree(
                 ROOT / name, project / name,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "*.egg-info"),
@@ -77,6 +77,10 @@ def test_source_distribution_includes_validation_and_documentation(distributions
         "LICENSE", "README.md", "CONTRIBUTING.md", "main.py", "pyproject.toml",
         "scripts/run_tests.py", "tests/conftest.py", "docs/en/README.md",
         "docs/zh/README.md", "docs/images/gui-overview.png",
+        "scripts/build_executable.py", "scripts/frozen_entry.py", "scripts/frozen_smoke.py",
+        "scripts/smoke_executable.py", "scripts/release_checksums.py",
+        "packaging/DichromaticMap.spec", "packaging/README.txt", "docs/releases/v0.2.2.md",
+        "packaging/THIRD_PARTY_NOTICES.txt", "packaging/licenses/LGPL-3.0.txt",
     ):
         assert (source / name).is_file(), f"Missing from sdist: {name}"
     for suite in ("core", "gui", "packaging"):
@@ -91,6 +95,8 @@ def test_wheel_contains_license_resources_and_correct_metadata(distributions):
         metadata_path = next(name for name in names if name.endswith(".dist-info/METADATA"))
         metadata = BytesParser().parsebytes(archive.read(metadata_path))
         assert metadata["Name"] == "dichromatic-map"
+        version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.M).group(1)
+        assert metadata["Version"] == version
         assert metadata["License-Expression"] == "MIT"
         assert "LICENSE" in metadata.get_all("License-File", [])
         assert "gui" in metadata.get_all("Provides-Extra", [])
@@ -109,6 +115,8 @@ def test_wheel_contains_license_resources_and_correct_metadata(distributions):
         assert archive.read(license_path) == (ROOT / "LICENSE").read_bytes()
         for resource in ("theme.qss", "icons/chevron-down.svg", "icons/chevron-up.svg"):
             assert archive.read("dichromatic_map/ui/resources/" + resource)
+        for module in ("completion.py", "ui/completion.py"):
+            assert archive.read("dichromatic_map/" + module)
         assert not any(name.split("/")[0] in {"tests", "scripts", "docs"} for name in names)
 
 
@@ -226,6 +234,7 @@ def document_anchors(content):
 @pytest.mark.parametrize("document", [
     "README.md", "CONTRIBUTING.md", "docs/en/README.md", "docs/zh/README.md",
     "docs/en/development.md", "docs/zh/development.md",
+    "docs/releases/README.md", "docs/releases/v0.2.2.md",
 ])
 def test_documentation_links_and_python_examples(document):
     path = ROOT / document

@@ -126,7 +126,7 @@ def test_roundtrip_full_state_and_partial_picking_without_cached_results(tmp_pat
     with zipfile.ZipFile(path) as archive:
         assert set(archive.namelist()) == {"session.json", "counts.csv", "vectors.csv", "strain.csv", "README.txt"}
         data = archive.read("session.json").decode()
-        assert json.loads(data)["schema_version"] == 3
+        assert json.loads(data)["schema_version"] == session.SCHEMA_VERSION
         assert "grain_signature" not in data and "worker" not in data and "buffer_bounds" not in data
         assert archive.read("vectors.csv").decode().strip()
 
@@ -305,6 +305,45 @@ def test_failed_save_preserves_existing_file_and_removes_temporary(tmp_path, mon
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_schema_3_still_restores_existing_vertices_and_appearance(tmp_path):
+    path = tmp_path / "version3.dmap"
+    before = populated_state()
+    session.save_session(path, before, SETTINGS, VIEW)
+    rewrite_metadata(path, lambda payload: payload.update(schema_version=3))
+    after = session.load_session(path).state
+    assert after.layer_size_scales == before.layer_size_scales
+    assert after.grain_colors == before.grain_colors
+    assert after.manual_vertices[0].source == "local"
+    np.testing.assert_array_equal(after.manual_vertices[0].grain_positions,
+                                  before.manual_vertices[0].grain_positions)
+
+
+@pytest.mark.parametrize("count,source", [(2, "symmetry"), (3, "closure")])
+def test_generated_vertex_provenance_roundtrip_requires_schema_4(tmp_path, count, source):
+    from dichromatic_map.completion import cell_completion_candidates
+
+    _, polygons = fcc22_diamond_pairs()
+    candidate = cell_completion_candidates(polygons[:, :count], 22, layer=1)[0]
+    state = PatternState(PatternParameters(angle_deg=22))
+    state.near_enabled = True
+    state.manual_vertices = [
+        CellVertex(pair.mean(axis=0), 1, "local" if index < count else source, pair.copy())
+        for index, pair in enumerate(candidate.vertices.transpose(1, 0, 2))
+    ]
+    state.manual_local_cutoff = 0.05
+    path = tmp_path / "generated.dmap"
+    session.save_session(path, state, SETTINGS, VIEW)
+    after = session.load_session(path).state
+    assert after.manual_vertices[-1].source == source
+    np.testing.assert_array_equal(
+        [v.grain_positions for v in after.manual_vertices],
+        [v.grain_positions for v in state.manual_vertices],
+    )
+    rewrite_metadata(path, lambda payload: payload.update(schema_version=3))
+    with pytest.raises(ValueError, match="vertex source"):
+        session.load_session(path)
+
+
 def test_corrupted_deflate_stream_is_rejected_as_invalid_session(tmp_path):
     path = tmp_path / "corrupted-stream.dmap"
     session.save_session(path, PatternState(PatternParameters()), SETTINGS, VIEW)
@@ -349,7 +388,7 @@ def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(t
         assert after.geometry.layer_count == 38
     session.save_session(path, after, SETTINGS, VIEW)
     with zipfile.ZipFile(path) as archive:
-        assert json.loads(archive.read("session.json"))["schema_version"] == 3
+        assert json.loads(archive.read("session.json"))["schema_version"] == session.SCHEMA_VERSION
 
 
 @pytest.mark.parametrize("version", [1, 2])
@@ -383,7 +422,7 @@ def test_schema_2_retains_colors_symbols_and_physical_state_with_default_sizes(t
     session.save_session(path, after, SETTINGS, VIEW)
     with zipfile.ZipFile(path) as archive:
         metadata = json.loads(archive.read("session.json"))
-        assert metadata["schema_version"] == 3
+        assert metadata["schema_version"] == session.SCHEMA_VERSION
         assert metadata["state"]["layer_size_scales"] == [1.0] * after.geometry.layer_count
 
 

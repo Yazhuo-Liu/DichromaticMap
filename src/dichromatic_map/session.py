@@ -23,7 +23,7 @@ from .state import CellVertex, PatternParameters, PatternState, SelectedAtom
 from .strain import SelectedCellStrain
 
 FORMAT = "dichromatic-map-session"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 MAX_JSON_BYTES = 1_000_000
 MAX_MEMBER_BYTES = 8_000_000
 MAX_ARCHIVE_BYTES = 32_000_000
@@ -154,12 +154,13 @@ def _vertex_payload(vertices):
             for vertex in vertices]
 
 
-def _read_vertices(value, state, name):
+def _read_vertices(value, state, name, version):
     vertices = []
     for item in _list(value, 4, name):
         _fields(item, ("position", "layer", "source", "grain_positions"), name)
         layer = _integer(item["layer"], "vertex layer", 0, state.geometry.layer_count - 1)
-        if item["source"] not in ("CSL", "local"):
+        sources = ("CSL", "local", "symmetry", "closure") if version >= 4 else ("CSL", "local")
+        if item["source"] not in sources:
             raise ValueError("Invalid vertex source")
         position = _array(item["position"], (2,), "vertex position")
         endpoints = _array(item["grain_positions"], (2, 2), "grain positions")
@@ -239,9 +240,9 @@ def _read_settings(value):
 def _snapshot_from_payload(payload):
     _fields(payload, ("format", "schema_version", "state", "settings", "view_range"), "session")
     version = payload["schema_version"]
-    if payload["format"] != FORMAT or type(version) is not int or version not in (1, 2, SCHEMA_VERSION):
+    if payload["format"] != FORMAT or type(version) is not int or version not in (1, 2, 3, SCHEMA_VERSION):
         raise ValueError("Unsupported DichromaticMap session format or schema version")
-    state_fields = {1: _STATE_FIELDS_V1, 2: _STATE_FIELDS_V2, 3: _STATE_FIELDS}[version]
+    state_fields = {1: _STATE_FIELDS_V1, 2: _STATE_FIELDS_V2, 3: _STATE_FIELDS, 4: _STATE_FIELDS}[version]
     raw = _fields(payload["state"], state_fields, "state")
     parameters = dict(_fields(raw["parameters"], PatternParameters.__dataclass_fields__, "parameters"))
     for field in ("lattice_constant", "width", "height", "marker_size"):
@@ -298,7 +299,7 @@ def _snapshot_from_payload(payload):
                     @ (indices @ state.geometry.frame[:, :2] / 2) + state.translations[grain])
         _same(position, physical, "atom position")
         state.selected_atoms.append(SelectedAtom(position, grain, layer, indices))
-    state.manual_vertices = _read_vertices(raw["manual_vertices"], state, "manual vertices")
+    state.manual_vertices = _read_vertices(raw["manual_vertices"], state, "manual vertices", version)
     state.manual_local_cutoff = _optional_cutoff(raw["manual_local_cutoff"])
     state.axial_repeat = _integer(raw["axial_repeat"], "axial repeat", -4, 4)
     state.near_enabled = _boolean(raw["near_enabled"], "near-CSL enabled")
@@ -310,7 +311,7 @@ def _snapshot_from_payload(payload):
         _same(state.deformations, [state.near_cell.f1, state.near_cell.f2], "cell deformations")
         state.near_solutions = [state.near_cell]
     state.manual_unstrained_vertices = (None if raw["manual_unstrained_vertices"] is None else
-        _read_vertices(raw["manual_unstrained_vertices"], state, "original manual vertices"))
+        _read_vertices(raw["manual_unstrained_vertices"], state, "original manual vertices", version))
     state.manual_unstrained_cutoff = _optional_cutoff(raw["manual_unstrained_cutoff"])
     state.manual_strain_fit = _read_fit(raw["manual_strain_fit"], state)
     settings = _read_settings(payload["settings"])

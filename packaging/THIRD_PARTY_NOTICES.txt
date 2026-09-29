@@ -1,0 +1,28 @@
+Third-party components in the portable application
+=================================================
+
+DichromaticMap is MIT-licensed (see LICENSE). Its bundled interpreter and
+libraries retain their respective licenses and copyright notices.
+
+Python: Python Software Foundation license and incorporated notices in
+licenses/Python.txt. Source: https://www.python.org/downloads/source/
+
+PyInstaller bootloader: GPL with the distribution exception stated in
+licenses/PyInstaller.txt. Source: https://github.com/pyinstaller/pyinstaller
+
+PySide6, Shiboken6 and the Qt libraries: distributed under the applicable LGPL
+terms. The LGPL v3 and incorporated GPL v3 texts are in licenses/LGPL-3.0.txt
+and licenses/GPL-3.0.txt. These libraries are supplied as separate shared
+libraries. Source and version-specific notices are available from:
+  https://download.qt.io/official_releases/QtForPython/
+  https://download.qt.io/official_releases/qt/
+  https://code.qt.io/cgit/pyside/pyside-setup.git/
+  https://code.qt.io/cgit/qt/
+
+NumPy and PyQtGraph: see their bundled *.dist-info/licenses directories for
+license texts and incorporated notices, including NumPy's numerical libraries.
+Sources: https://github.com/numpy/numpy and https://github.com/pyqtgraph/pyqtgraph
+PyQtGraph also includes license notices beside its color map data.
+
+Installed versions are recorded in each bundled *.dist-info/METADATA. These
+directories reside in _internal on Windows/Linux and inside the app on macOS.
