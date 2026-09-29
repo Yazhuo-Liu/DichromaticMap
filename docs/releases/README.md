@@ -12,8 +12,10 @@ target OS and CPU architecture; PyInstaller is not a cross-compiler.
    the changes. Include the new source modules, tests and packaging files in
    the commit; generated `build/` and `dist/` files are ignored.
 3. Commit and push the changes. **Actions → Release packages → Run workflow**
-   builds the branch without creating a GitHub release. Download `release-all`
-   from that run to inspect all six packages and their checksums.
+   builds the branch without creating a GitHub release. In that run's
+   **Artifacts**, download the package matching your OS/CPU and `SHA256SUMS.txt`.
+   All six packages are uploaded individually under their actual filenames,
+   without an additional ZIP wrapper; there is no `release-all` wrapper archive.
 4. When ready, create and push a version tag matching `pyproject.toml`:
 
    ```bash
@@ -27,6 +29,12 @@ workers. Only after every job succeeds does it create a **draft** GitHub release
 with the release notes, all packages and `SHA256SUMS.txt`. Review it on GitHub,
 then click **Publish release** when ready. Re-running the tag workflow can update
 an existing draft; it refuses to replace an already published release.
+
+Artifact uploads use `upload-artifact@v7` with `archive: false` (one file per
+upload). Assembly uses `download-artifact@v8` with `skip-decompress: true` so
+the native ZIPs and Python wheels keep their original contents and checksums.
+Both actions use Node.js 24. See the official [upload inputs](https://github.com/actions/upload-artifact/blob/v7/action.yml)
+and [download inputs](https://github.com/actions/download-artifact/blob/v8/action.yml).
 
 No PyPI credentials are required by the workflow, and it does not upload to PyPI.
 To publish the verified Python artifacts separately, use your existing PyPI
@@ -76,7 +84,9 @@ Runner architectures follow the [GitHub runner reference](https://docs.github.co
 ## 中文发布步骤
 
 先提交版本号、发布说明、功能代码、测试和打包脚本。可在 GitHub Actions 手动运行
-**Release packages**，下载 `release-all` 试用；手动运行分支不会创建 Release。
+**Release packages**，从 **Artifacts** 下载对应平台的文件和 `SHA256SUMS.txt` 试用。
+六个包按原始文件名分别提供下载，不再外套一层 ZIP，也不再提供 `release-all` 汇总压缩包。
+手动运行分支不会创建 Release。
 准备好后推送 `v0.2.2` 标签。完整测试与各平台构建通过后，工作流会创建包含六个安装包
 和校验文件的**草稿 Release**，由维护者检查后发布。
 

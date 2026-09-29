@@ -49,10 +49,17 @@ jobs:
           python -m pip install build twine
           python -m build
           python -m twine check --strict dist/*
-      - uses: actions/upload-artifact@v4
+      - name: Upload wheel without an outer ZIP
+        uses: actions/upload-artifact@v7
         with:
-          name: release-python
-          path: dist/*
+          path: dist/*.whl
+          archive: false
+          if-no-files-found: error
+      - name: Upload source distribution without an outer ZIP
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.tar.gz
+          archive: false
           if-no-files-found: error
 
   executable:
@@ -86,12 +93,12 @@ jobs:
         run: python -m pip install ".[gui,bundle]"
       - name: Build, extract and smoke-test the executable archive
         run: python scripts/build_executable.py
-      - uses: actions/upload-artifact@v4
+      - name: Upload native archive without an outer ZIP
+        uses: actions/upload-artifact@v7
         with:
-          name: release-${{ matrix.platform }}
           path: dist/DichromaticMap-*
+          archive: false
           if-no-files-found: error
-          compression-level: 0
 
   assemble:
     name: Checksums and draft release
@@ -105,19 +112,28 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - name: Download Python packages intact
+        uses: actions/download-artifact@v8
         with:
-          pattern: release-*
+          pattern: dichromatic_map-*
           merge-multiple: true
+          skip-decompress: true
+          path: dist
+      - name: Download native archives intact
+        uses: actions/download-artifact@v8
+        with:
+          pattern: DichromaticMap-*
+          merge-multiple: true
+          skip-decompress: true
           path: dist
       - name: Verify all six packages and create SHA256SUMS.txt
         run: python scripts/release_checksums.py dist --complete
-      - uses: actions/upload-artifact@v4
+      - name: Upload checksums without an outer ZIP
+        uses: actions/upload-artifact@v7
         with:
-          name: release-all
-          path: dist/*
+          path: dist/SHA256SUMS.txt
+          archive: false
           if-no-files-found: error
-          compression-level: 0
       - name: Create or refresh a draft GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
