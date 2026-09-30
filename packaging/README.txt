@@ -10,8 +10,13 @@ Linux: run ./DichromaticMap from a terminal or your file manager.
 
 Windows and macOS packages are not signed with a publisher certificate; macOS
 packages are not notarized. Follow your organization's application policy.
-If the OS blocks the downloaded application, use the Python installation instead
-or build from source. These archives are not installers and do not register .dmap
+On macOS, if you trust the archive from this project's GitHub Releases, try
+opening DichromaticMap.app once, then use System Settings > Privacy & Security
+> Open Anyway and confirm Open. Do not override a warning that the app is
+damaged or will harm your Mac. Apple's instructions:
+https://support.apple.com/en-us/102445
+If your policy blocks the application, use the Python installation or build
+from source. These archives are not installers and do not register .dmap
 file associations. Import sessions from the viewer's Import session control.
 
 Command-line arguments are the same as for python -m dichromatic_map, for example:

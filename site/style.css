@@ -728,6 +728,15 @@ margin:0 0 16px;
 font-size:15px}
 .portable-download .button{
 width:100%}
+.start-grid .portable-download .portable-note{
+margin:14px 0 0;
+font-size:13px;
+line-height:1.55}
+.portable-note a{
+color:var(--mint);
+font-weight:700;
+text-decoration:underline;
+text-underline-offset:2px}
 .start-links{
 display:flex;
 gap:14px 24px;

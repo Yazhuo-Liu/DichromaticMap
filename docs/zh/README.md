@@ -26,6 +26,13 @@ DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FC
 macOS 打开 `DichromaticMap.app`，Linux 运行 `./DichromaticMap`；请保留整个解压目录。
 这些版本包含 Python 和界面依赖。平台支持和签名情况见 [v0.2.2 下载说明](../releases/v0.2.2.md#downloads)。
 
+**macOS 首次打开：**便携版 `.app` 未经过开发者签名或 Apple 公证，因此可能被系统拦截。
+如果确认压缩包来自本项目的 GitHub Releases 且来源可信，先尝试打开一次 `DichromaticMap.app`，
+然后进入**系统设置 → 隐私与安全性**，向下找到**安全性**，点按**仍要打开**，
+并在再次出现的提示中点按**打开**。此后 macOS 会记住对该 App 的例外。
+如果系统提示 App“已损坏”或“将损坏你的电脑”，不要绕过警告，请报告问题。
+参见 [Apple 官方说明](https://support.apple.com/zh-cn/102445)。
+
 Python 安装方式需要 Python 3.10 或更新版本。下载项目后，在项目根目录执行以下命令，安装数值库和查看器：
 
 ```bash

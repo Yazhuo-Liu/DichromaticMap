@@ -32,6 +32,13 @@ Extract the entire archive, then open `DichromaticMap.exe` (Windows),
 files together. These portable builds include Python and the GUI dependencies;
 see [v0.2.2 downloads](../releases/v0.2.2.md#downloads) for platform and signing details.
 
+**macOS first launch:** The portable `.app` is not signed or notarized, so
+macOS may block it. If you downloaded it from this project's GitHub Releases
+and trust it, try opening `DichromaticMap.app` once. Then go to **System
+Settings → Privacy & Security**, scroll to **Security**, click **Open Anyway**,
+and confirm **Open**. Do not override a warning that the app is damaged or will
+harm your Mac; report that issue instead. See [Apple's instructions](https://support.apple.com/en-us/102445).
+
 The Python package requires Python 3.10 or later. Download the project and run the following from
 its root directory to install the library and viewer:
 

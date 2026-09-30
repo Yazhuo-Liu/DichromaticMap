@@ -62,6 +62,14 @@ Extract the complete archive for your system and open `DichromaticMap.exe`,
 dependencies. See the [v0.2.2 release notes](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/releases/v0.2.2.md)
 for platform and signing details.
 
+**macOS first launch:** The portable `.app` builds are not signed or notarized,
+so macOS may block them. If you downloaded the archive from this project's
+GitHub Releases and trust it, try opening `DichromaticMap.app` once. Then open
+**System Settings → Privacy & Security**, scroll to **Security**, click
+**Open Anyway**, and confirm **Open**. macOS will remember the exception for
+this app. If the warning says the app is damaged or will harm your Mac, do not
+override it; report the issue instead. See [Apple's instructions](https://support.apple.com/en-us/102445).
+
 For a Python installation, Python 3.10 or later is required. Install from PyPI:
 
 ```bash

@@ -75,6 +75,8 @@ uses Ubuntu 22.04 x64, Windows 2022 x64, macOS 15 arm64 and macOS 15 Intel.
 Linux builds on newer local systems may require a newer glibc than the official
 Ubuntu 22.04 build. No Windows signing certificate or Apple notarization is
 configured; do not describe the downloads as signed/notarized applications.
+User-facing macOS first-launch steps are in the [v0.2.2 release notes](v0.2.2.md#downloads)
+and the `README.txt` included in each portable archive.
 
 Build configuration: [PyInstaller spec](../../packaging/DichromaticMap.spec).
 PyInstaller documents [native builds and bundles](https://pyinstaller.org/en/stable/usage.html)
@@ -92,3 +94,4 @@ Runner architectures follow the [GitHub runner reference](https://docs.github.co
 
 PyPI 上传独立进行，工作流不会自动上传。Windows/macOS 文件未配置发布者签名，
 macOS 也未进行 notarization；系统阻止运行时可使用 Python 安装方式或自行构建。
+macOS 首次打开步骤见 [v0.2.2 发布说明](v0.2.2.md#downloads)和压缩包内的 `README.txt`。
