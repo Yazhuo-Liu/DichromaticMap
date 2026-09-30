@@ -83,16 +83,31 @@ position:absolute;
 z-index:2;
 left:50px;
 top:51px;
+max-width:calc(100% - 60px);
+border:1px solid #cdd8e4;
+background:#fffffff0;
+font-size:11px;
+color:#4e5f7c}
+.plot-legend summary,.plot-annotation summary{
+list-style:none;
+cursor:pointer;
+font:700 11px/1.35 Arial,Helvetica,sans-serif;
+user-select:none}
+.plot-legend summary::-webkit-details-marker,.plot-annotation summary::-webkit-details-marker{
+display:none}
+.plot-legend summary{
+padding:5px 8px}
+.plot-legend summary::after,.plot-annotation summary::after{
+content:"−";
+margin-left:12px;
+font-weight:700}
+.plot-legend:not([open]) summary::after,.plot-annotation:not([open]) summary::after{
+content:"+"}
+.plot-legend-items{
 display:grid;
 grid-template-columns:repeat(3,max-content);
 gap:3px 12px;
-padding:6px 8px;
-border:1px solid #cdd8e4;
-background:#ffffffd8;
-font-size:11px;
-color:#4e5f7c;
-max-width:calc(100% - 60px);
-pointer-events:none}
+padding:0 8px 6px}
 .plot-legend span{
 display:flex;
 gap:5px;
@@ -107,12 +122,32 @@ bottom:42px;
 max-width:calc(100% - 90px);
 box-sizing:border-box;
 overflow:auto;
-white-space:pre-wrap;
 border:1px solid #a9baca;
 background:#ffffffeb;
-padding:8px 10px;
-font:11px/1.45 ui-monospace,monospace;
 color:#24334d}
+.plot-annotation summary{
+padding:6px 9px;
+border-bottom:1px solid #d5dfeb}
+.plot-annotation:not([open]){
+max-height:none!important;
+overflow:visible}
+.plot-annotation:not([open]) summary{
+border-bottom:0}
+.plot-annotation pre{
+margin:0;
+padding:7px 9px;
+overflow:auto;
+white-space:pre-wrap;
+font:11px/1.45 ui-monospace,monospace}
+.reference-axes-toggle{
+position:absolute;
+z-index:3;
+padding:2px 5px;
+border:1px solid #b8c8d8;
+border-radius:3px;
+background:#ffffffed;
+color:#526782;
+font:700 10px/1.2 Arial,Helvetica,sans-serif}
 .plot-tools{
 position:absolute;
 right:18px;
@@ -453,15 +488,35 @@ padding:0 15px 20px}
 .plot-legend{
 left:33px;
 top:35px;
-grid-template-columns:repeat(2,max-content);
 font-size:9px}
+.plot-legend summary,.plot-annotation summary{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:8px;
+min-height:32px;
+font-size:12px}
+.plot-legend-items{
+grid-template-columns:repeat(2,max-content)}
 .plot-title{
 font-size:11px}
 .plot-annotation{
 left:33px;
+max-width:calc(100% - 74px);
+max-height:45%}
+.plot-annotation pre{
 font-size:10px}
 .plot-tools{
 right:6px}
+.reference-axes-toggle{
+min-width:62px;
+min-height:30px;
+font-size:11px}
+dialog{
+width:calc(100% - 24px);
+max-width:none;
+max-height:60dvh;
+padding:14px}
 }
 @media(max-width:450px){
 .plot-pane{
@@ -469,9 +524,11 @@ height:52vh;
 min-height:310px}
 .plot-legend{
 max-width:85%;
+font-size:9px}
+.plot-legend-items{
 grid-template-columns:repeat(2,max-content);
 gap:0 6px;
-padding:3px}
+padding:0 4px 3px}
 .plot-legend span:nth-child(n+5){
 display:none}
 .control-scroll{

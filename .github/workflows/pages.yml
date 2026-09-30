@@ -43,6 +43,7 @@ jobs:
           node --check site/index.js
           node --check site/use.js
           node --input-type=module --check < site/use_worker.js
+          node site/mobile_interactions.test.js
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

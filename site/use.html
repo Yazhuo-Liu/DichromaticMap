@@ -15,22 +15,23 @@
     <main class="plot-pane" aria-label="Dichromatic pattern">
       <div class="plot-title" id="plot-title">Dichromatic Pattern</div>
       <div class="engine-overlay" id="engine-overlay"><div class="engine-spinner" aria-hidden="true"></div><strong>Starting DichromaticMap</strong><span>Loading Python + NumPy on your device…</span></div>
-      <canvas id="map" aria-label="Interactive grain-boundary dichromatic pattern"></canvas>
+      <canvas id="map" aria-label="Interactive grain-boundary dichromatic pattern. Drag to pan and pinch to zoom."></canvas>
       <div class="plot-axis x-axis">x / a₀</div><div class="plot-axis y-axis">y / a₀</div>
-      <div class="plot-legend" id="plot-legend"></div>
-      <div class="plot-annotation" id="vector-annotation" hidden></div>
+      <details class="plot-legend" id="plot-legend-panel" open><summary>Legend</summary><div class="plot-legend-items" id="plot-legend"></div></details>
+      <details class="plot-annotation" id="vector-annotation" hidden open><summary>Vector measurement</summary><pre id="vector-readout"></pre></details>
+      <button class="reference-axes-toggle" id="reference-axes-toggle" type="button" aria-label="Hide grain reference axes" aria-pressed="true">Axes −</button>
       <div class="plot-tools"><button id="fit-view" type="button" title="Center view">⌂</button><button id="zoom-in" type="button" title="Zoom in">＋</button><button id="zoom-out" type="button" title="Zoom out">−</button></div>
     </main>
 
     <aside class="control-pane loading" aria-label="Controls">
       <div class="control-scroll">
-        <div class="control-heading"><div class="top-line"><img class="app-brand" src="./assets/dichromaticmap_logo_with_title.svg" alt="DichromaticMap"><a href="./index.html" target="_blank" rel="noopener noreferrer">← Website</a></div><h1 id="control-title">FCC ⟨110⟩ Tilt GB</h1><p>Coordinates in a₀ · 1 = one lattice constant</p></div>
+        <div class="control-heading"><div class="top-line"><img class="app-brand" src="./assets/dichromaticmap_logo_with_title.svg" alt="DichromaticMap"><a href="./index.html" target="_blank" rel="noopener noreferrer">← Website</a></div><h1 id="control-title">FCC ⟨110⟩ GB</h1><p>Coordinates in a₀ · 1 = one lattice constant</p></div>
 
         <div class="tab-card">
           <div class="tab-bar" role="tablist"><button class="active" data-main-tab="orientation" type="button">ORIENTATION</button><button data-main-tab="layers" type="button">LAYERS</button></div>
           <div id="orientation-tab" class="tab-page">
             <button id="import-session" type="button">Import session…</button><input id="session-file" type="file" accept=".dmap,application/zip" hidden>
-            <fieldset><legend>CRYSTAL / AXIS</legend><label>Structure<select id="structure"><option>FCC</option><option>BCC</option><option>SC</option></select></label><label>Tilt / viewing axis<select id="axis"><option value="110">⟨110⟩</option><option value="100">⟨100⟩</option><option value="111">⟨111⟩</option><option value="112">⟨112⟩</option><option value="custom">Custom [h k l]</option></select></label><div class="inline hidden" id="custom-axis-row"><input id="custom-axis" value="1 -1 3" aria-label="Custom axis"><button id="apply-axis" type="button">Apply axis</button></div></fieldset>
+            <fieldset><legend>CRYSTAL / AXIS</legend><label>Structure<select id="structure"><option>FCC</option><option>BCC</option><option>SC</option></select></label><label>Viewing axis<select id="axis"><option value="110">⟨110⟩</option><option value="100">⟨100⟩</option><option value="111">⟨111⟩</option><option value="112">⟨112⟩</option><option value="custom">Custom [h k l]</option></select></label><div class="inline hidden" id="custom-axis-row"><input id="custom-axis" value="1 -1 3" aria-label="Custom axis"><button id="apply-axis" type="button">Apply axis</button></div></fieldset>
             <label class="stacked">CSL preset<select id="preset"></select></label>
             <label class="stacked">Misorientation <span class="inline-number"><input id="angle-number" type="number" min="0" max="90" step="0.01" value="38.94">°</span></label><input id="angle-slider" type="range" min="0" max="90" step="0.01" value="38.94"><small class="hint" id="angle-hint">Exact θ = 38.94244127° · quaternion (4, 1, 1, 0)</small>
             <label class="stacked">Display rotation <span class="inline-number"><input id="rotation-number" type="number" min="-180" max="180" step="0.1" value="0">°</span><button id="rotation-reset" type="button">0°</button></label><input id="rotation-slider" type="range" min="-180" max="180" step="0.1" value="0">
@@ -52,7 +53,7 @@
       </div>
     </aside>
   </div>
-  <footer class="app-citation" aria-label="Suggested citation"><span>Suggested citation:</span><a href="https://arxiv.org/abs/2609.14673" target="_blank" rel="noopener noreferrer">K. Ding, Y. Liu, Y. Zhang, L. Wang, X. Han, and T. Zhu, “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain boundaries,” arXiv:2609.14673 (2026).</a><a class="app-citation-bibtex" href="./index.html#cite" target="_blank" rel="noopener noreferrer">BibTeX ↗</a></footer>
+  <footer class="app-citation" aria-label="Citing DichromaticMap"><span>Associated paper citation:</span><a href="https://arxiv.org/abs/2609.14673" target="_blank" rel="noopener noreferrer">K. Ding, Y. Liu, Y. Zhang, L. Wang, X. Han, and T. Zhu, “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain boundaries,” arXiv:2609.14673 (2026).</a><a class="app-citation-bibtex" href="./index.html#cite" target="_blank" rel="noopener noreferrer">BibTeX ↗</a></footer>
   <dialog id="completion-dialog"><h2>Complete common cell</h2><p>Select a candidate to add its generated vertices.</p><div id="completion-options"></div><div class="button-row"><button id="completion-cancel" type="button">Cancel</button><button id="completion-accept" type="button">Use selected cell</button></div></dialog>
 </body>
 </html>

@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0d1721">
-  <meta name="description" content="DichromaticMap is research software for layer-resolved visualization and geometric analysis of cubic tilt grain-boundary dichromatic patterns.">
-  <title>DichromaticMap — cubic tilt grain-boundary geometry</title>
+  <meta name="description" content="DichromaticMap is research software for layer-resolved visualization and geometric analysis of cubic grain-boundary dichromatic patterns.">
+  <title>DichromaticMap — cubic grain-boundary geometry</title>
   <link rel="icon" type="image/svg+xml" href="./assets/dichromaticmap_logo.svg">
   <link rel="stylesheet" href="./style.css">
   <script defer src="./index.js"></script>
@@ -17,7 +17,7 @@
       <a href="#overview">Overview</a>
       <a href="#capabilities">Capabilities</a>
       <a href="#explore">Online app</a>
-      <a href="#cite">How to cite</a>
+      <a href="#cite">Cite</a>
       <a class="nav-github" href="https://github.com/Yazhuo-Liu/DichromaticMap" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -33,7 +33,7 @@
           <a class="button button-primary" href="./use.html" target="_blank" rel="noopener noreferrer">Use online <span aria-hidden="true">↗</span></a>
           <a class="button button-secondary" href="https://github.com/Yazhuo-Liu/DichromaticMap/releases" target="_blank" rel="noopener noreferrer">Download app <span aria-hidden="true">↓</span></a>
         </div>
-        <div class="hero-citation"><span class="citation-label">Associated paper · suggested citation</span><p>K. Ding, Y. Liu, Y. Zhang, L. Wang, X. Han, and T. Zhu, “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain boundaries,” <a href="https://arxiv.org/abs/2609.14673" target="_blank" rel="noopener noreferrer">arXiv:2609.14673</a> (2026). <a href="#cite">BibTeX ↓</a></p></div>
+        <div class="hero-citation"><span class="citation-label">Associated paper · recommended citation</span><p>K. Ding, Y. Liu, Y. Zhang, L. Wang, X. Han, and T. Zhu, “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain boundaries,” <a href="https://arxiv.org/abs/2609.14673" target="_blank" rel="noopener noreferrer">arXiv:2609.14673</a> (2026). <a href="#cite">BibTeX ↓</a></p></div>
         <p class="hero-note">SC / FCC / BCC <span>·</span> ⟨100⟩ ⟨110⟩ ⟨111⟩ ⟨112⟩ and custom axes <span>·</span> MIT license</p>
       </div>
       <div class="hero-art" aria-hidden="true">
@@ -63,7 +63,7 @@
       <div class="section-heading"><div><p class="kicker">02 / ANALYSIS</p><h2 id="capabilities-title">Analysis capabilities</h2></div><p>Exact coincidence, local near-pair matching, and strain-assisted common-cell search are separate geometric operations.</p></div>
       <div class="feature-grid">
         <article class="feature-card"><span class="feature-number">01</span><div class="feature-glyph glyph-layers" aria-hidden="true"><b></b><b></b><b></b></div><h3>Axial layers</h3><p>Display the distinct axial phases in projected SC, FCC, and BCC reference lattices.</p></article>
-        <article class="feature-card"><span class="feature-number">02</span><div class="feature-glyph glyph-match" aria-hidden="true"><b></b><b></b><b></b></div><h3>Exact coincidences</h3><p>Identify same-layer coincident sites and inspect exact CSL cells when available.</p></article>
+        <article class="feature-card"><span class="feature-number">02</span><div class="feature-glyph glyph-match" aria-hidden="true"><b></b><b></b></div><h3>Exact coincidences</h3><p>Identify same-layer coincident sites and inspect exact CSL cells when available.</p></article>
         <article class="feature-card"><span class="feature-number">03</span><div class="feature-glyph glyph-near" aria-hidden="true"><b></b><b></b></div><h3>Local near pairs</h3><p>Find nearby lattice-site pairs within a chosen distance while preserving their positions.</p></article>
         <article class="feature-card"><span class="feature-number">04</span><div class="feature-glyph glyph-cell" aria-hidden="true"><b></b></div><h3>Strain-assisted cells</h3><p>Search for shared periodic cells under a prescribed homogeneous-strain limit.</p></article>
         <article class="feature-card"><span class="feature-number">05</span><div class="feature-glyph glyph-vector" aria-hidden="true"><b></b></div><h3>Vectors and counts</h3><p>Measure crystallographic directions and count lattice sites in selected cells.</p></article>
@@ -72,7 +72,7 @@
       <p class="capabilities-note">Numerical tolerances, search algorithms, periodicity checks, and counting rules are documented in the <a href="https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/development.md" target="_blank" rel="noopener noreferrer">methods guide ↗</a></p>
     </section>
 
-    <section class="scope-section" id="scope" aria-labelledby="scope-title"><div class="wrap scope-grid"><div><p class="kicker">03 / APPLICABILITY</p><h2 id="scope-title">Scope and limitations</h2></div><p>DichromaticMap analyzes reference-lattice geometry for cubic tilt grain boundaries. Local matching preserves the lattice-site positions, whereas strain-assisted cell searches apply homogeneous geometric deformations. These operations do not perform atomic relaxation or minimize elastic energy.</p></div></section>
+    <section class="scope-section" id="scope" aria-labelledby="scope-title"><div class="wrap scope-grid"><div><p class="kicker">03 / APPLICABILITY</p><h2 id="scope-title">Scope and limitations</h2></div><p>DichromaticMap analyzes reference-lattice geometry for grain boundaries in cubic crystals, using a shared axis for rotation and projection. Local matching preserves the lattice-site positions, whereas strain-assisted cell searches apply homogeneous geometric deformations. These operations do not perform atomic relaxation or minimize elastic energy.</p></div></section>
 
     <section class="demo-section" id="explore" aria-labelledby="demo-title">
       <div class="wrap">
@@ -90,7 +90,7 @@
 <span class="terminal-prompt">$</span> python -m dichromatic_map</code></pre></div></div></section>
 
     <section class="citation-section wrap" id="cite" aria-labelledby="citation-title">
-      <div class="section-heading"><div><p class="kicker">06 / REFERENCES</p><h2 id="citation-title">How to cite</h2></div><p>Cite the associated study for its research context, and report the software version used for reproducible analysis.</p></div>
+      <div class="section-heading"><div><p class="kicker">06 / REFERENCES</p><h2 id="citation-title">Citing DichromaticMap</h2></div><p>Cite the associated study for its research context, and report the software version used for reproducible analysis.</p></div>
       <div class="citation-grid">
         <article class="citation-card">
           <p class="citation-kind">ASSOCIATED PAPER</p>
@@ -113,13 +113,13 @@
           <h3>DichromaticMap v__VERSION__</h3>
           <p>Include the version used when reporting results generated with the software. Source code and release history are available in the project repository.</p>
           <a class="citation-link" href="https://github.com/Yazhuo-Liu/DichromaticMap" target="_blank" rel="noopener noreferrer">Source repository ↗</a>
-          <div class="citation-code-heading"><span>Suggested software reference</span><button type="button" data-copy-target="software-citation">Copy reference</button></div>
+          <div class="citation-code-heading"><span>Software version reference</span><button type="button" data-copy-target="software-citation">Copy reference</button></div>
           <pre class="citation-code" id="software-citation"><code>DichromaticMap, version __VERSION__. Open-source research software. https://github.com/Yazhuo-Liu/DichromaticMap</code></pre>
         </article>
       </div>
     </section>
   </main>
 
-  <footer class="footer"><div class="wrap footer-inner"><a class="brand" href="#top"><img src="./assets/dichromaticmap_logo_with_title_light.svg" alt="DichromaticMap home"></a><span>Open source · MIT license · Made for grain-boundary research</span><div><a href="https://github.com/Yazhuo-Liu/DichromaticMap" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md" target="_blank" rel="noopener noreferrer">Documentation</a><a href="#cite">How to cite</a></div></div></footer>
+  <footer class="footer"><div class="wrap footer-inner"><a class="brand" href="#top"><img src="./assets/dichromaticmap_logo_with_title_light.svg" alt="DichromaticMap home"></a><span>Open source · MIT license · Made for grain-boundary research</span><div><a href="https://github.com/Yazhuo-Liu/DichromaticMap" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md" target="_blank" rel="noopener noreferrer">Documentation</a><a href="#cite">Citing DichromaticMap</a></div></div></footer>
 </body>
 </html>

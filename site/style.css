@@ -90,7 +90,7 @@ margin-left:6px}
 .hero{
 min-height:0;
 display:grid;
-grid-template-columns:1.03fr .97fr;
+grid-template-columns:1.2fr .8fr;
 align-items:center;
 gap:36px}
 .hero-copy{
@@ -133,7 +133,7 @@ margin-bottom:0}
 font-size:18px;
 line-height:1.75;
 color:#b6c4c7;
-max-width:570px;
+max-width:640px;
 margin-bottom:15px}
 .hero-authors{
 display:flex;
@@ -156,7 +156,7 @@ color:#e0f5de}
 .author-separator{
 color:#617c82}
 .hero-citation{
-max-width:570px;
+max-width:640px;
 margin-top:18px;
 padding:14px 17px;
 border-left:2px solid var(--gold);
@@ -337,12 +337,12 @@ padding:66px 0 62px}
 display:flex;
 justify-content:space-between;
 align-items:end;
-gap:40px;
+gap:30px;
 margin-bottom:25px}
 .section-heading .kicker{
 margin-bottom:16px}
 .section-heading>p{
-max-width:370px;
+max-width:470px;
 color:var(--muted);
 line-height:1.7;
 font-size:16px;
@@ -610,21 +610,19 @@ opacity:.45}
 .glyph-match{
 position:relative}
 .glyph-match b{
-width:22px;
-height:22px;
+width:44px;
+height:44px;
 border:2px solid var(--blue);
 border-radius:50%;
 position:absolute;
-left:calc(50% - 21px)}
+left:50%;
+top:50%;
+transform:translate(-50%,-50%)}
 .glyph-match b:nth-child(2){
+width:22px;
+height:22px;
 border-color:var(--orange);
-left:calc(50% - 1px)}
-.glyph-match b:nth-child(3){
-width:6px;
-height:6px;
-background:var(--gold);
-border:none;
-left:calc(50% - 3px)}
+}
 .glyph-near{
 position:relative}
 .glyph-near b{
@@ -871,7 +869,7 @@ font-size:13px;
 color:#a5b7b9}
 @media(max-width:1050px){
 .hero{
-grid-template-columns:1fr .7fr}
+grid-template-columns:1.15fr .85fr}
 .hero h1{
 font-size:clamp(42px,4.8vw,58px)}
 .hero-art{

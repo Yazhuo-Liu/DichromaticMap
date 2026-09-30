@@ -28,6 +28,16 @@ let nearGeneration = 0;
 let renderTimer;
 let pointerStart;
 let dragDistance = 0;
+const activePointers = new Map();
+let pinchStart;
+let gestureWasPinch = false;
+let gestureNeedsRender = false;
+
+if (window.matchMedia("(max-width: 820px)").matches) {
+  state.referenceAxes = false;
+  $("reference-axes").checked = false;
+  $("plot-legend-panel").open = false;
+}
 
 function setStatus(message) {
   const g1 = pattern ? visiblePoints(0).length : 0;
@@ -36,7 +46,7 @@ function setStatus(message) {
   const layerCounts = new Map();
   for (const point of cslPoints) layerCounts.set(point[2], (layerCounts.get(point[2]) || 0) + 1);
   const byLayer = Array.from(layerCounts, ([layer, count]) => `${layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`}: ${count}`).join(", ");
-  $("status").innerHTML = `<strong>${escapeHtml(message)}</strong>Drag to pan · wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`;
+  $("status").innerHTML = `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`;
 }
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
@@ -73,6 +83,17 @@ function viewSize() {
   const drawH = Math.max(100, rect.height - 66);
   state.width = 12 * state.scale;
   state.height = state.width * drawH / drawW;
+}
+function renderDimensions() {
+  // The lattice engine crops in unrotated coordinates. Cover every corner of
+  // the displayed rectangle after rotating it back into those coordinates.
+  const radians = state.displayRotation * Math.PI / 180;
+  const cosine = Math.abs(Math.cos(radians));
+  const sine = Math.abs(Math.sin(radians));
+  return {
+    width: Math.max(state.width * 1.43, cosine * state.width + sine * state.height + 2),
+    height: Math.max(state.height * 1.43, sine * state.width + cosine * state.height + 2),
+  };
 }
 function rotate(point, degrees) {
   const a = degrees * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
@@ -129,9 +150,10 @@ function renderRequest() {
       viewSize();
       setStatus("Calculating lattice…");
       const modelCenter = rotate(state.center, -state.displayRotation);
+      const dimensions = renderDimensions();
       const result = await request("render", {
         lattice: state.lattice, axis: state.axis, angle: state.angle,
-        width: state.width * 1.43, height: state.height * 1.43,
+        width: dimensions.width, height: dimensions.height,
         center: modelCenter, deformations: state.deformations,
         translations: state.translations,
         local_matching: state.nearEnabled && state.nearMethod === "local",
@@ -241,6 +263,30 @@ function drawPolygon(context, points, color, dash = []) {
   if (points.length === 4) context.closePath();
   context.stroke(); context.restore();
 }
+function drawVector(context) {
+  const points = state.atoms.map(atom => atom.position);
+  drawPolygon(context, points, "#9347aa");
+  if (points.length !== 2) return;
+  const [x1, y1] = screen(points[0]);
+  const [x2, y2] = screen(points[1]);
+  const dx = x2 - x1, dy = y2 - y1;
+  const length = Math.hypot(dx, dy);
+  if (length <= 4) return;
+  const ux = dx / length, uy = dy / length;
+  const tipOffset = Math.min(8, length * .25);
+  const headLength = Math.min(18, (length - tipOffset) * .6);
+  const halfWidth = Math.min(7, headLength * .4);
+  const tipX = x2 - ux * tipOffset, tipY = y2 - uy * tipOffset;
+  const baseX = tipX - ux * headLength, baseY = tipY - uy * headLength;
+  context.save();
+  context.fillStyle = "#9347aa"; context.strokeStyle = "#9347aa"; context.lineWidth = 1.2;
+  context.beginPath();
+  context.moveTo(tipX, tipY);
+  context.lineTo(baseX - uy * halfWidth, baseY + ux * halfWidth);
+  context.lineTo(baseX + uy * halfWidth, baseY - ux * halfWidth);
+  context.closePath(); context.fill(); context.stroke();
+  context.restore();
+}
 function clippedBoundary() {
   if (state.boundary.length !== 2) return null;
   const first = screen(state.boundary[0]), second = screen(state.boundary[1]);
@@ -321,12 +367,23 @@ function draw() {
   }
   if (state.boundary.length) drawBoundary(ctx);
   if (state.atoms.length) {
-    drawPolygon(ctx, state.atoms.map(a => a.position), "#9347aa");
+    drawVector(ctx);
     state.atoms.forEach((v, i) => { const [x, y] = screen(v.position); ctx.fillStyle = "#83419a"; ctx.fillText(`P${i + 1}`, x + 6, y - 7); });
   }
   if (state.referenceAxes) drawReferenceAxes(ctx, r);
+  updateReferenceAxesToggle();
   positionVectorAnnotation();
   drawLegend();
+}
+function updateReferenceAxesToggle() {
+  const button = $("reference-axes-toggle");
+  const box = referenceAxesBounds(plotRect());
+  button.style.left = `${state.referenceAxes ? box.left + box.width - 57 : box.left}px`;
+  button.style.top = state.referenceAxes ? `${box.top + 4}px` : "";
+  button.style.bottom = state.referenceAxes ? "" : "8px";
+  button.textContent = state.referenceAxes ? "Axes −" : "Axes +";
+  button.setAttribute("aria-label", state.referenceAxes ? "Hide grain reference axes" : "Show grain reference axes");
+  button.setAttribute("aria-pressed", String(state.referenceAxes));
 }
 function positionVectorAnnotation() {
   const annotation = $("vector-annotation");
@@ -392,8 +449,8 @@ function updateSummary() {
   }
   const name = `${state.lattice} ⟨${state.axis}⟩`;
   const preset = pattern?.preset ? ` · ${pattern.preset}` : "";
-  $("control-title").textContent = `${name} Tilt GB`;
-  $("plot-title").textContent = `${name} tilt dichromatic pattern · θ = ${state.angle.toFixed(2)}°${preset}`;
+  $("control-title").textContent = `${name} GB`;
+  $("plot-title").textContent = `${name} dichromatic pattern · θ = ${state.angle.toFixed(2)}°${preset}`;
   $("angle-hint").textContent = `Exact θ = ${state.angle.toFixed(8)}° · allowed 0–${metadata.max_angle}°`;
   $("layer-info").textContent = `${metadata.layers} axial layers per grain · spacing = ${metadata.layer_spacing.toPrecision(5)} a₀ · axial repeat = ${metadata.axial_period.toPrecision(5)} a₀. CSL and near pairs require visibility in both grains.`;
   $("gb-options").classList.toggle("hidden", state.boundary.length !== 2);
@@ -644,7 +701,7 @@ async function updateVector() {
       }
     }
     text.push(`Current |Δr|/a₀ = ${result.length.toFixed(4)}`);
-    $("vector-annotation").textContent = text.join("\n");
+    $("vector-readout").textContent = text.join("\n");
     $("vector-annotation").hidden = false;
     positionVectorAnnotation();
     setStatus("Vector measured");
@@ -796,7 +853,7 @@ function exportPNG() {
                                                     65 + Math.floor(i / columns) * 17));
     }
     if (!$("vector-annotation").hidden) {
-      const lines = $("vector-annotation").textContent.split("\n");
+      const lines = $("vector-readout").textContent.split("\n");
       const lowerEdge = state.referenceAxes && pattern?.reference_axes && metadata?.reference_labels
         ? referenceAxesBounds(plotRect()).top - 10 : canvas.clientHeight - 42;
       const x = 48, y = lowerEdge - lines.length * 15 - 5;
@@ -967,7 +1024,22 @@ $("center-view").addEventListener("click", centerView);
 $("fit-view").addEventListener("click", centerView);
 $("zoom-in").addEventListener("click", () => { state.scale = Math.max(.1,state.scale / 1.25); $("field-slider").value = state.scale; updateSummary(); renderRequest(); });
 $("zoom-out").addEventListener("click", () => { state.scale = Math.min(5,state.scale * 1.25); $("field-slider").value = state.scale; updateSummary(); renderRequest(); });
-$("reference-axes").addEventListener("change", () => { state.referenceAxes = $("reference-axes").checked; draw(); });
+function setReferenceAxes(visible) {
+  state.referenceAxes = visible;
+  $("reference-axes").checked = visible;
+  if (visible && window.matchMedia("(max-width: 820px)").matches) {
+    $("vector-annotation").open = false;
+  }
+  draw();
+}
+$("reference-axes").addEventListener("change", () => setReferenceAxes($("reference-axes").checked));
+$("reference-axes-toggle").addEventListener("click", () => setReferenceAxes(!state.referenceAxes));
+for (const id of ["plot-legend-panel", "vector-annotation"]) {
+  const panel = $(id);
+  panel.addEventListener("click", event => {
+    if (panel.open && !event.target.closest("summary")) panel.open = false;
+  });
+}
 $("g1-color").addEventListener("input", () => { state.colors[0] = $("g1-color").value; draw(); });
 $("g2-color").addEventListener("input", () => { state.colors[1] = $("g2-color").value; draw(); });
 $("lattice-constant").addEventListener("change", () => {
@@ -1029,26 +1101,97 @@ $("save-session").addEventListener("click", saveSession);
 $("import-session").addEventListener("click", () => $("session-file").click());
 $("session-file").addEventListener("change", () => importSession($("session-file").files[0]));
 
+function canvasPoint(event) {
+  const rect = canvas.getBoundingClientRect();
+  return {x:event.clientX - rect.left, y:event.clientY - rect.top};
+}
+function startPan(pointerId, point) {
+  pointerStart = {pointerId, x:point.x, y:point.y, center:[...state.center]};
+  dragDistance = 0;
+}
+function startPinch() {
+  const [a, b] = Array.from(activePointers.values());
+  const midpoint = {x:(a.x + b.x) / 2, y:(a.y + b.y) / 2};
+  const r = plotRect();
+  viewSize();
+  pinchStart = {
+    distance:Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+    scale:state.scale,
+    anchor:[state.center[0] + (midpoint.x - r.left - r.width / 2) * state.width / r.width,
+            state.center[1] - (midpoint.y - r.top - r.height / 2) * state.height / r.height],
+  };
+  pointerStart = undefined;
+  gestureWasPinch = true;
+}
+function updatePinch() {
+  const [a, b] = Array.from(activePointers.values());
+  const midpoint = {x:(a.x + b.x) / 2, y:(a.y + b.y) / 2};
+  const distance = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+  state.scale = Math.max(.1, Math.min(5, pinchStart.scale * pinchStart.distance / distance));
+  viewSize();
+  const r = plotRect();
+  state.center = [pinchStart.anchor[0] - (midpoint.x - r.left - r.width / 2) * state.width / r.width,
+                  pinchStart.anchor[1] + (midpoint.y - r.top - r.height / 2) * state.height / r.height];
+  gestureNeedsRender = true;
+  $("field-slider").value = String(state.scale);
+  $("field-label").textContent = `${state.scale.toFixed(1)}×`;
+  draw();
+}
+function finishPointer(event, cancelled = false) {
+  if (!activePointers.has(event.pointerId)) return;
+  const point = canvasPoint(event);
+  const wasPan = pointerStart?.pointerId === event.pointerId;
+  activePointers.delete(event.pointerId);
+  pinchStart = undefined;
+  if (activePointers.size >= 2) {
+    startPinch();
+  } else if (activePointers.size === 1) {
+    const [pointerId, remaining] = activePointers.entries().next().value;
+    startPan(pointerId, remaining);
+  } else {
+    if (!cancelled && !gestureWasPinch && wasPan && !gestureNeedsRender) selectAt(point.x, point.y);
+    else if (gestureNeedsRender) renderRequest();
+    pointerStart = undefined;
+    dragDistance = 0;
+    gestureWasPinch = false;
+    gestureNeedsRender = false;
+  }
+}
 canvas.addEventListener("pointerdown", event => {
+  if (event.pointerType === "mouse" && event.button !== 0) return;
+  if (event.pointerType === "touch") event.preventDefault();
   canvas.setPointerCapture(event.pointerId);
-  pointerStart = {x:event.offsetX,y:event.offsetY,center:[...state.center]}; dragDistance = 0;
-});
-canvas.addEventListener("pointermove", event => {
-  if (!pointerStart) return;
-  const dx = event.offsetX - pointerStart.x, dy = event.offsetY - pointerStart.y;
-  dragDistance = Math.hypot(dx,dy);
-  if (dragDistance > 3) {
-    const r = plotRect();
-    state.center = [pointerStart.center[0] - dx * state.width / r.width,
-                    pointerStart.center[1] + dy * state.height / r.height];
-    draw();
+  const point = canvasPoint(event);
+  activePointers.set(event.pointerId, point);
+  if (activePointers.size === 1) {
+    gestureWasPinch = false;
+    gestureNeedsRender = false;
+    startPan(event.pointerId, point);
+  } else {
+    startPinch();
   }
 });
-canvas.addEventListener("pointerup", event => {
-  if (!pointerStart) return;
-  const moved = dragDistance > 3; pointerStart = null;
-  if (moved) renderRequest(); else selectAt(event.offsetX,event.offsetY);
+canvas.addEventListener("pointermove", event => {
+  if (!activePointers.has(event.pointerId)) return;
+  const point = canvasPoint(event);
+  activePointers.set(event.pointerId, point);
+  if (pinchStart && activePointers.size >= 2) {
+    updatePinch();
+  } else if (pointerStart?.pointerId === event.pointerId) {
+    const dx = point.x - pointerStart.x, dy = point.y - pointerStart.y;
+    dragDistance = Math.max(dragDistance, Math.hypot(dx, dy));
+    if (dragDistance > 3) {
+      gestureNeedsRender = true;
+      const r = plotRect();
+      state.center = [pointerStart.center[0] - dx * state.width / r.width,
+                      pointerStart.center[1] + dy * state.height / r.height];
+      draw();
+    }
+  }
 });
+canvas.addEventListener("pointerup", event => finishPointer(event));
+canvas.addEventListener("pointercancel", event => finishPointer(event, true));
+canvas.addEventListener("lostpointercapture", event => finishPointer(event, true));
 canvas.addEventListener("wheel", event => {
   event.preventDefault();
   state.scale = Math.max(.1, Math.min(5, state.scale * (event.deltaY > 0 ? 1.13 : 1 / 1.13)));
