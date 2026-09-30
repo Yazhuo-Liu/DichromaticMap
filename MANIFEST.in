@@ -3,4 +3,6 @@ include CONTRIBUTING.md
 recursive-include scripts *.py
 recursive-include packaging *.spec *.txt
 recursive-include tests *.py
-recursive-include docs *.md *.png
+recursive-include docs *.md *.png *.svg
+recursive-include site *.html *.css *.js *.py
+prune site/_build

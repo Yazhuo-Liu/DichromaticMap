@@ -40,7 +40,7 @@ def distributions():
         project.mkdir()
         for name in ("pyproject.toml", "MANIFEST.in", "README.md", "LICENSE", "CONTRIBUTING.md", "main.py"):
             shutil.copy2(ROOT / name, project / name)
-        for name in ("src", "tests", "scripts", "docs", "packaging"):
+        for name in ("src", "tests", "scripts", "docs", "packaging", "site"):
             shutil.copytree(
                 ROOT / name, project / name,
                 ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", "*.egg-info"),
@@ -77,14 +77,21 @@ def test_source_distribution_includes_validation_and_documentation(distributions
         "LICENSE", "README.md", "CONTRIBUTING.md", "main.py", "pyproject.toml",
         "scripts/run_tests.py", "tests/conftest.py", "docs/en/README.md",
         "docs/zh/README.md", "docs/images/gui-overview.png",
+        "docs/images/dichromatic_pattern_example.png",
+        "docs/images/dichromaticmap_logo.svg",
+        "docs/images/dichromaticmap_logo_with_title.svg",
+        "docs/images/dichromaticmap_logo_with_title_light.svg",
         "scripts/build_executable.py", "scripts/frozen_entry.py", "scripts/frozen_smoke.py",
         "scripts/smoke_executable.py", "scripts/release_checksums.py",
         "packaging/DichromaticMap.spec", "packaging/README.txt", "docs/releases/v0.2.2.md",
         "packaging/THIRD_PARTY_NOTICES.txt", "packaging/licenses/LGPL-3.0.txt",
+        "site/index.html", "site/index.js", "site/use.html", "site/use.js", "site/web_bridge.py",
+        "scripts/build_site.py", "scripts/serve_site.py", "scripts/smoke_web.py",
     ):
         assert (source / name).is_file(), f"Missing from sdist: {name}"
     for suite in ("core", "gui", "packaging"):
         assert list((source / "tests" / suite).glob("test_*.py"))
+    assert not (source / "site" / "_build").exists()
     assert (source / "LICENSE").read_bytes() == (ROOT / "LICENSE").read_bytes()
 
 

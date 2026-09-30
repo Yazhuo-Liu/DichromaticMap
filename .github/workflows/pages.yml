@@ -1,0 +1,51 @@
+name: Publish site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "src/dichromatic_map/**"
+      - "docs/images/gui-overview.png"
+      - "docs/images/dichromatic_pattern_example.png"
+      - "docs/images/dichromaticmap_logo*.svg"
+      - "scripts/build_site.py"
+      - "pyproject.toml"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build static site
+        run: python scripts/build_site.py
+      - name: Check browser adapter
+        run: |
+          python -m pip install numpy
+          python scripts/smoke_web.py
+          node --check site/index.js
+          node --check site/use.js
+          node --input-type=module --check < site/use_worker.js
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site/_build
+      - id: deployment
+        uses: actions/deploy-pages@v4

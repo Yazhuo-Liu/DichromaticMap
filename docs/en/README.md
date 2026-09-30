@@ -1,3 +1,5 @@
+<p align="center"><img src="../images/dichromaticmap_logo_with_title.svg" alt="DichromaticMap project logo" width="620"></p>
+
 # DichromaticMap user guide
 
 [中文](../zh/README.md) · [Project home](../../README.md) · [Implementation details](development.md)
@@ -142,6 +144,15 @@ The legend follows enabled layers and overlays. It shows at most six enabled
 layers; use `LAYERS` to inspect others. Every layer has a distinct symbol. The
 first twelve layers retain the original default shapes; additional layers use
 numbered circles. Customize them in `VIEW / PERFORMANCE → APPEARANCE`.
+
+### Example analysis plot
+
+<a href="../images/dichromatic_pattern_example.png"><img src="../images/dichromatic_pattern_example.png" alt="FCC ⟨110⟩ dichromatic pattern at 22 degrees, showing axial layers, coincidence sites, a selected cell, atom counts, and a cross-grain vector" width="900"></a>
+
+FCC ⟨110⟩ at a 22° reference misorientation. The plot shows both grains'
+axial layers, coincidence markers, a selected four-vertex cell with separate
+G1/G2 atom counts, and a cross-grain vector after selected-cell bulk strain.
+[Open the full-resolution image](../images/dichromatic_pattern_example.png).
 
 <a id="gui-quick-start"></a>
 

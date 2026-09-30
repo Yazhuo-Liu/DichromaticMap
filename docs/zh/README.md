@@ -1,3 +1,5 @@
+<p align="center"><img src="../images/dichromaticmap_logo_with_title.svg" alt="DichromaticMap 项目标志" width="620"></p>
+
 # DichromaticMap 使用手册
 
 [English](../en/README.md) · [项目首页](../../README.md) · [开发细节](development.md)
@@ -120,6 +122,14 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 多层几何的图例最多列出前 6 个已启用的层；更多层可在 `LAYERS` 中查看。
 不同层的符号互不重复。前 12 层保留原有默认形状，更多层使用编号圆形；
 可在 `VIEW / PERFORMANCE → APPEARANCE` 中修改。
+
+### 分析示例图
+
+<a href="../images/dichromatic_pattern_example.png"><img src="../images/dichromatic_pattern_example.png" alt="FCC ⟨110⟩ 在 22 度参考错取向下的双色图，包含轴向层、重合点、所选晶胞、原子计数和跨晶粒向量" width="900"></a>
+
+FCC ⟨110⟩，参考错取向角为 22°。图中同时显示两个晶粒的轴向层、重合点标记、
+所选四顶点晶胞及 G1/G2 分别计数，并展示了对所选胞施加整体应变后的跨晶粒向量测量。
+[查看原尺寸图片](../images/dichromatic_pattern_example.png)。
 
 <a id="gui-quick-start"></a>
 

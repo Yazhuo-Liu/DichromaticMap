@@ -1,6 +1,6 @@
-# DichromaticMap
+<h1 align="center"><img src="docs/images/dichromaticmap_logo_with_title.svg" alt="DichromaticMap — open-source tools for dichromatic pattern analysis" width="720"></h1>
 
-[English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
+[Project website](https://yazhuo-liu.github.io/DichromaticMap/) · [Use online](https://yazhuo-liu.github.io/DichromaticMap/use.html) · [English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
 
 If you find DichromaticMap helpful, please cite:
 
@@ -14,6 +14,15 @@ layer-resolved SC/FCC/BCC tilt grain-boundary dichromatic patterns. Use it to
 inspect two overlaid grains, identify coincidence sites, measure crystal
 vectors, count atoms in selected cells and explore common cells under uniform
 strain.
+
+## Example analysis plot
+
+<a href="docs/images/dichromatic_pattern_example.png"><img src="docs/images/dichromatic_pattern_example.png" alt="FCC ⟨110⟩ dichromatic pattern at 22 degrees with axial layers, coincidence sites, a selected cell, atom counts, and a cross-grain vector" width="900"></a>
+
+FCC ⟨110⟩ at a 22° reference misorientation. The plot shows both grains'
+axial layers, coincidence markers, a selected four-vertex cell with separate
+G1/G2 atom counts, and a cross-grain vector after selected-cell bulk strain.
+[Open the full-resolution image](docs/images/dichromatic_pattern_example.png).
 
 ## Features
 
@@ -217,6 +226,46 @@ supplied projected columns and preserves their layer labels.
 | --- | --- | --- |
 | Installation, viewer workflows and Python API | [User guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) | [使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md) |
 | Algorithms, numerical conventions and implementation | [Implementation details](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/development.md) | [开发细节](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/development.md) |
+
+## Project website
+
+The [project website](https://yazhuo-liu.github.io/DichromaticMap/) describes
+the research context, analysis methods, scope and citation, with a separate
+[online workspace](https://yazhuo-liu.github.io/DichromaticMap/use.html).
+The online workspace follows the desktop viewer's plot-and-controls layout.
+It runs the existing NumPy numerical core in a browser Web Worker through
+Pyodide; the browser downloads Python and NumPy when the workspace opens, then
+computes locally. No calculation server is used. It supports projected
+grains, exact CSL, local near pairs, periodic-cell strain search, vector and
+manual-cell measurements, selected-cell strain, PNG export, and `.dmap`
+session import/export. The desktop app remains the reference interface.
+
+To preview both pages locally, run:
+
+```bash
+conda run --no-capture-output -n lammps2026 python scripts/serve_site.py
+```
+
+Open `http://127.0.0.1:8000/` for the research software homepage. Check that
+Overview, Analysis capabilities and Scope precede the usage sections, that the
+application screenshot is unobscured, and that both citation copy buttons work.
+Click **Use online** to open the workspace, or go directly to
+`http://127.0.0.1:8000/use.html` and check the citation at the page bottom.
+Opening the HTML file directly will not load its worker or package assets.
+The first browser run needs internet access to fetch Pyodide and NumPy.
+For a numerical adapter smoke check, run
+`conda run -n lammps2026 python scripts/smoke_web.py` after building the site.
+In the browser, wait for the starting overlay to disappear. At 22°, enable
+**Near-CSL** with local matching and check that each near pair has a large
+purple ring. Pick two atoms with **Pick GB** and check that the line reaches
+both plot edges, including after pan or zoom. With grain reference axes shown,
+measure a vector and check that its readout sits above the axes panel. After
+applying strain to a selected cell, measure another vector and check the
+`lattice [uvw]` readout for fractional directions. Save a `.dmap` file and
+import it again to check the file-download path.
+The Pages workflow publishes on pushes to `main` that change the site,
+numerical source, screenshot or build script. Set the repository's Pages
+build source to **GitHub Actions** to enable deployment.
 
 ## Contributing and support
 

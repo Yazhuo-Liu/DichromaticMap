@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DichromaticMap logo</title>
+  <desc id="desc">Two rotated crystal lattices in blue and orange with a central gold coincidence site.</desc>
+
+  <!-- Transparent background -->
+  <g transform="translate(256 256)">
+    <!-- Grain 1: blue square lattice -->
+    <g transform="rotate(-18)" fill="none" stroke="#2F6BFF" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-150 -150 H150 M-150 0 H150 M-150 150 H150
+               M-150 -150 V150 M0 -150 V150 M150 -150 V150"
+            opacity="0.90"/>
+    </g>
+
+    <!-- Grain 2: orange square lattice -->
+    <g transform="rotate(18)" fill="none" stroke="#F28C28" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-150 -150 H150 M-150 0 H150 M-150 150 H150
+               M-150 -150 V150 M0 -150 V150 M150 -150 V150"
+            opacity="0.90"/>
+    </g>
+
+    <!-- Soft central knockout for readability -->
+    <circle r="46" fill="white" fill-opacity="0.96"/>
+
+    <!-- Coincidence site -->
+    <circle r="24" fill="#F2C94C"/>
+    <circle r="24" fill="none" stroke="#1F2937" stroke-width="8"/>
+
+    <!-- Grain-boundary axis cue -->
+    <path d="M0 -62 V62" stroke="#1F2937" stroke-width="10" stroke-linecap="round"/>
+    <circle cy="-62" r="6" fill="#1F2937"/>
+    <circle cy="62" r="6" fill="#1F2937"/>
+  </g>
+</svg>
