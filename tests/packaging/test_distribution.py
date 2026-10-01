@@ -86,6 +86,7 @@ def test_source_distribution_includes_validation_and_documentation(distributions
         "packaging/DichromaticMap.spec", "packaging/README.txt", "docs/releases/v0.2.2.md",
         "packaging/THIRD_PARTY_NOTICES.txt", "packaging/licenses/LGPL-3.0.txt",
         "site/index.html", "site/index.js", "site/use.html", "site/use.js", "site/web_bridge.py",
+        "site/sitemap.xml",
         "scripts/build_site.py", "scripts/serve_site.py", "scripts/smoke_web.py",
     ):
         assert (source / name).is_file(), f"Missing from sdist: {name}"

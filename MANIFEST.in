@@ -4,5 +4,5 @@ recursive-include scripts *.py
 recursive-include packaging *.spec *.txt
 recursive-include tests *.py
 recursive-include docs *.md *.png *.svg
-recursive-include site *.html *.css *.js *.py
+recursive-include site *.html *.css *.js *.py *.xml
 prune site/_build

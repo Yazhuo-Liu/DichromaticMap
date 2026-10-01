@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/images/dichromaticmap_logo_with_title.svg" alt="DichromaticMap — open-source tools for dichromatic pattern analysis" width="720"></h1>
 
-[Project website](https://yazhuo-liu.github.io/DichromaticMap/) · [Use online](https://yazhuo-liu.github.io/DichromaticMap/use.html) · [English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
+[Project website](https://yazhuoliu.com/DichromaticMap/) · [Use online](https://yazhuoliu.com/DichromaticMap/use.html) · [English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
 
 If you find DichromaticMap helpful, please cite:
 
@@ -237,9 +237,9 @@ supplied projected columns and preserves their layer labels.
 
 ## Project website
 
-The [project website](https://yazhuo-liu.github.io/DichromaticMap/) describes
+The [project website](https://yazhuoliu.com/DichromaticMap/) describes
 the research context, analysis methods, scope and citation, with a separate
-[online workspace](https://yazhuo-liu.github.io/DichromaticMap/use.html).
+[online workspace](https://yazhuoliu.com/DichromaticMap/use.html).
 The online workspace follows the desktop viewer's plot-and-controls layout.
 It runs the existing NumPy numerical core in a browser Web Worker through
 Pyodide; the browser downloads Python and NumPy when the workspace opens, then

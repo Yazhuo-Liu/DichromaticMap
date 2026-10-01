@@ -13,7 +13,7 @@ requires-python = ">=3.10"
 dependencies = ["numpy"]
 
 [project.urls]
-Homepage = "https://yazhuo-liu.github.io/DichromaticMap/"
+Homepage = "https://yazhuoliu.com/DichromaticMap/"
 Documentation = "https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md"
 Source = "https://github.com/Yazhuo-Liu/DichromaticMap"
 Issues = "https://github.com/Yazhuo-Liu/DichromaticMap/issues"
