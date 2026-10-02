@@ -33,6 +33,9 @@ def test_site_publishes_documentation_and_preserves_deep_links():
     assert (output / "docs/zh/development.html").is_file()
     assert "downloads" in PageLinks((output / "docs/releases/v0.2.2.html").read_text()).anchors
     assert (output / "src/dichromatic_map/crystal.py").read_bytes() == (ROOT / "src/dichromatic_map/crystal.py").read_bytes()
+    online = (output / "use.html").read_text(encoding="utf-8")
+    assert './tutorial.js' in PageLinks(online).targets
+    assert (output / "tutorial.js").read_bytes() == (ROOT / "site/tutorial.js").read_bytes()
     validate_links(output)
 
 

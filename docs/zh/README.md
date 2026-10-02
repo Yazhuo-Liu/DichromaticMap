@@ -19,6 +19,18 @@ DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FC
 [显示层](#gui-layers) · [视野](#gui-view) · [颜色、符号与大小](#gui-appearance) · [晶界](#gui-boundary) · [向量](#gui-vector) ·
 [Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [会话与数值表](#gui-session) · [常见问题](#gui-troubleshooting)。
 
+## 在线操作引导
+
+在[在线应用](https://yazhuoliu.com/DichromaticMap/use.html)中，图形加载完成后，点击控制栏
+项目 logo 旁的 **Tutorial** 按钮。引导不会自动启动。蓝色框会标出当前功能，气泡说明
+功能用途、建议体验的操作和可用快捷键。引导期间仍可操作控件和图形。
+
+使用 **上一步 / 下一步** 切换；焦点在气泡内时，也可使用左右方向键。
+语言选择框可切换 **English / 中文**。点击 **×**、按 **Esc** 或完成最后一步可退出。
+引导会展开相应分区和标签，但不会自动改变科学参数；你自己尝试的修改会保留。
+当焦点不在输入框时，**R**（选晶界）、**V**（测向量）、**M**（选手动胞）、
+**C**（视野居中）、**1 / 2**（晶界侧别排列）和 **F**（显示全部两侧）可正常使用。
+
 ## 安装与启动
 
 无需安装 Python 的用户，可从 [GitHub Releases](https://github.com/Yazhuo-Liu/DichromaticMap/releases)

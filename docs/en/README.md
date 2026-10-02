@@ -23,6 +23,22 @@ GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 [Selected-cell strain](#gui-selected-strain) · [Export](#gui-export) · [Sessions and tables](#gui-session) ·
 [Troubleshooting](#gui-troubleshooting).
 
+## Online guided tutorial
+
+In the [online app](https://yazhuoliu.com/DichromaticMap/use.html), click
+**Tutorial** beside the logo in the control panel after the pattern loads.
+The guide starts only when you click it. A blue outline highlights each feature;
+the bubble explains its purpose, suggests an action to try, and lists available
+shortcuts. You can operate the controls and plot while the guide is open.
+
+Use **Back** and **Next** to navigate, or the arrow keys while focused inside the
+bubble. Switch between **English** and **中文** using the language selector.
+Click **×**, press **Esc**, or finish the last step to close it. The guide opens
+the relevant sections and tabs but does not change scientific parameters itself;
+changes you make while trying the features remain. App shortcuts such as **R**
+(boundary), **V** (vector), **M** (manual cell), **C** (center), **1 / 2** (boundary
+sides), and **F** (all sides) work when focus is outside input fields.
+
 ## Installation and launch
 
 For a viewer without installing Python, download the archive for your OS and

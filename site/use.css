@@ -187,10 +187,105 @@ width:270px;
 max-width:72%;
 height:auto;
 flex-shrink:1}
-.top-line a{
+.heading-links{
+text-align:right;
+margin:-5px 0 6px;
+font-size:11px}
+.heading-links a{
 color:#5479a0;
 text-decoration:none;
 white-space:nowrap}
+.tutorial-start{
+flex-shrink:0;
+padding:7px 11px;
+border:1px solid #7c9bbc;
+border-radius:6px;
+background:#fff;
+color:#244b73;
+font-size:12px;
+font-weight:700}
+.tutorial-start:hover{
+background:#eaf2ff}
+.tutorial-highlight{
+position:fixed;
+z-index:20;
+border:3px solid #2f7ae5;
+border-radius:8px;
+box-shadow:0 0 0 9999px #182e461f;
+pointer-events:none}
+.tutorial-bubble{
+position:fixed;
+z-index:21;
+width:min(340px,calc(100vw - 24px));
+max-height:calc(100dvh - 24px);
+overflow:auto;
+padding:16px;
+border:1px solid #9bb8d9;
+border-radius:12px;
+background:#fff;
+box-shadow:0 12px 42px #16334c3d;
+color:#243950;
+font-size:13px;
+line-height:1.55}
+.tutorial-bubble[hidden],.tutorial-highlight[hidden]{
+display:none}
+.tutorial-top,.tutorial-top-actions,.tutorial-navigation{
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:8px}
+.tutorial-top{
+color:#627891;
+font-size:11px}
+.tutorial-top-actions select{
+min-width:0;
+height:29px;
+font-size:11px}
+.tutorial-bubble button{
+border:1px solid #b8cce3;
+border-radius:6px;
+background:#f1f6fc;
+color:#264b73;
+padding:7px 13px}
+.tutorial-bubble #tutorial-close{
+border:0;
+background:transparent;
+padding:0 5px;
+font-size:24px;
+line-height:1.2}
+.tutorial-bubble h2{
+margin:10px 0 6px;
+font-size:17px;
+line-height:1.3}
+.tutorial-bubble p{
+margin:6px 0 10px}
+.tutorial-try{
+padding:9px 11px;
+border-radius:6px;
+background:#edf5ff}
+.tutorial-shortcuts{
+color:#486581;
+font-size:12px}
+.tutorial-shortcuts kbd{
+display:inline-block;
+padding:1px 5px;
+margin:0 2px;
+border:1px solid #bccddd;
+border-bottom-width:2px;
+border-radius:4px;
+background:#f7f9fc;
+color:#233e59;
+font:11px/1.5 ui-monospace,monospace}
+.tutorial-navigation{
+margin-top:14px}
+.tutorial-navigation #tutorial-next{
+background:#276bc2;
+border-color:#276bc2;
+color:#fff}
+.tutorial-bubble .tutorial-hint{
+margin:10px 0 0;
+font-size:10px;
+color:#6b7e92}
 .control-heading h1{
 font-size:17px;
 line-height:1.2;

@@ -164,6 +164,8 @@ function renderRequest() {
       pattern = result;
       $("engine-overlay").classList.add("hidden");
       document.querySelector(".control-pane").classList.remove("loading");
+      $("tutorial-start").disabled = false;
+      $("tutorial-start").title = "Explore the controls with a guided tutorial";
       draw();
       updateSummary();
       setStatus("Ready · choose an interaction tool");

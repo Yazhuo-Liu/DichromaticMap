@@ -21,7 +21,7 @@ def build() -> None:
     OUTPUT.mkdir(parents=True)
     for name in (
         "index.html", "index.js", "style.css",
-        "use.html", "use.css", "use.js", "use_worker.js", "web_bridge.py", "docs.css",
+        "use.html", "use.css", "use.js", "tutorial.js", "use_worker.js", "web_bridge.py", "docs.css",
         "sitemap.xml",
     ):
         if name == "index.html":

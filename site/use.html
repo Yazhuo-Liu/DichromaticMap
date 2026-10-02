@@ -22,6 +22,7 @@
   <link rel="icon" type="image/svg+xml" href="./assets/dichromaticmap_logo.svg">
   <link rel="stylesheet" href="./use.css">
   <script defer src="./use.js"></script>
+  <script defer src="./tutorial.js"></script>
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
@@ -56,18 +57,18 @@
 
     <aside class="control-pane loading" aria-label="Controls">
       <div class="control-scroll">
-        <div class="control-heading"><div class="top-line"><img class="app-brand" src="./assets/dichromaticmap_logo_with_title.svg" alt="DichromaticMap"><a href="./index.html" target="_blank" rel="noopener noreferrer">← Website</a></div><h1 id="control-title">FCC ⟨110⟩ GB</h1><p>Coordinates in a₀ · 1 = one lattice constant</p></div>
+        <div class="control-heading"><div class="top-line"><img class="app-brand" src="./assets/dichromaticmap_logo_with_title.svg" alt="DichromaticMap"><button id="tutorial-start" class="tutorial-start" type="button" disabled title="Available after the pattern has loaded" aria-haspopup="dialog" aria-controls="tutorial-bubble" aria-expanded="false">Tutorial</button></div><div class="heading-links"><a href="./index.html" target="_blank" rel="noopener noreferrer">← Website</a></div><h1 id="control-title">FCC ⟨110⟩ GB</h1><p>Coordinates in a₀ · 1 = one lattice constant</p></div>
 
         <div class="tab-card">
           <div class="tab-bar" role="tablist"><button class="active" data-main-tab="orientation" type="button">ORIENTATION</button><button data-main-tab="layers" type="button">LAYERS</button></div>
           <div id="orientation-tab" class="tab-page">
             <button id="import-session" type="button">Import session…</button><input id="session-file" type="file" accept=".dmap,application/zip" hidden>
-            <fieldset><legend>CRYSTAL / AXIS</legend><label>Structure<select id="structure"><option>FCC</option><option>BCC</option><option>SC</option></select></label><label>Viewing axis<select id="axis"><option value="110">⟨110⟩</option><option value="100">⟨100⟩</option><option value="111">⟨111⟩</option><option value="112">⟨112⟩</option><option value="custom">Custom [h k l]</option></select></label><div class="inline hidden" id="custom-axis-row"><input id="custom-axis" value="1 -1 3" aria-label="Custom axis"><button id="apply-axis" type="button">Apply axis</button></div></fieldset>
-            <label class="stacked">CSL preset<select id="preset"></select></label>
-            <label class="stacked">Misorientation <span class="inline-number"><input id="angle-number" type="number" min="0" max="90" step="0.01" value="38.94">°</span></label><input id="angle-slider" type="range" min="0" max="90" step="0.01" value="38.94"><small class="hint" id="angle-hint">Exact θ = 38.94244127° · quaternion (4, 1, 1, 0)</small>
-            <label class="stacked">Display rotation <span class="inline-number"><input id="rotation-number" type="number" min="-180" max="180" step="0.1" value="0">°</span><button id="rotation-reset" type="button">0°</button></label><input id="rotation-slider" type="range" min="-180" max="180" step="0.1" value="0">
+            <fieldset id="crystal-controls"><legend>CRYSTAL / AXIS</legend><label>Structure<select id="structure"><option>FCC</option><option>BCC</option><option>SC</option></select></label><label>Viewing axis<select id="axis"><option value="110">⟨110⟩</option><option value="100">⟨100⟩</option><option value="111">⟨111⟩</option><option value="112">⟨112⟩</option><option value="custom">Custom [h k l]</option></select></label><div class="inline hidden" id="custom-axis-row"><input id="custom-axis" value="1 -1 3" aria-label="Custom axis"><button id="apply-axis" type="button">Apply axis</button></div></fieldset>
+            <div id="angle-controls"><label class="stacked">CSL preset<select id="preset"></select></label>
+            <label class="stacked">Misorientation <span class="inline-number"><input id="angle-number" type="number" min="0" max="90" step="0.01" value="38.94">°</span></label><input id="angle-slider" type="range" min="0" max="90" step="0.01" value="38.94"><small class="hint" id="angle-hint">Exact θ = 38.94244127° · quaternion (4, 1, 1, 0)</small></div>
+            <div id="rotation-controls"><label class="stacked">Display rotation <span class="inline-number"><input id="rotation-number" type="number" min="-180" max="180" step="0.1" value="0">°</span><button id="rotation-reset" type="button">0°</button></label><input id="rotation-slider" type="range" min="-180" max="180" step="0.1" value="0"></div>
           </div>
-          <div id="layers-tab" class="tab-page hidden"><p class="hint" id="layer-info"></p><div class="button-row"><button id="all-layers" type="button">All layers</button><button id="no-layers" type="button">No layers</button></div><div id="layer-checks" class="layer-grid"></div><div class="button-row check-row"><label><input id="show-cell" type="checkbox"> Automatic common cell</label><button id="fit-cell" type="button">Fit cell</button></div></div>
+          <div id="layers-tab" class="tab-page hidden"><p class="hint" id="layer-info"></p><div class="button-row"><button id="all-layers" type="button">All layers</button><button id="no-layers" type="button">No layers</button></div><div id="layer-checks" class="layer-grid"></div><div class="button-row check-row" id="common-cell-controls"><label><input id="show-cell" type="checkbox"> Automatic common cell</label><button id="fit-cell" type="button">Fit cell</button></div></div>
         </div>
 
         <details class="section" open><summary>GB / VECTOR</summary><div class="section-body"><div class="button-row"><button id="pick-gb" type="button">Pick GB&nbsp; R</button><button id="pick-vector" type="button">Measure vector&nbsp; V</button></div><div id="gb-options" class="hidden"><label class="stacked">GB side visibility</label><div class="region-grid"><label><input type="checkbox" data-region="0" checked> G1 left</label><label><input type="checkbox" data-region="1" checked> G1 right</label><label><input type="checkbox" data-region="2" checked> G2 left</label><label><input type="checkbox" data-region="3" checked> G2 right</label></div><div class="button-row"><button id="show-all-sides" type="button">Show all sides F</button><button id="sides-one" type="button">Arrangement 1</button><button id="sides-two" type="button">Arrangement 2</button></div></div><label class="stacked">P2 axial periodic image<input id="axial-repeat" type="number" min="-4" max="4" step="1" value="0"></label></div></details>
@@ -79,12 +80,19 @@
         <details class="section"><summary>MANUAL COMMON CELL</summary><div class="section-body"><button id="pick-cell" type="button">Pick 4 CSL vertices&nbsp; M</button><p class="hint">Pick four markers of one layer around the cell. For local pairs, each grain keeps its own atom vertices.</p><div class="button-row"><button id="undo-cell" type="button">Undo vertex</button><button id="clear-cell" type="button">Clear</button><button id="fit-manual" type="button">Fit</button></div><button id="complete-cell" type="button">Complete by symmetry…</button><label class="stacked"><input id="count-visible" type="checkbox"> Apply GB side visibility to counts</label><pre id="manual-info" class="readout">No manual cell. Pick one layer; each grain is counted inside its own four actual atom vertices.</pre><button id="apply-strain" type="button">Apply bulk strain to selected cell</button><label class="stacked">Selected-cell strain limit<input id="manual-strain" type="number" min="0.01" max="10" step="0.1" value="2"> %</label><label class="stacked">Rotation limit / grain<input id="manual-rotation" type="number" min="0" max="5" step="0.1" value="1"> °</label><pre id="strain-info" class="readout hidden"></pre></div></details>
 
         <div class="status-card" role="status" aria-live="polite" id="status">Loading local Python engine…</div>
-        <label class="export-option"><input id="clean-png" type="checkbox"> Clean PNG (atoms only)</label>
-        <div class="button-row export-row"><button id="export-png" type="button">Export PNG…</button><button id="save-session" type="button">Save session…</button></div>
+        <div id="export-controls"><label class="export-option"><input id="clean-png" type="checkbox"> Clean PNG (atoms only)</label>
+        <div class="button-row export-row"><button id="export-png" type="button">Export PNG…</button><button id="save-session" type="button">Save session…</button></div></div>
       </div>
     </aside>
   </div>
   <footer class="app-citation" aria-label="Citing DichromaticMap"><span>Associated paper citation:</span><a href="https://arxiv.org/abs/2609.14673" target="_blank" rel="noopener noreferrer">K. Ding, Y. Liu, Y. Zhang, L. Wang, X. Han, and T. Zhu, “Misfit-dislocation hierarchy governs sliding of asymmetric non-CSL grain boundaries,” arXiv:2609.14673 (2026).</a><a class="app-citation-bibtex" href="./index.html#cite" target="_blank" rel="noopener noreferrer">BibTeX ↗</a></footer>
   <dialog id="completion-dialog"><h2>Complete common cell</h2><p>Select a candidate to add its generated vertices.</p><div id="completion-options"></div><div class="button-row"><button id="completion-cancel" type="button">Cancel</button><button id="completion-accept" type="button">Use selected cell</button></div></dialog>
+  <div id="tutorial-highlight" class="tutorial-highlight" hidden aria-hidden="true"></div>
+  <section id="tutorial-bubble" class="tutorial-bubble" hidden role="dialog" aria-modal="false" aria-labelledby="tutorial-title" aria-describedby="tutorial-description tutorial-try">
+    <div class="tutorial-top"><span id="tutorial-progress"></span><div class="tutorial-top-actions"><select id="tutorial-language" aria-label="Tutorial language"><option value="en">English</option><option value="zh">中文</option></select><button id="tutorial-close" type="button" aria-label="Close tutorial">×</button></div></div>
+    <div aria-live="polite" aria-atomic="true"><h2 id="tutorial-title"></h2><p id="tutorial-description"></p><p id="tutorial-try" class="tutorial-try"></p><p id="tutorial-shortcuts" class="tutorial-shortcuts"></p></div>
+    <div class="tutorial-navigation"><button id="tutorial-back" type="button">Back</button><button id="tutorial-next" type="button">Next</button></div>
+    <p id="tutorial-hint" class="tutorial-hint"></p>
+  </section>
 </body>
 </html>
