@@ -1,6 +1,6 @@
 <h1 align="center"><img src="docs/images/dichromaticmap_logo_with_title.svg" alt="DichromaticMap — open-source tools for dichromatic pattern analysis" width="720"></h1>
 
-[Project website](https://yazhuoliu.com/DichromaticMap/) · [Use online](https://yazhuoliu.com/DichromaticMap/use.html) · [English user guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) · [中文使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md)
+[Project website](https://yazhuoliu.com/DichromaticMap/) · [Use online](https://yazhuoliu.com/DichromaticMap/use.html) · [English user guide](https://yazhuoliu.com/DichromaticMap/docs/en/index.html) · [中文使用手册](https://yazhuoliu.com/DichromaticMap/docs/zh/index.html)
 
 If you find DichromaticMap helpful, please cite:
 
@@ -59,7 +59,7 @@ Portable Windows, macOS (Apple Silicon / Intel) and Linux applications are
 available as assets on [GitHub Releases](https://github.com/Yazhuo-Liu/DichromaticMap/releases).
 Extract the complete archive for your system and open `DichromaticMap.exe`,
 `DichromaticMap.app` or `DichromaticMap`. These include Python and the viewer
-dependencies. See the [v0.2.2 release notes](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/releases/v0.2.2.md)
+dependencies. See the [v0.2.2 release notes](https://yazhuoliu.com/DichromaticMap/docs/releases/v0.2.2.html)
 for platform and signing details.
 
 **macOS first launch:** The portable `.app` builds are not signed or notarized,
@@ -194,11 +194,11 @@ structure** returns to the original geometry. This operation has a separate
 apply step from the automatic search.
 
 For control-by-control instructions, selection rules, result interpretation
-and troubleshooting, see the [English GUI guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-overview)
-or [中文 GUI 使用指南](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md#gui-overview). Detailed workflows cover
-[vector measurements](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-vector),
-[Near-CSL methods](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-near-csl), and
-[manual cells and counts](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md#gui-manual-cell).
+and troubleshooting, see the [English GUI guide](https://yazhuoliu.com/DichromaticMap/docs/en/index.html#gui-overview)
+or [中文 GUI 使用指南](https://yazhuoliu.com/DichromaticMap/docs/zh/index.html#gui-overview). Detailed workflows cover
+[vector measurements](https://yazhuoliu.com/DichromaticMap/docs/en/index.html#gui-vector),
+[Near-CSL methods](https://yazhuoliu.com/DichromaticMap/docs/en/index.html#gui-near-csl), and
+[manual cells and counts](https://yazhuoliu.com/DichromaticMap/docs/en/index.html#gui-manual-cell).
 
 ## Python usage
 
@@ -232,8 +232,8 @@ supplied projected columns and preserves their layer labels.
 
 | Topic | English | 中文 |
 | --- | --- | --- |
-| Installation, viewer workflows and Python API | [User guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md) | [使用手册](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/README.md) |
-| Algorithms, numerical conventions and implementation | [Implementation details](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/development.md) | [开发细节](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/zh/development.md) |
+| Installation, viewer workflows and Python API | [User guide](https://yazhuoliu.com/DichromaticMap/docs/en/index.html) | [使用手册](https://yazhuoliu.com/DichromaticMap/docs/zh/index.html) |
+| Algorithms, numerical conventions and implementation | [Implementation details](https://yazhuoliu.com/DichromaticMap/docs/en/development.html) | [开发细节](https://yazhuoliu.com/DichromaticMap/docs/zh/development.html) |
 
 ## Project website
 
@@ -248,10 +248,11 @@ grains, exact CSL, local near pairs, periodic-cell strain search, vector and
 manual-cell measurements, selected-cell strain, PNG export, and `.dmap`
 session import/export. The desktop app remains the reference interface.
 
-To preview both pages locally, run:
+To build the public documentation and preview the site locally, install the site extra and run:
 
 ```bash
-conda run --no-capture-output -n lammps2026 python scripts/serve_site.py
+python -m pip install -e ".[site]"
+python scripts/serve_site.py
 ```
 
 Open `http://127.0.0.1:8000/` for the research software homepage. Check that
@@ -279,13 +280,13 @@ build source to **GitHub Actions** to enable deployment.
 
 Report problems through [GitHub Issues](https://github.com/Yazhuo-Liu/DichromaticMap/issues)
 or [yliu3500@gatech.edu](mailto:yliu3500@gatech.edu). Contributions can be
-submitted as a pull request or by email; see the [contribution guide](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/CONTRIBUTING.md).
+submitted as a pull request or by email; see the [contribution guide](https://yazhuoliu.com/DichromaticMap/docs/contributing.html).
 This project is developed by volunteers and does not currently accept external
 donations.
 
-Maintainers can follow the [release build instructions](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/releases/README.md)
+Maintainers can follow the [release build instructions](https://yazhuoliu.com/DichromaticMap/docs/releases/index.html)
 to build Python packages and native applications or prepare a draft release.
 
 ## License
 
-DichromaticMap is distributed under the [MIT License](https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/LICENSE).
+DichromaticMap is distributed under the [MIT License](https://yazhuoliu.com/DichromaticMap/LICENSE).

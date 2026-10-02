@@ -6,6 +6,8 @@ import shutil
 import re
 from zipfile import ZipFile, ZIP_DEFLATED
 
+from build_docs import build_docs, validate_links
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SITE = ROOT / "site"
@@ -19,7 +21,7 @@ def build() -> None:
     OUTPUT.mkdir(parents=True)
     for name in (
         "index.html", "index.js", "style.css",
-        "use.html", "use.css", "use.js", "use_worker.js", "web_bridge.py",
+        "use.html", "use.css", "use.js", "use_worker.js", "web_bridge.py", "docs.css",
         "sitemap.xml",
     ):
         if name == "index.html":
@@ -44,7 +46,9 @@ def build() -> None:
     with ZipFile(vendor / "dichromatic_map.zip", "w", ZIP_DEFLATED) as archive:
         for source in sorted(PACKAGE.glob("*.py")):
             archive.write(source, f"dichromatic_map/{source.name}")
+    build_docs(ROOT, OUTPUT)
     validate_site()
+    validate_links(OUTPUT)
 
 
 def validate_site() -> None:

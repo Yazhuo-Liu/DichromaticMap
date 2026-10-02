@@ -14,13 +14,14 @@ dependencies = ["numpy"]
 
 [project.urls]
 Homepage = "https://yazhuoliu.com/DichromaticMap/"
-Documentation = "https://github.com/Yazhuo-Liu/DichromaticMap/blob/main/docs/en/README.md"
+Documentation = "https://yazhuoliu.com/DichromaticMap/docs/en/index.html"
 Source = "https://github.com/Yazhuo-Liu/DichromaticMap"
 Issues = "https://github.com/Yazhuo-Liu/DichromaticMap/issues"
 
 [project.optional-dependencies]
 gui = ["PySide6", "pyqtgraph"]
-test = ["pytest>=8", "build>=1.2", "setuptools>=77.0.3", "wheel", "packaging>=22"]
+test = ["pytest>=8", "build>=1.2", "setuptools>=77.0.3", "wheel", "packaging>=22", "Markdown>=3.8,<4"]
+site = ["Markdown>=3.8,<4"]
 bundle = ["pyinstaller>=6.16,<7"]
 
 [project.scripts]
