@@ -30,7 +30,8 @@ from dichromatic_map.state import (
     CellVertex, PatternParameters, PatternState, SelectedAtom, default_angle_deg,
 )
 from dichromatic_map.strain import (
-    SelectedCellStrain, candidate_vectors, pareto_cells, solve_cells_chunk,
+    CandidatePreparation, SelectedCellStrain, cache_cell_search, candidate_vectors,
+    get_cached_cell_search, pareto_cells, solve_cells_chunk,
     selected_cell_strain_readout, strain_selected_cell, tensor_readout,
 )
 from dichromatic_map.exports import build_export_tables
@@ -154,12 +155,31 @@ def web_near_start(serialized):
     request = json.loads(serialized)
     args = (float(request["angle"]), float(request["percent"]),
             int(request["index"]), request["lattice"], request["axis"])
-    first, second = candidate_vectors(*args)
-    return {"args": args, "first": first, "second": second, "cells": [], "next": 0}
+    cached = get_cached_cell_search(*args, rows_per_chunk=8)
+    job = {"args": args, "first": None, "second": None, "cells": cached or [],
+           "next": 0, "preparation": None, "complete": cached is not None,
+           "cached": cached is not None}
+    if cached is None:
+        preparation = CandidatePreparation(*args)
+        if preparation.done:
+            job["first"], job["second"] = preparation.step()
+        else:
+            job["preparation"] = preparation
+    return job
 
 
 def web_near_step(job):
     """Compute the next historical eight-row block, independent of device speed."""
+    if job["complete"]:
+        return True
+    if job["preparation"] is not None:
+        candidates = job["preparation"].step(max_offsets=32)
+        if candidates is not None:
+            job["first"], job["second"] = candidates
+            job["preparation"] = None
+        # Yield between preparation blocks, including the transition into
+        # solving, so obsolete searches can stop before either expensive phase.
+        return False
     args, start = job["args"], job["next"]
     stop = start + 8
     if start < len(job["first"]):
@@ -167,12 +187,19 @@ def web_near_step(job):
                                     start, stop, args[3], args[4])
         job["cells"].extend(part)
     job["next"] = min(stop, len(job["first"]))
-    return stop >= len(job["first"])
+    job["complete"] = stop >= len(job["first"])
+    return job["complete"]
 
 
 def web_near_finish(job):
+    if not job["complete"]:
+        raise ValueError("Cannot publish an incomplete browser search")
+    cells = job["cells"] if job["cached"] else pareto_cells(job["cells"])
+    if not job["cached"]:
+        cache_cell_search(cells, *job["args"], rows_per_chunk=8)
+        job["cells"], job["cached"] = cells, True
     return json.dumps([{**_cell(cell), "readout": tensor_readout(cell, job["args"][0])}
-                       for cell in pareto_cells(job["cells"])], allow_nan=False)
+                       for cell in cells], allow_nan=False)
 
 
 def _near_search(request):

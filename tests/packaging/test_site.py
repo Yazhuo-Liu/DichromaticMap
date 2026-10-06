@@ -36,7 +36,8 @@ def test_site_publishes_documentation_and_preserves_deep_links():
     online = (output / "use.html").read_text(encoding="utf-8")
     assert './tutorial.js' in PageLinks(online).targets
     assert './render_data.js' in PageLinks(online).targets
-    for name in ("tutorial.js", "render_data.js", "worker_queue.mjs"):
+    assert './gpu_renderer.js' in PageLinks(online).targets
+    for name in ("tutorial.js", "render_data.js", "gpu_renderer.js", "worker_queue.mjs"):
         assert (output / name).read_bytes() == (ROOT / "site" / name).read_bytes()
     validate_links(output)
 

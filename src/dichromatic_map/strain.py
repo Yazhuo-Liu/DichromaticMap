@@ -1,8 +1,11 @@
 """Uniform cell search and selected-cell strain fitting, independent of Qt."""
 
 from __future__ import annotations
+from collections import OrderedDict
 from dataclasses import dataclass
+from functools import lru_cache
 import os
+from threading import RLock
 import numpy as np
 from .crystal import get_geometry, rotation_matrix_2d
 from .cells import StrainedCell, bases, determinant, reduce_cell, validate_cell_vertices
@@ -10,6 +13,11 @@ from .cells import StrainedCell, bases, determinant, reduce_cell, validate_cell_
 DEFAULT_STRAIN_PERCENT = 2.0
 DEFAULT_SEARCH_INDEX = 12
 MAX_VECTORS = 320
+_CANDIDATE_CACHE_LIMIT = 32
+_CELL_SEARCH_CACHE_LIMIT = 16
+_candidate_cache = OrderedDict()
+_cell_search_cache = OrderedDict()
+_cache_lock = RLock()
 
 
 @dataclass(frozen=True)
@@ -141,12 +149,17 @@ def strain_selected_cell(
     )
 
 
-def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110"):
-    """Approximately compatible integer translations, without NxN distances."""
-    if not 0 < percent <= 10 or not 2 <= extent <= 40:
-        raise ValueError("strain must be (0,10]% and search index 2..40")
-    e = percent / 100
-    b1, b2 = bases(angle, lattice, axis)
+def _candidate_parameters(angle, percent, extent, lattice, axis):
+    angle, percent = float(angle), float(percent)
+    if (not np.isfinite(angle) or not np.isfinite(percent)
+            or not 0 < percent <= 10 or not 2 <= extent <= 40 or int(extent) != extent):
+        raise ValueError("finite angle, strain (0,10]% and search index 2..40 required")
+    geometry = get_geometry(lattice, axis)
+    return angle, percent, int(extent), geometry.lattice, geometry.axis
+
+
+@lru_cache(maxsize=39)
+def _integer_translation_grid(extent):
     integers = np.column_stack(
         (
             np.r_[
@@ -159,65 +172,148 @@ def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110"):
             ],
         )
     )
-    v = integers @ b1.T
-    lengths = np.linalg.norm(v, axis=1)
-    inverse_b2 = np.linalg.inv(b2)
-    coordinates = v @ inverse_b2.T
-    nearest = np.rint(coordinates).astype(int)
-    # ||v-w|| <= e (||v||+||w||) is necessary for two bounded strains.
-    # Convert the physical separation bound to an integer-coordinate bound;
-    # the fixed FCC [110] factor sqrt(2) is invalid for other layer bases.
-    inverse_norm = np.linalg.norm(inverse_b2, ord=2)
-    radii = np.ceil((2 * e / (1 - e)) * lengths * inverse_norm).astype(int) + 1
-    # A compatible w also satisfies ||v-w|| <= 2e ||v|| / (1-e).
-    # Apply this necessary bound in each integer coordinate, retaining slack
-    # for the acceptance tolerance and floating-point basis transformations.
-    bound_e = e + 1e-12
-    coordinate_bounds = (
-        (2 * bound_e / (1 - bound_e))
-        * lengths[:, None]
-        * np.linalg.norm(inverse_b2, axis=1)
-        + 1e-10
-    )
-    displacement = nearest - coordinates
-    n1, n2, errors, sizes = [], [], [], []
-    for dx in range(-int(radii.max()), int(radii.max()) + 1):
-        for dy in range(-int(radii.max()), int(radii.max()) + 1):
-            # Discard impossible integer offsets before computing distances.
-            # Traversal and retained-vector order remain dx, dy, then integer.
-            use = np.flatnonzero(
-                (radii >= max(abs(dx), abs(dy)))
-                & (np.abs(nearest[:, 0] + dx) <= extent)
-                & (np.abs(nearest[:, 1] + dy) <= extent)
-                & (np.abs(displacement[:, 0] + dx) <= coordinate_bounds[:, 0])
-                & (np.abs(displacement[:, 1] + dy) <= coordinate_bounds[:, 1])
-            )
+    # Bytes-backed storage cannot be made writable by a preparation caller.
+    return np.frombuffer(integers.tobytes(), dtype=integers.dtype).reshape(integers.shape)
+
+
+def _cache_get(cache, key):
+    with _cache_lock:
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+        return value
+
+
+def _cache_put(cache, key, value, limit):
+    with _cache_lock:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > limit:
+            cache.popitem(last=False)
+
+
+class CandidatePreparation:
+    """Bounded, resumable candidate enumeration, in historical search order.
+
+    Construction does only the vectorized O(extent**2) setup. Each step visits
+    a bounded number of integer offsets so a caller can yield/cancel between
+    steps. Only completed preparations populate the bounded shared cache.
+    """
+
+    def __init__(self, angle, percent, extent, lattice="FCC", axis="110"):
+        self.parameters = _candidate_parameters(angle, percent, extent, lattice, axis)
+        self._result = _cache_get(_candidate_cache, self.parameters)
+        self.completed_offsets = self.total_offsets = 0
+        if self._result is not None:
+            return
+        angle, percent, self.extent, lattice, axis = self.parameters
+        self.e = percent / 100
+        b1, self.b2 = bases(angle, lattice, axis)
+        self.integers = _integer_translation_grid(self.extent)
+        self.v = self.integers @ b1.T
+        self.lengths = np.linalg.norm(self.v, axis=1)
+        inverse_b2 = np.linalg.inv(self.b2)
+        coordinates = self.v @ inverse_b2.T
+        self.nearest = np.rint(coordinates).astype(int)
+        # Same necessary geometric bounds and slack as the synchronous search.
+        inverse_norm = np.linalg.norm(inverse_b2, ord=2)
+        self.radii = np.ceil(
+            (2 * self.e / (1 - self.e)) * self.lengths * inverse_norm
+        ).astype(int) + 1
+        bound_e = self.e + 1e-12
+        self.coordinate_bounds = (
+            (2 * bound_e / (1 - bound_e)) * self.lengths[:, None]
+            * np.linalg.norm(inverse_b2, axis=1) + 1e-10
+        )
+        self.displacement = self.nearest - coordinates
+        self.radius = int(self.radii.max())
+        self.side = 2 * self.radius + 1
+        self.total_offsets = self.side * self.side
+        self._dx = None
+        self._use_x = np.empty(0, dtype=int)
+        self._n1, self._n2, self._errors, self._sizes = [], [], [], []
+
+    @property
+    def done(self):
+        return self._result is not None
+
+    def _finish(self):
+        if not self._n1:
+            first = np.empty((0, 2), dtype=int)
+            second = np.empty((0, 2), dtype=int)
+        else:
+            first, second = np.concatenate(self._n1), np.concatenate(self._n2)
+            error, size = np.concatenate(self._errors), np.concatenate(self._sizes)
+            chosen = np.unique(np.r_[
+                np.argsort(size, kind="stable")[:MAX_VECTORS // 2],
+                np.argsort(error, kind="stable")[:MAX_VECTORS // 2],
+            ])
+            first, second = first[chosen], second[chosen]
+        first.setflags(write=False)
+        second.setflags(write=False)
+        self._result = first, second
+        _cache_put(_candidate_cache, self.parameters, self._result, _CANDIDATE_CACHE_LIMIT)
+        self._n1.clear()
+        self._n2.clear()
+        self._errors.clear()
+        self._sizes.clear()
+
+    def step(self, max_offsets=32):
+        """Return candidate array copies on completion, otherwise None."""
+        if int(max_offsets) != max_offsets or max_offsets < 1:
+            raise ValueError("max_offsets must be a positive integer")
+        if self.done:
+            return tuple(array.copy() for array in self._result)
+        stop = min(self.total_offsets, self.completed_offsets + int(max_offsets))
+        while self.completed_offsets < stop:
+            dx = self.completed_offsets // self.side - self.radius
+            dy = self.completed_offsets % self.side - self.radius
+            self.completed_offsets += 1
+            if dx != self._dx:
+                self._dx = dx
+                # The x tests are identical for every dy. Filter once per dx,
+                # then do y tests only on these survivors, preserving integer
+                # order and the original radii >= max(abs(dx), abs(dy)) test.
+                self._use_x = np.flatnonzero(
+                    (self.radii >= abs(dx))
+                    & (np.abs(self.nearest[:, 0] + dx) <= self.extent)
+                    & (np.abs(self.displacement[:, 0] + dx)
+                       <= self.coordinate_bounds[:, 0])
+                )
+            if not len(self._use_x):
+                continue
+            rows = self._use_x
+            use = rows[np.flatnonzero(
+                (self.radii[rows] >= abs(dy))
+                & (np.abs(self.nearest[rows, 1] + dy) <= self.extent)
+                & (np.abs(self.displacement[rows, 1] + dy)
+                   <= self.coordinate_bounds[rows, 1])
+            )]
             if not len(use):
                 continue
-            other = nearest[use] + (dx, dy)
-            w = other @ b2.T
+            other = self.nearest[use] + (dx, dy)
+            w = other @ self.b2.T
             l2 = np.linalg.norm(w, axis=1)
-            size = lengths[use] + l2
-            error = np.linalg.norm(v[use] - w, axis=1) / size
-            mask = (error <= e + 1e-12) & (l2 > 0)
+            size = self.lengths[use] + l2
+            error = np.linalg.norm(self.v[use] - w, axis=1) / size
+            mask = (error <= self.e + 1e-12) & (l2 > 0)
             if not np.any(mask):
                 continue
-            n1.append(integers[use[mask]])
-            n2.append(other[mask])
-            errors.append(error[mask])
-            sizes.append(size[mask])
-    if not n1:
-        return np.empty((0, 2), dtype=int), np.empty((0, 2), dtype=int)
-    i, j = np.concatenate(n1), np.concatenate(n2)
-    err, size = np.concatenate(errors), np.concatenate(sizes)
-    # Retain short translations and accurate larger translations.
-    chosen = np.unique(
-        np.r_[
-            np.argsort(size, kind="stable")[: MAX_VECTORS // 2],
-            np.argsort(err, kind="stable")[: MAX_VECTORS // 2],
-        ]
-    )
-    return i[chosen], j[chosen]
+            self._n1.append(self.integers[use[mask]])
+            self._n2.append(other[mask])
+            self._errors.append(error[mask])
+            self._sizes.append(size[mask])
+        if self.completed_offsets == self.total_offsets:
+            self._finish()
+            return tuple(array.copy() for array in self._result)
+        return None
+
+
+def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110"):
+    """Approximately compatible translations; bounded cache, fresh array copies."""
+    preparation = CandidatePreparation(angle, percent, extent, lattice, axis)
+    result = preparation.step(max(1, preparation.total_offsets))
+    return result
 
 
 def pareto_cells(cells, limit=12):
@@ -233,6 +329,92 @@ def pareto_cells(cells, limit=12):
             result.append(cell)
             best = cell.max_strain
     return result[:limit]
+
+
+def _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk):
+    if int(rows_per_chunk) != rows_per_chunk or rows_per_chunk < 1:
+        raise ValueError("rows_per_chunk must be a positive integer")
+    return (*_candidate_parameters(angle, percent, extent, lattice, axis),
+            int(rows_per_chunk))
+
+
+def _copy_search_cell(cell, readonly=False):
+    arrays = [np.array(getattr(cell, field), copy=True)
+              for field in ("m1", "m2", "f1", "f2", "cell")]
+    if readonly:
+        for array in arrays:
+            array.setflags(write=False)
+    return StrainedCell(*arrays, cell.max_strain, cell.lattice, cell.axis)
+
+
+def get_cached_cell_search(
+    angle, percent, extent, lattice="FCC", axis="110", *, rows_per_chunk=8
+):
+    """Return fresh result copies, or None; use in the coordinating process.
+
+    Keys preserve the exact floating parameters and normalized crystal. The
+    numerical chunk policy is included because roundoff may select a different
+    equivalent representative under a different partition.
+    """
+    key = _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk)
+    cached = _cache_get(_cell_search_cache, key)
+    return None if cached is None else [_copy_search_cell(cell) for cell in cached]
+
+
+def cache_cell_search(
+    cells, angle, percent, extent, lattice="FCC", axis="110", *, rows_per_chunk=8
+):
+    """Remember a complete successful Pareto result, with private array copies.
+
+    Asynchronous callers must only publish a current, complete generation;
+    cancelled/partial/failed work must not enter this cache. Empty successful
+    results are cached too. Entries and result sizes are bounded.
+    """
+    key = _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk)
+    cells = tuple(cells)
+    if len(cells) > 12:
+        raise ValueError("Cache only a complete Pareto result of at most 12 cells")
+    for cell in cells:
+        if not isinstance(cell, StrainedCell):
+            raise TypeError("Search cache requires StrainedCell results")
+        for field in ("m1", "m2", "f1", "f2", "cell"):
+            array = np.asarray(getattr(cell, field))
+            if array.shape != (2, 2) or array.dtype.kind not in "biuf":
+                raise ValueError("Search cache requires real numeric 2-by-2 cell arrays")
+        if not np.isfinite(cell.max_strain):
+            raise ValueError("Search cache requires a finite strain")
+        geometry = get_geometry(cell.lattice, cell.axis)
+        if (geometry.lattice, geometry.axis) != key[3:5]:
+            raise ValueError("Search result crystal does not match the cache key")
+    stored = tuple(_copy_search_cell(cell, readonly=True) for cell in cells)
+    _cache_put(_cell_search_cache, key, stored, _CELL_SEARCH_CACHE_LIMIT)
+
+
+def find_strained_cells(
+    angle, percent, extent, lattice="FCC", axis="110", *, rows_per_chunk=8
+):
+    """Synchronous bounded search with the same cache used by async callers."""
+    key = _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk)
+    cached = get_cached_cell_search(*key[:5], rows_per_chunk=key[5])
+    if cached is not None:
+        return cached
+    first, second = candidate_vectors(*key[:5])
+    parts = []
+    for start in range(0, len(first), key[5]):
+        parts.extend(solve_cells_chunk(
+            key[0], key[1], first, second, start, start + key[5], key[3], key[4]
+        )[1])
+    result = pareto_cells(parts)
+    cache_cell_search(result, *key[:5], rows_per_chunk=key[5])
+    return result
+
+
+def clear_strain_caches():
+    """Release completed candidate/search entries and reusable integer grids."""
+    with _cache_lock:
+        _candidate_cache.clear()
+        _cell_search_cache.clear()
+        _integer_translation_grid.cache_clear()
 
 
 def _least_norm_cell_solution(constraints, rhs):

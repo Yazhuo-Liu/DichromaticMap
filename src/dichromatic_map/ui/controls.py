@@ -421,7 +421,8 @@ class ControlDock:
         self.worker_spin.setRange(1, max(1, os.cpu_count() or 1))
         self.worker_spin.setValue(self.owner.compute.worker_count)
         self.worker_spin.setToolTip(
-            "Processes used for buffered grain generation and batched same-layer CSL searches"
+            "Upper limit for background computation. Large multilayer matches can use "
+            "additional workers; small tasks use fewer. Set 1 if process creation is restricted."
         )
         self.worker_spin.valueChanged.connect(self.owner._on_worker_count_changed)
         display_layout.addWidget(self.worker_spin, 4, 1)

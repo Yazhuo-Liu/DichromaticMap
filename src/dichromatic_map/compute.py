@@ -14,7 +14,16 @@ import numpy as np
 from .crystal import ProjectedGrain, projected_columns, get_geometry
 from .cells import count_cell_atoms
 from .matching import local_near_pairs, same_layer_coincidence_sites
-from .strain import candidate_vectors, solve_cells_chunk, pareto_cells
+from .strain import (
+    candidate_vectors, solve_cells_chunk, pareto_cells,
+    get_cached_cell_search, cache_cell_search,
+)
+
+
+# Small interactive buffers avoid process startup and full-array transfers.
+PROCESS_MATCH_POINTS = 100_000
+PROCESS_MATCH_LAYERS = 4
+NEAR_PARALLEL_CANDIDATES = 256
 
 
 def worker_initializer():
@@ -26,6 +35,11 @@ def worker_initializer():
         _blas_limit = threadpool_limits(limits=1)
     except ImportError:
         pass  # NumPy-only installations remain supported.
+
+
+def worker_ready():
+    """Start a numerical worker without transferring projected grains."""
+    return os.getpid()
 
 
 def local_match_layers_worker(grain1, grain2, distance, layers):
@@ -64,29 +78,74 @@ def coincidence_layer_worker(
 ) -> tuple[int, np.ndarray]:
     """Process-pool entry point for one stacking-layer coincidence search."""
 
-    only_first = grain_1.layers == layer
-    only_second = grain_2.layers == layer
+    only_first = grain_1.layer_selections().get(layer, slice(0, 0))
+    only_second = grain_2.layer_selections().get(layer, slice(0, 0))
+    return os.getpid(), _coincidence_selection(
+        grain_1, grain_2, tolerance, only_first, only_second,
+    )
+
+
+def _coincidence_selection(grain_1, grain_2, tolerance, only_first, only_second):
+    first_positions = grain_1.positions[only_first]
+    second_positions = grain_2.positions[only_second]
     first = ProjectedGrain(
-        grain_1.positions[only_first],
-        np.zeros(np.count_nonzero(only_first), dtype=np.int16),
-        grain_1.half_indices[only_first],
+        first_positions,
+        np.zeros(len(first_positions), dtype=np.int16),
+        grain_1.half_indices[only_first], 1,
     )
     second = ProjectedGrain(
-        grain_2.positions[only_second],
-        np.zeros(np.count_nonzero(only_second), dtype=np.int16),
-        grain_2.half_indices[only_second],
+        second_positions,
+        np.zeros(len(second_positions), dtype=np.int16),
+        grain_2.half_indices[only_second], 1,
     )
-    return os.getpid(), same_layer_coincidence_sites(first, second, tolerance)[0]
+    return same_layer_coincidence_sites(first, second, tolerance)[0]
 
 
 def coincidence_layers_worker(grain_1, grain_2, tolerance, layers):
     """A bounded batch of phases, avoiding one full-array transfer per layer."""
+    first = grain_1.layer_selections()
+    second = grain_2.layer_selections()
     return os.getpid(), tuple(
         (
             int(layer),
-            coincidence_layer_worker(grain_1, grain_2, tolerance, int(layer))[1],
+            _coincidence_selection(
+                grain_1, grain_2, tolerance,
+                first.get(int(layer), slice(0, 0)),
+                second.get(int(layer), slice(0, 0)),
+            ),
         )
         for layer in layers
+    )
+
+
+def grain_layer_subset(grain, layers, selections=None):
+    """Transfer only requested phases, preserving physical IDs and row order."""
+    selections = grain.layer_selections() if selections is None else selections
+    layers = set(map(int, layers))
+    if selections.keys() <= layers:
+        return grain
+    selected = [selection for layer, selection in selections.items() if layer in layers]
+    if not selected:
+        selected = [slice(0, 0)]
+    if len(selected) == 1:
+        indices = selected[0]
+    elif all(isinstance(selection, slice) for selection in selected):
+        selected.sort(key=lambda selection: selection.start)
+        if all(first.stop == second.start for first, second in zip(selected, selected[1:])):
+            indices = slice(selected[0].start, selected[-1].stop)
+        else:
+            indices = np.concatenate([
+                np.arange(selection.start, selection.stop) for selection in selected
+            ])
+    else:
+        indices = np.sort(np.concatenate([
+            np.arange(selection.start, selection.stop)
+            if isinstance(selection, slice) else selection
+            for selection in selected
+        ]))
+    return ProjectedGrain(
+        grain.positions[indices], grain.layers[indices], grain.half_indices[indices],
+        grain.layer_count,
     )
 
 
@@ -100,8 +159,15 @@ class NearSearch:
 
     def __init__(self, workers=1, executor=None):
         self.workers = max(1, int(workers))
-        self.executor = executor
-        self.owns_executor = executor is None
+        # Cold process startup outweighs bounded interactive cell searches.
+        # Larger candidate sets benefit from two threads without that startup.
+        self.executor = executor if isinstance(executor, ThreadPoolExecutor) else None
+        self.owns_executor = self.executor is None
+        self.active_workers = 1
+        self._executor_capacity = (
+            min(self.workers, self.executor._max_workers)
+            if self.executor is not None else min(2, self.workers)
+        )
         self.generation = 0
         self.jobs = deque()
         self.running = {}
@@ -135,25 +201,22 @@ class NearSearch:
             if self._closed:
                 raise RuntimeError("Near-CSL search is closed")
             self._cancel_locked()
-            if self.executor is None:
-                self.executor = (
-                    ProcessPoolExecutor(
-                        max_workers=self.workers,
-                        mp_context=multiprocessing.get_context("spawn"),
-                        initializer=worker_initializer,
-                    )
-                    if self.workers > 1
-                    else ThreadPoolExecutor(max_workers=1)
-                )
             self.args = (angle, percent, extent, geometry.lattice, geometry.axis)
-            self.jobs.append(("prepare", candidate_vectors, self.args))
             self.busy = True
+            self.active_workers = 1
+            if self.executor is None:
+                self.executor = ThreadPoolExecutor(max_workers=self._executor_capacity)
+            cached = get_cached_cell_search(*self.args)
+            if cached is not None:
+                self._result = cached
+                return
+            self.jobs.append(("prepare", candidate_vectors, self.args))
             self._submit_locked()
 
     def _submit_locked(self):
         """Refill workers on completion, independently of GUI progress polling."""
         try:
-            while not self._closed and self.jobs and len(self.running) < self.workers:
+            while not self._closed and self.jobs and len(self.running) < self.active_workers:
                 stage, function, args = self.jobs.popleft()
                 future = self.executor.submit(function, *args)
                 self.running[future] = (
@@ -169,6 +232,7 @@ class NearSearch:
                 self._result = pareto_cells([
                     cell for start in sorted(self.parts) for cell in self.parts[start]
                 ])
+                cache_cell_search(self._result, *self.args)
                 self.parts.clear()
         except Exception as error:
             self._cancel_locked()
@@ -184,6 +248,10 @@ class NearSearch:
                     result = future.result()
                     if stage == "prepare":
                         i, j = result
+                        self.active_workers = (
+                            min(2, self._executor_capacity)
+                            if len(i) >= NEAR_PARALLEL_CANDIDATES else 1
+                        )
                         for start in range(0, len(i), 8):
                             self.jobs.append(("solve", solve_cells_chunk, (
                                 self.args[0], self.args[1], i, j, start, start + 8,
@@ -238,25 +306,76 @@ class ComputeSession:
         self.manual_count_future = None
         self.manual_count_pending = None
         self.manual_count_running_key = None
+        self.matching_warmup_futures = []
+        self.matching_warmup_failed = False
 
     def configure(self, worker_count):
+        for future in self.matching_warmup_futures:
+            future.cancel()
+        self.matching_warmup_futures = []
+        self.matching_warmup_failed = False
         old_executor, self.executor = self.executor, None
         if old_executor is not None:
             old_executor.shutdown(wait=False, cancel_futures=True)
         self.worker_count = int(worker_count)
+        if self.local_thread_executor is not None:
+            self.local_thread_executor.shutdown(wait=False, cancel_futures=True)
+            self.local_thread_executor = None
         if self.worker_count > 1:
             self.executor = ProcessPoolExecutor(
-                max_workers=self.worker_count,
+                max_workers=min(4, self.worker_count),
                 mp_context=multiprocessing.get_context("spawn"),
                 initializer=worker_initializer,
             )
 
     def background_executor(self):
-        if self.executor is not None:
-            return self.executor
+        return self.thread_executor()
+
+    def thread_executor(self):
         if self.local_thread_executor is None:
-            self.local_thread_executor = ThreadPoolExecutor(max_workers=1)
+            self.local_thread_executor = ThreadPoolExecutor(max_workers=min(2, self.worker_count))
         return self.local_thread_executor
+
+    def _large_multilayer_match(self, point_count, layer_count):
+        return (
+            self.executor is not None
+            and point_count >= PROCESS_MATCH_POINTS
+            and layer_count >= PROCESS_MATCH_LAYERS
+        )
+
+    def warm_matching_pool(self, point_count, layer_count):
+        """Warm after the first substantial match has already been published.
+
+        Even a 300k-point match is slower with cold spawned workers. Starting
+        them after publication keeps the first result responsive; repeated
+        large, many-layer searches can then amortize startup and transfers.
+        """
+        if (
+            not self._large_multilayer_match(point_count, layer_count)
+            or self.matching_warmup_futures or self.matching_warmup_failed
+        ):
+            return
+        try:
+            for _ in range(min(4, self.worker_count)):
+                self.matching_warmup_futures.append(self.executor.submit(worker_ready))
+        except Exception:
+            self.matching_warmup_failed = True
+            for future in self.matching_warmup_futures:
+                future.cancel()
+
+    def matching_executor(self, point_count, layer_count):
+        if (
+            self._large_multilayer_match(point_count, layer_count)
+            and self.matching_warmup_futures and not self.matching_warmup_failed
+            and all(future.done() for future in self.matching_warmup_futures)
+        ):
+            if all(
+                not future.cancelled() and future.exception() is None
+                for future in self.matching_warmup_futures
+            ):
+                return self.executor, min(4, self.worker_count)
+            self.matching_warmup_failed = True
+        return self.thread_executor(), 1
 
     def cancel_parallel(self):
         self.parallel_generation += 1
@@ -272,6 +391,9 @@ class ComputeSession:
         self.parallel_payload = {}
 
     def close(self):
+        for future in self.matching_warmup_futures:
+            future.cancel()
+        self.matching_warmup_futures = []
         self.manual_count_pending = None
         if self.manual_count_future is not None:
             self.manual_count_future.cancel()

@@ -17,6 +17,14 @@ def bridge():
     return module
 
 
+@pytest.fixture(autouse=True)
+def empty_search_cache(bridge):
+    from dichromatic_map.strain import clear_strain_caches
+    clear_strain_caches()
+    yield
+    clear_strain_caches()
+
+
 @pytest.mark.parametrize("overrides", [
     {},
     {"angle": 0},
@@ -90,6 +98,7 @@ def test_fixed_search_batches_preserve_historical_matrices_and_tensor_readout(br
 def test_search_step_returns_between_bounded_candidate_rows(bridge, monkeypatch):
     serialized = json.dumps({"angle": 22, "percent": 2, "index": 12,
                              "lattice": "FCC", "axis": "110"})
+    bridge.candidate_vectors(22, 2, 12, "FCC", "110")
     job = bridge.web_near_start(serialized)
     calls = []
     original = bridge.solve_cells_chunk
@@ -107,9 +116,63 @@ def test_search_step_returns_between_bounded_candidate_rows(bridge, monkeypatch)
 
 
 def test_zero_candidate_search_finishes_without_solving(bridge, monkeypatch):
-    monkeypatch.setattr(bridge, "candidate_vectors", lambda *args: (np.empty((0, 2), int), np.empty((0, 2), int)))
+    class EmptyPreparation:
+        done = True
+
+        def __init__(self, *args):
+            pass
+
+        def step(self):
+            return np.empty((0, 2), int), np.empty((0, 2), int)
+
+    monkeypatch.setattr(bridge, "CandidatePreparation", EmptyPreparation)
     monkeypatch.setattr(bridge, "solve_cells_chunk", lambda *args: pytest.fail("empty search must not solve"))
     job = bridge.web_near_start(json.dumps({"angle": 22, "percent": 2, "index": 8,
                                           "lattice": "FCC", "axis": "110"}))
     assert bridge.web_near_step(job)
     assert json.loads(bridge.web_near_finish(job)) == []
+
+
+def test_cold_candidate_preparation_yields_before_solving_and_partial_work_is_not_cached(bridge, monkeypatch):
+    serialized = json.dumps({"angle": 22, "percent": 2, "index": 40,
+                             "lattice": "FCC", "axis": "110"})
+    job = bridge.web_near_start(serialized)
+    preparation = job["preparation"]
+    assert preparation is not None and preparation.completed_offsets == 0
+    assert not bridge.web_near_step(job)
+    assert preparation.completed_offsets == 32
+    assert job["first"] is None and job["next"] == 0
+    with pytest.raises(ValueError, match="incomplete"):
+        bridge.web_near_finish(job)
+    assert bridge.get_cached_cell_search(22, 2, 40, "FCC", "110") is None
+
+
+def test_completed_browser_search_reuses_cached_result_without_preparation_or_solving(bridge, monkeypatch):
+    request = {"angle": 22, "percent": 2, "index": 12, "lattice": "FCC", "axis": "110"}
+    serialized = json.dumps(request)
+    job = bridge.web_near_start(serialized)
+    while not bridge.web_near_step(job):
+        pass
+    expected = bridge.web_near_finish(job)
+
+    def forbidden(*args):
+        pytest.fail("a cached full result must skip preparation and solving")
+
+    monkeypatch.setattr(bridge, "CandidatePreparation", forbidden)
+    monkeypatch.setattr(bridge, "solve_cells_chunk", forbidden)
+    cached = bridge.web_near_start(serialized)
+    assert cached["cached"] and cached["complete"]
+    assert bridge.web_near_step(cached)
+    assert bridge.web_near_finish(cached) == expected
+
+
+def test_candidate_preparation_finishes_with_identical_order_to_sync_api(bridge):
+    serialized = json.dumps({"angle": 39.5, "percent": 2, "index": 40,
+                             "lattice": "FCC", "axis": "110"})
+    job = bridge.web_near_start(serialized)
+    while job["preparation"] is not None:
+        assert not bridge.web_near_step(job)
+    expected = bridge.candidate_vectors(39.5, 2, 40, "FCC", "110")
+    np.testing.assert_array_equal(job["first"], expected[0])
+    np.testing.assert_array_equal(job["second"], expected[1])
+    assert job["next"] == 0

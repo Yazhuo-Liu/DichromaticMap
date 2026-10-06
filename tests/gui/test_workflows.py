@@ -522,8 +522,14 @@ def test_late_count_result_cannot_restore_a_cleared_cell(gui, monkeypatch):
         release.set()
 
 
-def test_spawned_updates_publish_only_the_latest_geometry(gui):
+def test_spawned_updates_publish_only_the_latest_geometry(gui, monkeypatch):
     window = gui.window(lattice="FCC", axis="110", workers=2)
+    # Exercise the spawned matching path even though this small buffer normally
+    # stays on threads to avoid cold process startup.
+    monkeypatch.setattr(
+        window.compute, "matching_executor",
+        lambda *_args: (window.compute.executor, 2),
+    )
     assert window.compute.worker_count == 2
     controls = window.controls
     controls.axis_combo.setCurrentIndex(controls.axis_combo.findData("111"))
@@ -669,4 +675,5 @@ def test_axis_change_discards_pending_selected_strain_results(gui, local_diamond
     np.testing.assert_array_equal(state.deformations, [np.eye(2), np.eye(2)])
     np.testing.assert_array_equal(state.translations, np.zeros((2, 2)))
     assert window.compute.worker_count == 2
-    assert window.compute.worker_process_ids - {os.getpid()}
+    # This small interactive request is intentionally handled by threads.
+    assert window.compute.worker_process_ids == {os.getpid()}

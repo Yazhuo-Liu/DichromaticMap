@@ -142,17 +142,17 @@ def count_cell_atoms(
                 lattice,
                 axis,
                 translations[grain_index],
+                layers=(layer,) if layer >= 0 else None,
             )
         except GeometryLimitError as error:
             raise GeometryLimitError(
                 "Manual cell exceeds the atom enumeration limit; select a smaller cell. "
                 "View zoom does not affect counting."
             ) from error
-        # A manual cell belongs to one axial layer. Filter before polygon and
-        # corner distance calculations, which otherwise process every layer.
-        selected = grain.layers == layer if layer >= 0 else slice(None)
-        positions = grain.positions[selected]
-        layers = grain.layers[selected]
+        # A manual cell belongs to one axial layer; only that phase was
+        # generated. Keep every original layer ID in the count arrays.
+        positions = grain.positions
+        layers = grain.layers
         inside, boundary, half_open = cell_membership(positions, polygon)
         half_open_edges = None
         half_open_corners = None

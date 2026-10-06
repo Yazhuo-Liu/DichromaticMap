@@ -4,7 +4,7 @@ Lengths use a0; half_indices use a0/2. Importing this module needs only NumPy.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from fractions import Fraction
 from itertools import permutations, product
@@ -302,6 +302,50 @@ class ProjectedGrain:
     layers: np.ndarray
     half_indices: np.ndarray
     layer_count: int = 2
+    _layer_index: tuple[np.ndarray, dict] | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    def layer_selections(self) -> dict[int, slice | np.ndarray]:
+        """Index each present layer, preserving its original point order.
+
+        Generated grains group points by layer, so each selection is a view
+        rather than an array-wide Boolean mask. Arbitrarily ordered external
+        grains use stable integer indices. The dataclass freezes attributes,
+        not array contents: check a snapshot once per call so in-place changes
+        to ``layers`` invalidate the index. Obtain this mapping once before a
+        layer loop; checking it separately inside the loop repeats that scan.
+        """
+        cached = self._layer_index
+        if cached is not None and np.array_equal(self.layers, cached[0]):
+            return cached[1].copy()
+
+        selections = {}
+        if len(self.layers):
+            starts = np.r_[0, np.flatnonzero(self.layers[1:] != self.layers[:-1]) + 1]
+            stops = np.r_[starts[1:], len(self.layers)]
+            run_layers = self.layers[starts]
+            if len(np.unique(run_layers)) == len(run_layers):
+                selections = {
+                    int(layer): slice(int(start), int(stop))
+                    for layer, start, stop in zip(run_layers, starts, stops)
+                }
+            else:
+                order = np.argsort(self.layers, kind="stable")
+                ordered_layers = self.layers[order]
+                starts = np.r_[
+                    0, np.flatnonzero(ordered_layers[1:] != ordered_layers[:-1]) + 1
+                ]
+                stops = np.r_[starts[1:], len(order)]
+                for start, stop in zip(starts, stops):
+                    indices = order[start:stop]
+                    indices.setflags(write=False)
+                    selections[int(ordered_layers[start])] = indices
+        snapshot = self.layers.copy()
+        snapshot.setflags(write=False)
+        # Publish both parts together for concurrent readers of the same grain.
+        object.__setattr__(self, "_layer_index", (snapshot, selections))
+        return selections.copy()
 
 
 @dataclass(frozen=True)
@@ -404,6 +448,8 @@ def projected_columns(
     lattice: str = "FCC",
     axis: str = "110",
     translation: np.ndarray | None = None,
+    *,
+    layers=None,
 ) -> ProjectedGrain:
     """Generate only the columns intersecting an a0-scaled screen rectangle.
 
@@ -412,6 +458,9 @@ def projected_columns(
     ``deformation`` acts in screen coordinates after the grain rotation.
     ``half_indices`` remain reference-crystal indices even after deformation.
     ``translation`` is a uniform post-deformation shift in analysis x,y / a0.
+    ``layers`` optionally selects axial phase IDs. Output retains the usual
+    ascending layer order, reference IDs and total ``layer_count``; omitted
+    phases are never generated. An empty selection returns an empty grain.
     """
 
     if not np.isfinite(width) or not np.isfinite(height) or width <= 0 or height <= 0:
@@ -428,6 +477,20 @@ def projected_columns(
         raise ValueError("translation must contain two finite coordinates")
 
     geometry = get_geometry(lattice, axis)
+    if layers is None:
+        selected_layers = range(geometry.layer_count)
+    else:
+        try:
+            selected_layers = tuple(layers)
+        except TypeError:
+            raise ValueError("layers must contain valid axial layer indices") from None
+        if any(
+            not isinstance(layer, (int, np.integer))
+            or not 0 <= layer < geometry.layer_count
+            for layer in selected_layers
+        ):
+            raise ValueError("layers must contain valid axial layer indices")
+        selected_layers = sorted(set(selected_layers))
     radians = np.deg2rad(rotation_deg)
     cosine, sine = np.cos(radians), np.sin(radians)
     transform = np.array([[cosine, -sine], [sine, cosine]])
@@ -448,7 +511,8 @@ def projected_columns(
     candidate_count = 0
     # Include points on the viewport edge despite floating-point rotation noise.
     crop_epsilon = 1.0e-10 * max(1.0, float(np.max(np.abs(corners))))
-    for layer, offset in enumerate(geometry.layer_offsets_half_indices):
+    for layer in selected_layers:
+        offset = geometry.layer_offsets_half_indices[layer]
         screen_offset = transform @ (offset @ geometry.frame[:, :2] / 2.0) + translation
         integer_corners = (corners - screen_offset) @ inverse_basis.T
         minima = np.floor(integer_corners.min(axis=0)).astype(int) - 1
@@ -478,9 +542,9 @@ def projected_columns(
         all_indices.append(coordinates @ geometry.basis_half_indices.T + offset)
 
     return ProjectedGrain(
-        np.concatenate(all_positions, axis=0),
-        np.concatenate(all_layers, axis=0),
-        np.concatenate(all_indices, axis=0),
+        np.concatenate(all_positions, axis=0) if all_positions else np.empty((0, 2)),
+        np.concatenate(all_layers, axis=0) if all_layers else np.empty(0, dtype=np.int16),
+        np.concatenate(all_indices, axis=0) if all_indices else np.empty((0, 3), dtype=int),
         geometry.layer_count,
     )
 

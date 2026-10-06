@@ -31,6 +31,8 @@ let drawFrame;
 let canvasMetrics;
 let transformCache;
 let visibilityCache;
+let visibleRevision = 0;
+let gpuRenderer;
 let renderCoverage;
 let pointerStart;
 let dragDistance = 0;
@@ -49,8 +51,7 @@ function setStatus(message) {
   const g1 = pattern ? visiblePoints(0).length : 0;
   const g2 = pattern ? visiblePoints(1).length : 0;
   const cslPoints = pattern ? visibleCSL() : [];
-  const layerCounts = new Map();
-  for (const point of cslPoints) layerCounts.set(point[2], (layerCounts.get(point[2]) || 0) + 1);
+  const layerCounts = pattern ? visibleData().layerCounts : new Map();
   const byLayer = Array.from(layerCounts, ([layer, count]) => `${layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`}: ${count}`).join(", ");
   setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`);
 }
@@ -153,9 +154,12 @@ function inView(point) {
   return x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height;
 }
 function sideVisible(point, grain) {
+  return sideVisibleXY(point[0], point[1], grain);
+}
+function sideVisibleXY(x, y, grain) {
   if (state.boundary.length !== 2) return true;
   const [a, b] = state.boundary;
-  const cross = (b[0] - a[0]) * (point[1] - a[1]) - (b[1] - a[1]) * (point[0] - a[0]);
+  const cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
   return (state.regions[2 * grain] && cross >= -1e-9) ||
          (state.regions[2 * grain + 1] && cross <= 1e-9);
 }
@@ -173,35 +177,75 @@ function visibleData() {
   const selection = `${[...state.visibleLayers[0]]}|${[...state.visibleLayers[1]]}|${state.boundary.flat()}|${state.regions}|${state.nearEnabled}|${state.nearMethod}`;
   if (visibilityCache?.pattern === pattern && visibilityCache.transform === transform &&
       visibilityCache.selection === selection) return visibilityCache;
-  const data = {pattern, transform, selection, points: [[], []],
-    atoms: [[], []], csl: [], cslMarkers: [], local: [], localMarkers: []};
-  const r = transform.rect;
-  const projected = (point) => {
-    const [x, y] = screen(point);
-    return x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height
-      ? {point, x, y} : null;
+  const {DenseRows, SelectedRows} = window.DichromaticRenderData;
+  const makeSelection = (source, stride, local = false) => {
+    const rows = DenseRows.from(source || [], stride);
+    const result = {rows, indices: new Uint32Array(rows.length), x: new Float64Array(rows.length),
+      y: new Float64Array(rows.length), count: 0};
+    if (local) { result.x2 = new Float64Array(rows.length); result.y2 = new Float64Array(rows.length); }
+    result.points = new SelectedRows(rows, result);
+    return result;
   };
-  if (pattern) {
-    for (let grain = 0; grain < 2; grain++) {
-      for (const point of pattern.grains[grain]) {
-        if (!state.visibleLayers[grain].has(point[2]) || !sideVisible(point, grain)) continue;
-        const record = projected(point);
-        if (record) { data.points[grain].push(point); data.atoms[grain].push(record); }
+  // Reuse projected buffers and index selections across pans; no row arrays
+  // or per-atom records are allocated during a redraw.
+  const data = visibilityCache?.pattern === pattern ? visibilityCache : {
+    pattern, atoms: [makeSelection(pattern?.grains[0], 6), makeSelection(pattern?.grains[1], 6)],
+    cslMarkers: makeSelection(pattern?.coincidences, 3),
+    localMarkers: makeSelection(pattern?.local, 5, true), layerCounts: new Map(), maxLocalSeparation: 0,
+  };
+  data.transform = transform; data.selection = selection; data.revision = ++visibleRevision;
+  data.points = [data.atoms[0].points, data.atoms[1].points];
+  data.csl = data.cslMarkers.points; data.local = data.localMarkers.points;
+  data.layerCounts.clear(); data.maxLocalSeparation = 0;
+  const r = transform.rect;
+  const {cosine, sine, cx, cy, ox, oy, width, height} = transform;
+  for (let grain = 0; grain < 2; grain++) {
+    const record = data.atoms[grain], flat = record.rows.flat;
+    record.count = 0;
+    for (let index = 0; index < record.rows.length; index++) {
+      const offset = index * 6, px = flat[offset], py = flat[offset + 1], layer = flat[offset + 2];
+      if (!state.visibleLayers[grain].has(layer) || !sideVisibleXY(px, py, grain)) continue;
+      const x = ox + (cosine * px - sine * py - cx) * r.width / width;
+      const y = oy - (sine * px + cosine * py - cy) * r.height / height;
+      if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) {
+        const at = record.count++;
+        record.indices[at] = index; record.x[at] = x; record.y[at] = y;
       }
     }
-    for (const point of pattern.coincidences) {
-      if (!state.visibleLayers[0].has(point[2]) || !state.visibleLayers[1].has(point[2]) ||
-          !sideVisible(point, 0) || !sideVisible(point, 1)) continue;
-      const record = projected(point);
-      if (record) { data.csl.push(point); data.cslMarkers.push(record); }
+  }
+  const csl = data.cslMarkers, common = csl.rows.flat;
+  csl.count = 0;
+  for (let index = 0; index < csl.rows.length; index++) {
+    const offset = index * 3, px = common[offset], py = common[offset + 1], layer = common[offset + 2];
+    if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer) ||
+        !sideVisibleXY(px, py, 0) || !sideVisibleXY(px, py, 1)) continue;
+    const x = ox + (cosine * px - sine * py - cx) * r.width / width;
+    const y = oy - (sine * px + cosine * py - cy) * r.height / height;
+    if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) {
+      const at = csl.count++;
+      csl.indices[at] = index; csl.x[at] = x; csl.y[at] = y;
+      data.layerCounts.set(layer, (data.layerCounts.get(layer) || 0) + 1);
     }
-    if (state.nearEnabled && state.nearMethod === "local") {
-      for (const pair of pattern.local || []) {
-        if (!state.visibleLayers[0].has(pair[4]) || !state.visibleLayers[1].has(pair[4]) ||
-            !sideVisible(pair, 0) || !sideVisible([pair[2], pair[3]], 1) ||
-            !projected([(pair[0] + pair[2]) / 2, (pair[1] + pair[3]) / 2])) continue;
-        const [x1, y1] = screen(pair), [x2, y2] = screen([pair[2], pair[3]]);
-        data.local.push(pair); data.localMarkers.push({x1, y1, x2, y2});
+  }
+  const local = data.localMarkers, pairs = local.rows.flat;
+  local.count = 0;
+  if (state.nearEnabled && state.nearMethod === "local") {
+    for (let index = 0; index < local.rows.length; index++) {
+      const offset = index * 5, ax = pairs[offset], ay = pairs[offset + 1],
+        bx = pairs[offset + 2], by = pairs[offset + 3], layer = pairs[offset + 4];
+      if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer) ||
+          !sideVisibleXY(ax, ay, 0) || !sideVisibleXY(bx, by, 1)) continue;
+      const mx = (ax + bx) / 2, my = (ay + by) / 2;
+      const x = ox + (cosine * mx - sine * my - cx) * r.width / width;
+      const y = oy - (sine * mx + cosine * my - cy) * r.height / height;
+      if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) {
+        const at = local.count++;
+        local.indices[at] = index;
+        local.x[at] = ox + (cosine * ax - sine * ay - cx) * r.width / width;
+        local.y[at] = oy - (sine * ax + cosine * ay - cy) * r.height / height;
+        local.x2[at] = ox + (cosine * bx - sine * by - cx) * r.width / width;
+        local.y2[at] = oy - (sine * bx + cosine * by - cy) * r.height / height;
+        data.maxLocalSeparation = Math.max(data.maxLocalSeparation, Math.hypot(ax - bx, ay - by));
       }
     }
   }
@@ -414,19 +458,39 @@ function drawAtoms(context, clean = false) {
   const r = plotRect();
   const visible = visibleData();
   context.save(); context.beginPath(); context.rect(r.left, r.top, r.width, r.height); context.clip();
-  for (let grain = 0; grain < 2; grain++) {
-    for (const {point, x, y} of visible.atoms[grain]) {
-      const layer = point[2];
-      const radius = Math.max(2, Math.min(8, 4.5 * (state.sizes[layer] || 1) / Math.sqrt(state.scale)));
-      marker(context, x, y, radius, state.symbols[layer],
-        grain === 0 ? "#2e6799" : state.colors[1], grain === 0 ? state.colors[0] : null);
+  let gpuCanvas = null;
+  if (context === ctx && !clean && window.DichromaticGPU &&
+      visible.atoms[0].count + visible.atoms[1].count >= 12000) {
+    if (gpuRenderer === undefined) gpuRenderer = window.DichromaticGPU.createRenderer();
+    if (gpuRenderer) {
+      const metrics = canvasMetrics || refreshCanvasMetrics();
+      gpuCanvas = gpuRenderer.render({width: metrics.width, height: metrics.height,
+        dpr: Math.min(devicePixelRatio || 1, 2), plot: r, atoms: visible.atoms,
+        revision: visible.revision, colors: state.colors, symbols: state.symbols, sizes: state.sizes, scale: state.scale});
+    }
+  }
+  if (gpuCanvas) {
+    context.drawImage(gpuCanvas, 0, 0, canvasMetrics.width, canvasMetrics.height);
+  } else {
+    for (let grain = 0; grain < 2; grain++) {
+      const atoms = visible.atoms[grain];
+      for (let index = 0; index < atoms.count; index++) {
+        const layer = atoms.rows.flat[atoms.indices[index] * 6 + 2], x = atoms.x[index], y = atoms.y[index];
+        const radius = Math.max(2, Math.min(8, 4.5 * (state.sizes[layer] || 1) / Math.sqrt(state.scale)));
+        marker(context, x, y, radius, state.symbols[layer],
+          grain === 0 ? "#2e6799" : state.colors[1], grain === 0 ? state.colors[0] : null);
+      }
     }
   }
   if (!clean) {
-    for (const {point, x, y} of visible.cslMarkers) {
-      marker(context, x, y, 10, state.symbols[point[2]], "#e5a50a", null, 2.2);
+    const csl = visible.cslMarkers;
+    for (let index = 0; index < csl.count; index++) {
+      const layer = csl.rows.flat[csl.indices[index] * 3 + 2];
+      marker(context, csl.x[index], csl.y[index], 10, state.symbols[layer], "#e5a50a", null, 2.2);
     }
-    for (const {x1, y1, x2, y2} of visible.localMarkers) {
+    const local = visible.localMarkers;
+    for (let index = 0; index < local.count; index++) {
+      const x1 = local.x[index], y1 = local.y[index], x2 = local.x2[index], y2 = local.y2[index];
       context.strokeStyle = "#aa45bb"; context.lineWidth = 1.4; context.setLineDash([2, 2]);
       context.beginPath(); context.moveTo(x1, y1); context.lineTo(x2, y2); context.stroke(); context.setLineDash([]);
       context.beginPath(); context.arc((x1 + x2) / 2, (y1 + y2) / 2, 10, 0, Math.PI * 2);
@@ -573,9 +637,8 @@ function updateSummary() {
   $("search-index").closest("label").classList.toggle("hidden", state.nearMethod !== "strain");
   $("near-results").classList.toggle("hidden", !state.nearSolutions.length);
   if (state.nearEnabled && state.nearMethod === "local" && pattern?.local) {
-    const pairs = visibleLocal();
-    const lengths = pairs.map(p => Math.hypot(p[0] - p[2], p[1] - p[3]));
-    $("near-info").textContent = `Local same-layer mutual nearest pairs\nVisible pairs: ${pairs.length}\nMaximum visible separation: ${lengths.length ? lengths.reduce((a, b) => Math.max(a, b), 0).toFixed(5) : "—"} a₀\nOriginal atom positions retained.`;
+    const visible = visibleData();
+    $("near-info").textContent = `Local same-layer mutual nearest pairs\nVisible pairs: ${visible.localMarkers.count}\nMaximum visible separation: ${visible.localMarkers.count ? visible.maxLocalSeparation.toFixed(5) : "—"} a₀\nOriginal atom positions retained.`;
   }
   $("fit-cell").disabled = !(state.nearCell || pattern?.exact_cell);
   $("complete-cell").disabled = !(state.manual.length === 2 || state.manual.length === 3);
@@ -691,47 +754,68 @@ function setMode(mode) {
   setStatus(({idle:"Ready · choose an interaction tool",boundary:"Pick B1, then B2 on visible atoms",vector:"Pick P1, then P2 on visible atoms",cell:"Pick four same-layer CSL or near-pair markers"})[state.mode]);
 }
 function nearestAtom(x, y) {
-  let best, distance = Infinity;
+  let bestGrain = -1, bestIndex = -1, distance = Infinity;
+  const visible = visibleData();
   for (let grain = 0; grain < 2; grain++) {
-    for (const p of visiblePoints(grain)) {
-      const at = screen(p), d = Math.hypot(at[0] - x, at[1] - y);
-      if (d < distance) { distance = d; best = {position: p.slice(0, 2), grain, layer: p[2], half_indices: p.slice(3, 6)}; }
+    const atoms = visible.atoms[grain];
+    for (let index = 0; index < atoms.count; index++) {
+      const d = Math.hypot(atoms.x[index] - x, atoms.y[index] - y);
+      if (d < distance) { distance = d; bestGrain = grain; bestIndex = atoms.indices[index]; }
     }
   }
-  return distance <= 14 ? best : null;
+  if (distance > 14 || bestGrain < 0) return null;
+  const flat = visible.atoms[bestGrain].rows.flat, offset = bestIndex * 6;
+  return {position: [flat[offset], flat[offset + 1]], grain: bestGrain, layer: flat[offset + 2],
+    half_indices: [flat[offset + 3], flat[offset + 4], flat[offset + 5]]};
 }
 function nearestCommon(x, y) {
-  let best, distance = Infinity, tiedLayers = new Set();
-  for (const p of visibleCSL()) {
-    const at = screen(p), d = Math.hypot(at[0] - x, at[1] - y);
+  let bestSource = null, bestIndex = -1, distance = Infinity;
+  const tiedLayers = new Set(), visible = visibleData(), csl = visible.cslMarkers;
+  for (let index = 0; index < csl.count; index++) {
+    const row = csl.indices[index], layer = csl.rows.flat[row * 3 + 2];
+    const d = Math.hypot(csl.x[index] - x, csl.y[index] - y);
     if (d < distance - 1e-6) {
-      distance = d; tiedLayers = new Set([p[2]]);
-      best = {position: p.slice(0, 2), layer: p[2], source:"CSL"};
-    } else if (Math.abs(d - distance) < 1e-6) tiedLayers.add(p[2]);
+      distance = d; tiedLayers.clear(); tiedLayers.add(layer);
+      bestSource = "CSL"; bestIndex = row;
+    } else if (Math.abs(d - distance) < 1e-6) tiedLayers.add(layer);
   }
-  for (const p of visibleLocal()) {
-    const mid = [(p[0] + p[2]) / 2, (p[1] + p[3]) / 2];
-    const at = screen(mid), d = Math.hypot(at[0] - x, at[1] - y);
+  const local = visible.localMarkers, flat = local.rows.flat, t = visible.transform, r = t.rect;
+  for (let index = 0; index < local.count; index++) {
+    const row = local.indices[index], offset = row * 5, layer = flat[offset + 4];
+    const mx = (flat[offset] + flat[offset + 2]) / 2, my = (flat[offset + 1] + flat[offset + 3]) / 2;
+    const sx = t.ox + (t.cosine * mx - t.sine * my - t.cx) * r.width / t.width;
+    const sy = t.oy - (t.sine * mx + t.cosine * my - t.cy) * r.height / t.height;
+    const d = Math.hypot(sx - x, sy - y);
     if (d < distance - 1e-6) {
-      distance = d; tiedLayers = new Set([p[4]]);
-      best = {position: mid, endpoints: [p.slice(0, 2), p.slice(2, 4)], layer: p[4], source:"local"};
-    } else if (Math.abs(d - distance) < 1e-6) tiedLayers.add(p[4]);
+      distance = d; tiedLayers.clear(); tiedLayers.add(layer);
+      bestSource = "local"; bestIndex = row;
+    } else if (Math.abs(d - distance) < 1e-6) tiedLayers.add(layer);
   }
-  if (distance > 15) return null;
-  return tiedLayers.size > 1 ? {ambiguous:true} : best;
+  if (distance > 15 || bestIndex < 0) return null;
+  if (tiedLayers.size > 1) return {ambiguous: true};
+  if (bestSource === "CSL") {
+    const offset = bestIndex * 3, common = csl.rows.flat;
+    return {position: [common[offset], common[offset + 1]], layer: common[offset + 2], source: "CSL"};
+  }
+  const offset = bestIndex * 5;
+  return {position: [(flat[offset] + flat[offset + 2]) / 2, (flat[offset + 1] + flat[offset + 3]) / 2],
+    endpoints: [[flat[offset], flat[offset + 1]], [flat[offset + 2], flat[offset + 3]]],
+    layer: flat[offset + 4], source: "local"};
 }
 function resolveCommon(candidate) {
   if (candidate.endpoints) return candidate;
   const endpoints = [];
   for (let grain = 0; grain < 2; grain++) {
-    let best, distance = Infinity;
-    for (const p of pattern.grains[grain]) {
-      if (p[2] !== candidate.layer) continue;
-      const d = Math.hypot(p[0] - candidate.position[0], p[1] - candidate.position[1]);
-      if (d < distance) { distance = d; best = p.slice(0, 2); }
+    let best = -1, distance = Infinity;
+    const rows = visibleData().atoms[grain].rows, flat = rows.flat;
+    for (let index = 0; index < rows.length; index++) {
+      const offset = index * 6;
+      if (flat[offset + 2] !== candidate.layer) continue;
+      const d = Math.hypot(flat[offset] - candidate.position[0], flat[offset + 1] - candidate.position[1]);
+      if (d < distance) { distance = d; best = offset; }
     }
     if (distance > 1e-5) throw new Error("The CSL marker's atoms are unavailable. Recalculate the view.");
-    endpoints.push(best);
+    endpoints.push([flat[best], flat[best + 1]]);
   }
   return {...candidate, endpoints};
 }

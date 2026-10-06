@@ -94,6 +94,13 @@ bring each offset back into the planar fundamental parallelogram without changin
 The implementation rejects geometries requiring more than 256 phases. Geometry arrays are
 read-only and cached by normalized lattice and axis, with up to 64 cached geometries.
 
+`projected_columns(..., layers=...)` enumerates only the requested axial phases,
+preserving physical layer IDs and the total layer count. Selected-layer cell
+counts use this path. `ProjectedGrain.layer_selections()` caches layer slices or
+stable indices for matching and plotting, avoiding repeated scans of every atom
+for every layer. In-place changes to externally supplied layer arrays invalidate
+the index; callers obtain the mapping once before their layer loop.
+
 ### Fixed-axis misorientation range
 
 The reference angle input uses the symmetry of the undeformed cubic lattice.
@@ -510,22 +517,40 @@ Marker sizes update only when the calculated diameter changes; rebuilding layer 
 that cache. Visible counts reuse already filtered, rotated scatter coordinates. Panning still
 updates visible statistics and annotations; it does not eliminate pixel painting or buffer generation.
 
-With more than one worker, a shared `ProcessPoolExecutor` uses the `spawn` context and
-module-level numerical worker functions. Grains are separate jobs; exact and local matching
-use bounded batches of layers. Manual counts and automatic strain search share the executor.
-If available, `threadpoolctl` restricts each worker's internal BLAS pool to one thread.
-
-With one worker, local matching, manual counting and automatic search use background
-single-thread executors. Grain generation and exact-site detection run synchronously;
-the small selected-cell fit is also synchronous. The entire application is not guaranteed
-to perform every computation off the UI thread.
+Lattice previews, grain generation, manual counts and automatic strain search use
+background threads, bounded by the configured `CPU workers` limit. Small searches
+solve eight-row blocks serially; larger candidate sets use at most two concurrent blocks.
+Exact and local matching choose a background thread or a shared `spawn` process pool
+according to workload. A first large multilayer match uses threads, then warms the
+process pool in the background; later large matches use it once ready. Warmup failures
+retain the thread path, and changing workers or closing the window cancels warmup.
+Matching jobs receive only their bounded group of layers,
+avoiding repeated full-grain transfers. If available, `threadpoolctl` restricts each
+process worker's internal BLAS pool to one thread. The small selected-cell fit
+remains synchronous.
 
 `NearSearch` prepares candidates, then schedules eight starting rows of the upper-triangular
 vector-pair index set per job. At most the configured worker count is in flight. A generation
 counter invalidates old requests, cancels jobs that have not started and discards stale results;
 already running numerical work is allowed to finish. Completed chunks are merged in starting-row
-order so process completion order cannot select a different tied candidate. Viewer geometry
+order so task completion order cannot select a different tied candidate. Viewer geometry
 signatures and count-request keys similarly prevent stale results from replacing current state.
+
+Candidate preparation reuses a bounded integer-grid cache and keeps up to 32 completed
+candidate sets. Up to 16 completed search results are cached in the coordinating process.
+Keys use exact angle/strain values, normalized lattice/axis, index bound and the eight-row
+partition; angles are not rounded. Returned matrices are copies. Partial, cancelled and
+failed searches do not populate the result cache. Preparation can yield between bounded
+offset batches without changing candidate traversal or retained-vector order.
+
+The browser keeps transferred Float64 buffers as dense rows and reuses typed selection
+indices and screen-coordinate buffers during navigation. For at least 12,000 visible atoms,
+WebGL 2 can draw circles and diamonds in their original paint order, then composite them
+into the Canvas plot. Unsupported symbols, devices and lost contexts use Canvas.
+Only final pixel coordinates are converted to Float32; numerical geometry, identities,
+filtering and picking retain Float64 values. Visibility revisions invalidate GPU uploads
+after navigation or selection changes. Normal PNG includes the composed plot; clean PNG
+uses the Canvas atom renderer and omits analysis overlays.
 
 These resource bounds, candidate sampling and numerical tolerances are part of the implemented
 algorithm. They support interactive geometric analysis and do not establish relaxed structures,

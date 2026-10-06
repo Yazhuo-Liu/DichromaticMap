@@ -53,6 +53,7 @@ from ..compute import (
     generate_grain_worker,
     coincidence_layers_worker,
     local_match_layers_worker,
+    grain_layer_subset,
 )
 from ..matching import same_layer_coincidence_sites
 from .controls import ControlDock
@@ -1349,7 +1350,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             return
         if self.compute.near_search is None:
             self.compute.near_search = NearSearch(
-                self.compute.worker_count, executor=self.compute.executor
+                self.compute.worker_count, executor=self.compute.thread_executor()
             )
         self.compute.near_search.request(
             self.state.angle_deg,
@@ -1359,6 +1360,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             axis=self.state.geometry.axis,
         )
         self.near_poll_timer.start()
+        self._poll_near_search()  # Cached complete searches need no timer delay.
 
     def _poll_near_search(self):
         if (
@@ -1426,11 +1428,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_debounce_timer.stop()
         self._cancel_parallel_work()
         self._clear_local_pairs()
-        executor = self.compute.background_executor()
+        executor, matching_workers = self.compute.matching_executor(
+            sum(len(grain.positions) for grain in self.state.grains),
+            self.state.geometry.layer_count,
+        )
         groups = np.array_split(
             np.arange(self.state.geometry.layer_count),
-            min(self.compute.worker_count, self.state.geometry.layer_count),
+            min(matching_workers, self.state.geometry.layer_count),
         )
+        selections = [grain.layer_selections() for grain in self.state.grains]
         distance = self.controls.local_distance_spin.value()
         self.compute.parallel_stage = "local"
         self.compute.parallel_payload = {
@@ -1441,8 +1447,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.compute.parallel_futures = [
                 executor.submit(
                     local_match_layers_worker,
-                    self.state.grains[0],
-                    self.state.grains[1],
+                    grain_layer_subset(self.state.grains[0], layers, selections[0]),
+                    grain_layer_subset(self.state.grains[1], layers, selections[1]),
                     distance,
                     layers,
                 )
@@ -1616,7 +1622,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             return
         args, payload = self.compute.regeneration_pending
         self.compute.regeneration_pending = None
-        executor = self.compute.background_executor()
+        executor = self.compute.thread_executor()
         try:
             self.compute.parallel_futures = []
             for grain_args in args:
@@ -1639,18 +1645,22 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if len(self.state.grains) != 2:
             return
         self._cancel_parallel_work()
-        executor = self.compute.background_executor()
+        executor, matching_workers = self.compute.matching_executor(
+            sum(len(grain.positions) for grain in self.state.grains),
+            self.state.geometry.layer_count,
+        )
         tolerance = COINCIDENCE_TOLERANCE_FACTOR
         layer_groups = np.array_split(
             np.arange(self.state.geometry.layer_count),
-            min(self.compute.worker_count, self.state.geometry.layer_count),
+            min(matching_workers, self.state.geometry.layer_count),
         )
+        selections = [grain.layer_selections() for grain in self.state.grains]
         try:
             self.compute.parallel_futures = [
                 executor.submit(
                     coincidence_layers_worker,
-                    self.state.grains[0],
-                    self.state.grains[1],
+                    grain_layer_subset(self.state.grains[0], layers, selections[0]),
+                    grain_layer_subset(self.state.grains[1], layers, selections[1]),
                     tolerance,
                     layers,
                 )
@@ -1718,6 +1728,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._update_title()
             if self.local_active:
                 self._start_local_matching()
+            else:
+                self.compute.warm_matching_pool(
+                    sum(len(grain.positions) for grain in self.state.grains),
+                    self.state.geometry.layer_count,
+                )
             return
 
         if stage == "local":
@@ -1737,6 +1752,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 self.state.local_updating = False
                 self.plot._update_local_overlay()
                 self._update_status()
+                self.compute.warm_matching_pool(
+                    sum(len(grain.positions) for grain in self.state.grains),
+                    self.state.geometry.layer_count,
+                )
 
     def _parallel_failure(self, error: Exception) -> None:
         local_failure = self.compute.parallel_stage == "local"
@@ -1844,6 +1863,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.state.visible_atom_masks = []
         grain_items = enumerate(self.state.grains) if grains_changed else ()
         for grain_index, grain in grain_items:
+            selections = grain.layer_selections()
             if boundary_ready:
                 mask = selected_region_mask(
                     grain.positions,
@@ -1854,13 +1874,20 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 )
             else:
                 mask = np.ones(len(grain.positions), dtype=bool)
-            mask &= np.isin(
-                grain.layers, tuple(self.state.visible_grain_layers[grain_index])
-            )
-            self.state.visible_atom_masks.append(mask)
+            visible_mask = np.zeros(len(grain.positions), dtype=bool)
             for layer, item in enumerate(self.plot.grain_layer_items[grain_index]):
-                layer_mask = grain.layers == layer
-                self.plot._set_scatter(item, grain.positions[mask & layer_mask])
+                selection = selections.get(layer, slice(0, 0))
+                if layer in self.state.visible_grain_layers[grain_index]:
+                    layer_mask = mask[selection]
+                    visible_mask[selection] = layer_mask
+                    points = (
+                        grain.positions[selection][layer_mask]
+                        if boundary_ready else grain.positions[selection]
+                    )
+                else:
+                    points = np.empty((0, 2))
+                self.plot._set_scatter(item, points)
+            self.state.visible_atom_masks.append(visible_mask)
 
         for layer, (points, item) in enumerate(
             zip(self.state.coincident_points, self.plot.coincidence_items, strict=True)

@@ -173,13 +173,16 @@ test("transfer render coordinates losslessly and preserve Array picking/session 
   const received = structuredClone(raw, {transfer: [...raw.grains, raw.coincidences, raw.local].map(array => array.buffer)});
   assert.equal(raw.grains[0].byteLength, 0);
   const result = decodeRenderResult(received);
-  assert.deepEqual(result.grains[0][0], [Math.PI, -Math.E, 1, -7, 9, 3]);
-  assert.deepEqual(result.grains[1], []);
-  assert.deepEqual(result.coincidences[0], [1e-14, -0, 1]);
-  assert.deepEqual(result.local[0], [Math.PI, 1, Math.PI + .03, 1.000001, 1]);
-  assert.equal(JSON.stringify(result.grains[0][0].slice(3, 6)), "[-7,9,3]");
+  assert.equal(result.grains[0].flat, received.grains[0], "decoding keeps the transferred buffer without row allocation");
+  assert.deepEqual(result.grains[0].row(0), [Math.PI, -Math.E, 1, -7, 9, 3]);
+  assert.equal(result.grains[1].length, 0);
+  assert.deepEqual(result.coincidences.row(0), [1e-14, -0, 1]);
+  assert.deepEqual(result.local.row(0), [Math.PI, 1, Math.PI + .03, 1.000001, 1]);
+  assert.equal(JSON.stringify(result.grains[0].row(0).slice(3, 6)), "[-7,9,3]");
   assert.ok(Array.isArray(result.grains[0].filter(point => point[2] === 1)[0]));
   assert.equal(result.angle, 22);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)).grains, [[ [Math.PI,-Math.E,1,-7,9,3] ],[]],
+    "explicit serialization materializes the original row API");
 });
 
 test("retain legacy render responses and distinguish no local matching from no matches", () => {
@@ -190,7 +193,13 @@ test("retain legacy render responses and distinguish no local matching from no m
     grains: [new Float64Array(), new Float64Array()], coincidences: new Float64Array(), local: null};
   assert.equal(decodeRenderResult(raw).local, null);
   raw.local = new Float64Array();
-  assert.deepEqual(decodeRenderResult(raw).local, []);
+  assert.equal(decodeRenderResult(raw).local.length, 0);
+  const originalRow = renderData.DenseRows.prototype.row;
+  renderData.DenseRows.prototype.row = () => {throw new Error("decoding must not materialize rows");};
+  try {
+    const decoded = decodeRenderResult(raw);
+    assert.equal(decoded.grains[0].flat,raw.grains[0]);
+  } finally {renderData.DenseRows.prototype.row = originalRow;}
 });
 
 test("Worker downloads resources during NumPy startup and transfers copied Pyodide buffers", async () => {
@@ -236,8 +245,8 @@ test("Worker downloads resources during NumPy startup and transfers copied Pyodi
   assert.deepEqual(dispatches.map(data => data.value), [2]);
   assert.equal(messages.find(message => message.id === 1).name, "AbortError");
   const result = renderData.decodeRenderResult(messages.find(message => message.id === 2).result);
-  assert.deepEqual(result.grains[0][0], [Math.PI, -Math.E, 1, -7, 9, 3]);
-  assert.deepEqual(result.coincidences[0], [.125, .25, 1]);
+  assert.deepEqual(result.grains[0].row(0), [Math.PI, -Math.E, 1, -7, 9, 3]);
+  assert.deepEqual(result.coincidences.row(0), [.125, .25, 1]);
   assert.equal(wasmArrays[0].length, 6, "transferring the owned copy must not detach WASM data");
   assert.deepEqual(released, ["grain0", "grain1", "csl"]);
   assert.deepEqual(destroyed, ["grain0", "grain1", "csl", "grains", "payload"]);

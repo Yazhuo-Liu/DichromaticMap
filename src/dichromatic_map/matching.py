@@ -144,12 +144,16 @@ def local_near_pairs(
         raise ValueError("Local pair distance must be in (0, 0.5] a0")
     if not np.isfinite(exact_tolerance) or exact_tolerance < 0:
         raise ValueError("Exact tolerance must be finite and nonnegative")
+    first_layers = grain1.layer_selections()
+    second_layers = grain2.layer_selections()
     if layers is None:
-        layers = np.union1d(grain1.layers, grain2.layers)
+        layers = sorted(first_layers.keys() | second_layers.keys())
     batches = []
     for layer in layers:
-        first = grain1.positions[grain1.layers == layer]
-        second = grain2.positions[grain2.layers == layer]
+        first = grain1.positions[first_layers.get(layer, slice(0, 0))]
+        second = grain2.positions[second_layers.get(layer, slice(0, 0))]
+        if not len(first) or not len(second):
+            continue
         forward = _nearest_in_radius(first, second, distance)
         reverse = _nearest_in_radius(second, first, distance)
         i = np.flatnonzero(forward >= 0)
@@ -252,15 +256,17 @@ def same_layer_coincidence_sites(
         y_bits = cells[:, 1].astype(np.uint64) & mask
         return (x_bits << np.uint64(32)) | y_bits
 
+    first_layers = grain_1.layer_selections()
+    second_layers = grain_2.layer_selections()
     count = max(
         getattr(grain_1, "layer_count", 2),
         getattr(grain_2, "layer_count", 2),
-        int(np.max(grain_1.layers, initial=-1)) + 1,
-        int(np.max(grain_2.layers, initial=-1)) + 1,
+        max(first_layers, default=-1) + 1,
+        max(second_layers, default=-1) + 1,
     )
     for layer in range(count):
-        first = grain_1.positions[grain_1.layers == layer]
-        second = grain_2.positions[grain_2.layers == layer]
+        first = grain_1.positions[first_layers.get(layer, slice(0, 0))]
+        second = grain_2.positions[second_layers.get(layer, slice(0, 0))]
         if len(first) == 0 or len(second) == 0:
             sites_by_layer.append(np.empty((0, 2)))
             continue

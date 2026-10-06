@@ -81,6 +81,26 @@ def test_exact_overlay_completion_preserves_existing_grain_scatters(gui, monkeyp
         np.testing.assert_array_equal(np.column_stack(item.getData()), expected)
 
 
+def test_matching_warmup_is_requested_only_after_first_result_is_published(gui, monkeypatch):
+    window = gui.window(workers=4)
+    calls = []
+
+    def warmup(point_count, layer_count):
+        assert window.compute.parallel_stage is None
+        assert not window.state.csl_updating
+        assert len(window.state.coincident_points[0]) > 0
+        calls.append((point_count, layer_count))
+
+    monkeypatch.setattr(window.compute, "warm_matching_pool", warmup)
+    window._start_parallel_coincidences()
+    assert calls == []
+    gui.settle(window)
+    assert calls == [(
+        sum(len(grain.positions) for grain in window.state.grains),
+        window.state.geometry.layer_count,
+    )]
+
+
 def test_navigation_coalesces_counts_and_updates_final_view(gui, monkeypatch):
     window = gui.window(workers=1)
     original = window._refresh_visible_counts
