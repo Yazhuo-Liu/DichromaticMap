@@ -73,7 +73,7 @@ if (typeof document !== "undefined") (() => {
   const get = id => document.getElementById(id);
   const start = get("tutorial-start"), bubble = get("tutorial-bubble"), highlight = get("tutorial-highlight");
   const language = get("tutorial-language");
-  language.value = navigator.language?.startsWith("zh") ? "zh" : "en";
+  language.value = "en";
   let index = -1, target = null, saved = null, frame = 0;
   const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
 
@@ -115,6 +115,9 @@ if (typeof document !== "undefined") (() => {
     }
     bubble.hidden = false;
     bubble.lang = zh ? "zh-CN" : "en";
+    const languageLabel = get("tutorial-language-label");
+    languageLabel.textContent = zh ? "language" : "语言";
+    languageLabel.lang = zh ? "en" : "zh-CN";
     bubble.dataset.step = String(index + 1);
     get("tutorial-title").textContent = title;
     get("tutorial-description").textContent = description;

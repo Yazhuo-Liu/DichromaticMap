@@ -236,7 +236,11 @@ justify-content:space-between;
 gap:8px}
 .tutorial-top{
 color:#627891;
-font-size:11px}
+font-size:11px;
+flex-wrap:wrap}
+.tutorial-top-actions{
+margin-left:auto;
+white-space:nowrap}
 .tutorial-top-actions select{
 min-width:0;
 height:29px;
