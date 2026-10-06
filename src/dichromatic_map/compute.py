@@ -9,6 +9,7 @@ from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import multiprocessing
 import os
+import threading
 import numpy as np
 from .crystal import ProjectedGrain, projected_columns, get_geometry
 from .cells import count_cell_atoms
@@ -109,93 +110,114 @@ class NearSearch:
         self.busy = False
         self.error = None
         self.process_ids = set()
+        self._lock = threading.RLock()
+        self._result = None
+        self._closed = False
 
     def cancel(self):
+        with self._lock:
+            self._cancel_locked()
+
+    def _cancel_locked(self):
         self.generation += 1
         self.jobs.clear()
         self.parts.clear()
         self.busy = False
         self.error = None
         self.total = self.completed = 0
-        for future in self.running:
+        self._result = None
+        for future in list(self.running):
             future.cancel()
 
     def request(self, angle, percent, extent, lattice="FCC", axis="110"):
-        self.cancel()
         geometry = get_geometry(lattice, axis)
-        if self.executor is None:
-            self.executor = (
-                ProcessPoolExecutor(
-                    max_workers=self.workers,
-                    mp_context=multiprocessing.get_context("spawn"),
-                    initializer=worker_initializer,
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Near-CSL search is closed")
+            self._cancel_locked()
+            if self.executor is None:
+                self.executor = (
+                    ProcessPoolExecutor(
+                        max_workers=self.workers,
+                        mp_context=multiprocessing.get_context("spawn"),
+                        initializer=worker_initializer,
+                    )
+                    if self.workers > 1
+                    else ThreadPoolExecutor(max_workers=1)
                 )
-                if self.workers > 1
-                else ThreadPoolExecutor(max_workers=1)
-            )
-        self.args = (angle, percent, extent, geometry.lattice, geometry.axis)
-        self.jobs.append(("prepare", candidate_vectors, self.args))
-        self.busy = True
+            self.args = (angle, percent, extent, geometry.lattice, geometry.axis)
+            self.jobs.append(("prepare", candidate_vectors, self.args))
+            self.busy = True
+            self._submit_locked()
 
-    def poll(self):
+    def _submit_locked(self):
+        """Refill workers on completion, independently of GUI progress polling."""
         try:
-            for future in list(self.running):
-                if not future.done():
-                    continue
-                generation, stage, start = self.running.pop(future)
-                if generation != self.generation:
-                    continue
-                result = future.result()
-                if stage == "prepare":
-                    i, j = result
-                    for start in range(0, len(i), 8):
-                        self.jobs.append(
-                            (
-                                "solve",
-                                solve_cells_chunk,
-                                (
-                                    self.args[0],
-                                    self.args[1],
-                                    i,
-                                    j,
-                                    start,
-                                    start + 8,
-                                    self.args[3],
-                                    self.args[4],
-                                ),
-                            )
-                        )
-                    self.total = len(self.jobs)
-                else:
-                    pid, cells = result
-                    self.process_ids.add(pid)
-                    self.parts[start] = cells
-                    self.completed += 1
-            while self.jobs and len(self.running) < self.workers:
+            while not self._closed and self.jobs and len(self.running) < self.workers:
                 stage, function, args = self.jobs.popleft()
                 future = self.executor.submit(function, *args)
                 self.running[future] = (
                     self.generation, stage, args[4] if stage == "solve" else -1
                 )
-            if self.busy and not self.jobs and not self.running:
+                future.add_done_callback(self._completed)
+            if (
+                self.busy and not self.error and self._result is None
+                and not self.jobs and not self.running
+            ):
                 # Equal-area/strain candidates retain serial search order,
                 # independently of which process happens to finish first.
-                result = pareto_cells([
+                self._result = pareto_cells([
                     cell for start in sorted(self.parts) for cell in self.parts[start]
                 ])
                 self.parts.clear()
+        except Exception as error:
+            self._cancel_locked()
+            # Keep busy until the UI has observed the error, as with results.
+            self.busy = True
+            self.error = str(error)
+
+    def _completed(self, future):
+        with self._lock:
+            generation, stage, start = self.running.pop(future)
+            if generation == self.generation:
+                try:
+                    result = future.result()
+                    if stage == "prepare":
+                        i, j = result
+                        for start in range(0, len(i), 8):
+                            self.jobs.append(("solve", solve_cells_chunk, (
+                                self.args[0], self.args[1], i, j, start, start + 8,
+                                self.args[3], self.args[4],
+                            )))
+                        self.total = len(self.jobs)
+                    else:
+                        pid, cells = result
+                        self.process_ids.add(pid)
+                        self.parts[start] = cells
+                        self.completed += 1
+                except Exception as error:
+                    self._cancel_locked()
+                    self.busy = True
+                    self.error = str(error)
+            self._submit_locked()
+
+    def poll(self):
+        with self._lock:
+            if self.error:
+                self.busy = False
+            if self._result is not None:
+                result, self._result = self._result, None
                 self.busy = False
                 return result
-        except Exception as error:
-            self.cancel()
-            self.error = str(error)
         return None
 
     def close(self):
-        self.cancel()
-        if self.owns_executor and self.executor is not None:
-            self.executor.shutdown(wait=False, cancel_futures=True)
-        self.executor = None
+        with self._lock:
+            self._closed = True
+            self._cancel_locked()
+            executor, self.executor = self.executor, None
+        if self.owns_executor and executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 class ComputeSession:
@@ -208,6 +230,8 @@ class ComputeSession:
         self.near_search = None
         self.parallel_stage = None
         self.parallel_futures = []
+        self.parallel_retired = []
+        self.regeneration_pending = None
         self.parallel_payload = {}
         self.parallel_generation = 0
         self.worker_process_ids = set()
@@ -237,8 +261,13 @@ class ComputeSession:
     def cancel_parallel(self):
         self.parallel_generation += 1
         for future in self.parallel_futures:
-            future.cancel()
+            if not future.cancel() and not future.done():
+                self.parallel_retired.append(future)
         self.parallel_futures = []
+        self.parallel_retired = [
+            future for future in self.parallel_retired if not future.done()
+        ]
+        self.regeneration_pending = None
         self.parallel_stage = None
         self.parallel_payload = {}
 

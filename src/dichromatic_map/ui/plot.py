@@ -823,6 +823,7 @@ class PatternPlot:
 
     def save(self, output_path: Path, *, clean: bool = False) -> None:
         """Export the complete plot, or only the visible grain atoms."""
+        self._await_current_scene()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if clean:
             self._save_atoms(output_path)
@@ -831,6 +832,71 @@ class PatternPlot:
         exporter.parameters()["width"] = 1800
         if exporter.export(str(output_path)) is False:
             raise OSError(f"Could not save PNG to {output_path}")
+
+    def _await_current_scene(self, timeout_ms: int = 30_000) -> None:
+        """Commit pending controls and finish their render before exporting.
+
+        Numerical work remains in the background. A local Qt event loop keeps
+        its completion timers and paint events running while save waits.
+        """
+        owner = self.owner
+        if (
+            owner.state.angle_update_active
+            or owner.angle_preview_timer.isActive()
+            or abs(owner.state.pending_angle - owner.state.angle_deg) > 1e-12
+        ):
+            owner._finish_angle_update()
+
+        def ready():
+            state, compute = owner.state, owner.compute
+            if state.render_error:
+                raise RuntimeError(state.render_error)
+            return (
+                state.grain_signature == owner._geometry_signature()
+                and compute.parallel_stage is None
+                and not state.angle_update_active
+                and not state.csl_updating
+                and not state.local_updating
+                and (compute.near_search is None or not compute.near_search.busy)
+                and compute.manual_count_future is None
+                and compute.manual_count_pending is None
+                and not any(timer.isActive() for timer in (
+                    owner.angle_preview_timer, owner.coincidence_timer,
+                    owner.view_refresh_timer, owner.near_debounce_timer,
+                ))
+            )
+
+        if not ready():
+            loop = QtCore.QEventLoop()
+            completion = QtCore.QTimer()
+            deadline = QtCore.QTimer()
+            deadline.setSingleShot(True)
+            errors = []
+
+            def check():
+                try:
+                    if ready():
+                        loop.quit()
+                except Exception as error:
+                    errors.append(error)
+                    loop.quit()
+
+            completion.timeout.connect(check)
+            deadline.timeout.connect(loop.quit)
+            completion.start(16)
+            deadline.start(timeout_ms)
+            try:
+                # Keep the requested scene stable while processing worker
+                # completion, layout and repaint events.
+                loop.exec(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            finally:
+                completion.stop()
+                deadline.stop()
+            if errors:
+                raise errors[0]
+            if not ready():
+                raise TimeoutError("Timed out waiting for the current plot to finish rendering")
+        owner._refresh_view_display()
 
     def _save_atoms(self, output_path: Path) -> None:
         # Render copies in a separate scene. Hiding annotations in the live

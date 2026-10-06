@@ -316,6 +316,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.view_refresh_timer.setSingleShot(True)
         self.view_refresh_timer.setInterval(90)
         self.view_refresh_timer.timeout.connect(self._refresh_view_buffer)
+        self.view_counts_timer = QtCore.QTimer(self)
+        self.view_counts_timer.setSingleShot(True)
+        self.view_counts_timer.setInterval(16)
+        self.view_counts_timer.timeout.connect(self._refresh_view_display)
         self.parallel_poll_timer = QtCore.QTimer(self)
         self.parallel_poll_timer.setInterval(16)
         self.parallel_poll_timer.timeout.connect(self._poll_parallel_work)
@@ -1410,10 +1414,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _start_local_matching(self):
         if not self.local_active or len(self.state.grains) != 2:
             return
-        if self.compute.parallel_stage in ("grains", "coincidences"):
+        if self.compute.parallel_stage in ("grains", "waiting", "coincidences"):
             # Exact detection will start matching after the new atoms arrive.
             if self.compute.parallel_stage == "grains":
                 self.compute.parallel_payload["compute_coincidences"] = True
+            elif self.compute.parallel_stage == "waiting":
+                self.compute.regeneration_pending[1]["compute_coincidences"] = True
             return
         if self.state.grain_signature != self._geometry_signature():
             return
@@ -1570,56 +1576,70 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_title()
 
     def _start_parallel_regeneration(self, compute_coincidences: bool) -> None:
-        if self.compute.executor is None:
-            self._regenerate_buffer(compute_coincidences)
-            return
         self._cancel_parallel_work()
         self._clear_local_pairs()
         center, width, height, bounds = self.plot._buffer_geometry()
         half_angle = 0.5 * self.state.angle_deg
-        try:
-            self.compute.parallel_futures = [
-                self.compute.executor.submit(
-                    generate_grain_worker,
-                    width,
-                    height,
-                    sign * half_angle,
-                    tuple(center),
-                    self.state.deformations[index],
-                    self.state.geometry.lattice,
-                    self.state.geometry.axis,
-                    self.state.translations[index],
-                )
-                for index, sign in enumerate((1.0, -1.0))
-            ]
-        except Exception as error:  # pragma: no cover - platform-specific failure
-            self._parallel_failure(error)
-            return
-        self.compute.parallel_payload = {
+        args = [
+            (
+                width, height, sign * half_angle, tuple(center),
+                self.state.deformations[index].copy(),
+                self.state.geometry.lattice, self.state.geometry.axis,
+                self.state.translations[index].copy(),
+            )
+            for index, sign in enumerate((1.0, -1.0))
+        ]
+        payload = {
             "bounds": bounds,
             "compute_coincidences": compute_coincidences,
             "geometry_signature": self._geometry_signature(),
         }
+        # Keep only the newest request. Running jobs cannot be cancelled, so
+        # drain them before adding replacements instead of growing the queue.
+        self.compute.regeneration_pending = (args, payload)
         self.state.coincident_points = self._empty_coincidences()
         self.state.csl_updating = True
         for item in self.plot.coincidence_items:
             self.plot._set_scatter(item, np.empty((0, 2)))
-        self.compute.parallel_stage = "grains"
+        self.compute.parallel_stage = "waiting"
+        self._submit_pending_regeneration()
+        if self.compute.parallel_stage is None:
+            return  # A submission failure has already reported its outcome.
         self._update_status()
         self.parallel_poll_timer.start()
 
+    def _submit_pending_regeneration(self) -> None:
+        self.compute.parallel_retired = [
+            future for future in self.compute.parallel_retired if not future.done()
+        ]
+        if self.compute.parallel_retired or self.compute.regeneration_pending is None:
+            return
+        args, payload = self.compute.regeneration_pending
+        self.compute.regeneration_pending = None
+        executor = self.compute.background_executor()
+        try:
+            self.compute.parallel_futures = []
+            for grain_args in args:
+                self.compute.parallel_futures.append(
+                    executor.submit(generate_grain_worker, *grain_args)
+                )
+        except Exception as error:  # pragma: no cover - platform-specific failure
+            self._parallel_failure(error)
+            return
+        self.compute.parallel_payload = payload
+        self.compute.parallel_stage = "grains"
+
     def _start_parallel_coincidences(self) -> None:
+        if self.compute.parallel_stage == "waiting":
+            self.compute.regeneration_pending[1]["compute_coincidences"] = True
+            return
         if self.compute.parallel_stage == "grains":
             self.compute.parallel_payload["compute_coincidences"] = True
-            return
-        if self.compute.executor is None:
-            self._compute_coincidences()
-            self.state.angle_update_active = False
-            self._update_visible_points()
             return
         if len(self.state.grains) != 2:
             return
         self._cancel_parallel_work()
+        executor = self.compute.background_executor()
         tolerance = COINCIDENCE_TOLERANCE_FACTOR
         layer_groups = np.array_split(
             np.arange(self.state.geometry.layer_count),
@@ -1627,7 +1647,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         try:
             self.compute.parallel_futures = [
-                self.compute.executor.submit(
+                executor.submit(
                     coincidence_layers_worker,
                     self.state.grains[0],
                     self.state.grains[1],
@@ -1645,6 +1665,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_status()
 
     def _poll_parallel_work(self) -> None:
+        if self.compute.parallel_stage == "waiting":
+            self._submit_pending_regeneration()
         if not self.compute.parallel_futures or not all(
             future.done() for future in self.compute.parallel_futures
         ):
@@ -1692,7 +1714,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.state.csl_updating = False
             self.state.angle_update_active = False
             self.parallel_poll_timer.stop()
-            self._update_visible_points()
+            self._update_visible_points(grains_changed=False)
             self._update_title()
             if self.local_active:
                 self._start_local_matching()
@@ -1777,14 +1799,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _on_view_range_changed(self, *_args) -> None:
         self._sync_view_scale_control()
-        self.plot._update_marker_sizes()
         self.plot._draw_boundary()
         self.plot._draw_vector()
         self.plot._draw_manual_cell()
-        self._refresh_visible_counts()
+        if not self.view_counts_timer.isActive():
+            self.view_counts_timer.start()
         if (
             not self.plot._buffer_contains_view()
-            and self.compute.parallel_stage != "grains"
+            and self.compute.parallel_stage not in ("grains", "waiting")
         ):
             self.view_refresh_timer.start()
 
@@ -1812,14 +1834,16 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _region_states(self) -> tuple[bool, bool, bool, bool]:
         return tuple(check.isChecked() for check in self.controls.region_checks)  # type: ignore[return-value]
 
-    def _update_visible_points(self, *_args) -> None:
+    def _update_visible_points(self, *_args, grains_changed=True) -> None:
         self.plot._update_reference_axes()
         if len(self.state.grains) != 2:
             return
         states = self._region_states()
         boundary_ready = len(self.state.selected_points) == 2
-        self.state.visible_atom_masks = []
-        for grain_index, grain in enumerate(self.state.grains):
+        if grains_changed:
+            self.state.visible_atom_masks = []
+        grain_items = enumerate(self.state.grains) if grains_changed else ()
+        for grain_index, grain in grain_items:
             if boundary_ready:
                 mask = selected_region_mask(
                     grain.positions,
@@ -1865,7 +1889,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._refresh_visible_counts()
         self._queue_manual_count()
 
+    def _refresh_view_display(self) -> None:
+        self.plot._update_marker_sizes()
+        self._refresh_visible_counts()
+
     def _refresh_visible_counts(self) -> None:
+        if self.view_counts_timer.isActive():
+            self.view_counts_timer.stop()
+            self.plot._update_marker_sizes()
         self.plot._update_local_overlay()
         if len(self.state.grains) != 2 or len(self.state.visible_atom_masks) != 2:
             return
@@ -1949,7 +1980,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if abs(self.state.pending_angle - self.state.angle_deg) <= 1.0e-12:
             return
         self.state.angle_deg = self.state.pending_angle
-        self._regenerate_buffer(compute_coincidences=False)
+        self._start_parallel_regeneration(compute_coincidences=False)
 
     def _finish_angle_update(self) -> None:
         self.coincidence_timer.stop()
@@ -2414,6 +2445,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 label.setOpenExternalLinks(True)
             message.exec()
         self.manual_count_timer.stop()
+        self.angle_preview_timer.stop()
+        self.coincidence_timer.stop()
+        self.view_refresh_timer.stop()
+        self.view_counts_timer.stop()
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
         self.parallel_poll_timer.stop()

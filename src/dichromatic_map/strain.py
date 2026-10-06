@@ -235,6 +235,68 @@ def pareto_cells(cells, limit=12):
     return result[:limit]
 
 
+def _least_norm_cell_solution(constraints, rhs):
+    """Solve the 4-by-6 strain constraints without squaring their condition.
+
+    For full row rank, C.T = Q R gives the minimum-norm solution
+    Q solve(R.T, rhs). Householder QR is cheaper than a batched SVD. Only
+    conservatively well-conditioned systems take that path; all others keep
+    the original pinv cutoff, including exactly common/rank-deficient cells.
+    """
+    solution = np.zeros((len(constraints), 6))
+    active = np.flatnonzero(np.any(rhs != 0, axis=1))
+    if not len(active):
+        return solution  # Zero is the exact minimum norm at any matrix rank.
+    c, target = constraints[active], rhs[active]
+    q, r = np.linalg.qr(c.transpose(0, 2, 1), mode="reduced")
+    scale = np.linalg.norm(r, axis=(1, 2))
+    diagonal = np.divide(
+        np.diagonal(r, axis1=1, axis2=2), scale[:, None],
+        out=np.zeros((len(r), 4)), where=scale[:, None] > 0,
+    )
+    # |det(R/||R||F)| is the product of its singular values. Every singular
+    # value is <= 1, so this product is a lower bound on sigma_min/sigma_max.
+    # The guard is far above pinv's 1e-11 rank cutoff and bounds cond(C) < 1e5.
+    regular = np.abs(np.prod(diagonal, axis=1)) > 1e-5
+    if np.any(regular):
+        rows = np.flatnonzero(regular)
+        try:
+            values = (q[rows] @ np.linalg.solve(
+                r[rows].transpose(0, 2, 1), target[rows, :, None]
+            ))[..., 0]
+        except np.linalg.LinAlgError:
+            regular[:] = False
+        else:
+            # Reject an unexpectedly poor backward error rather than weakening
+            # the physical residual/strain checks in solve_cells_chunk.
+            residual = np.max(np.abs(
+                (c[rows] @ values[..., None])[..., 0] - target[rows]
+            ), axis=1)
+            bound = 128 * np.finfo(float).eps * (
+                scale[rows] * np.linalg.norm(values, axis=1)
+                + np.linalg.norm(target[rows], axis=1)
+            )
+            accepted = residual <= bound
+            solution[active[rows[accepted]]] = values[accepted]
+            regular[rows[~accepted]] = False
+    fallback = ~regular
+    if np.any(fallback):
+        solution[active[fallback]] = (
+            np.linalg.pinv(c[fallback], rcond=1e-11)
+            @ target[fallback, :, None]
+        )[..., 0]
+    return solution
+
+
+def _symmetric_deformations(solution):
+    f = np.tile(np.eye(2), (len(solution), 2, 1, 1))
+    for g in (0, 1):
+        f[:, g, 0, 0] += solution[:, 3 * g]
+        f[:, g, 1, 1] += solution[:, 3 * g + 1]
+        f[:, g, 0, 1] = f[:, g, 1, 0] = solution[:, 3 * g + 2] / np.sqrt(2)
+    return f
+
+
 def solve_cells_chunk(
     angle, percent, integers1, integers2, start, stop, lattice="FCC", axis="110"
 ):
@@ -242,8 +304,8 @@ def solve_cells_chunk(
     geometry = get_geometry(lattice, axis)
     lattice, axis = geometry.lattice, geometry.axis
     b1, b2 = bases(angle, lattice, axis)
-    # Build only this chunk's rows of the upper triangle. UI workers usually
-    # request eight rows; constructing the entire triangle repeats O(N²) work.
+    # Build only this chunk's rows of the upper triangle. UI workers request
+    # small batches; constructing the entire triangle repeats O(N²) work.
     n = len(integers1)
     start, stop = max(0, start), min(stop, n - 1)
     if start >= stop:
@@ -288,16 +350,45 @@ def solve_cells_chunk(
         c[:, 2 * col + 1, 4] = -b[:, 1, col]
         c[:, 2 * col + 1, 5] = -b[:, 0, col] / np.sqrt(2)
     rhs = (b - a).transpose(0, 2, 1).reshape(-1, 4)
-    sol = (np.linalg.pinv(c, rcond=1e-11) @ rhs[..., None])[..., 0]
-    f = np.tile(np.eye(2), (len(a), 2, 1, 1))
-    for g in (0, 1):
-        f[:, g, 0, 0] += sol[:, 3 * g]
-        f[:, g, 1, 1] += sol[:, 3 * g + 1]
-        f[:, g, 0, 1] = f[:, g, 1, 0] = sol[:, 3 * g + 2] / np.sqrt(2)
+    sol = _least_norm_cell_solution(c, rhs)
+    f = _symmetric_deformations(sol)
     eig = np.linalg.eigvalsh(f)
     strain = np.max(np.abs(eig - 1), axis=(1, 2))
     common = f[:, 0] @ a
     residual = np.max(np.abs(common - f[:, 1] @ b), axis=(1, 2))
+    # Preserve the original SVD's representative for machine-precision ties
+    # (e.g. grain-exchanged cells). Only minima at potentially nondominated
+    # atom counts need refinement, not the thousands of dominated cells.
+    margin = 1e-11  # Smaller than the 1e-10 Pareto improvement threshold.
+    eligible = np.flatnonzero(
+        (strain <= percent / 100 + margin)
+        & (np.min(eig, axis=(1, 2)) > 0)
+        & (residual < 1e-8)
+    )
+    if len(eligible):
+        atom_counts = sum(
+            np.abs(m[:, 0, 0] * m[:, 1, 1] - m[:, 0, 1] * m[:, 1, 0])
+            for m in (m1, m2)
+        )
+        _, groups = np.unique(atom_counts[eligible], return_inverse=True)
+        minima = np.full(int(groups.max()) + 1, np.inf)
+        np.minimum.at(minima, groups, strain[eligible])
+        previous = np.r_[np.inf, np.minimum.accumulate(minima)[:-1]]
+        competitive = minima < previous - 1e-10 + margin
+        refine = eligible[
+            competitive[groups] & (strain[eligible] <= minima[groups] + margin)
+            & np.any(rhs[eligible] != 0, axis=1)
+        ]
+        if len(refine):
+            refined = (np.linalg.pinv(c[refine], rcond=1e-11)
+                       @ rhs[refine, :, None])[..., 0]
+            f[refine] = _symmetric_deformations(refined)
+            eig[refine] = np.linalg.eigvalsh(f[refine])
+            strain[refine] = np.max(np.abs(eig[refine] - 1), axis=(1, 2))
+            common[refine] = f[refine, 0] @ a[refine]
+            residual[refine] = np.max(np.abs(
+                common[refine] - f[refine, 1] @ b[refine]
+            ), axis=(1, 2))
     valid = (
         (strain <= percent / 100 + 1e-12)
         & (np.min(eig, axis=(1, 2)) > 0)

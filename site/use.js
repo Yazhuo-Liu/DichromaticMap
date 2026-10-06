@@ -26,6 +26,12 @@ const awaiting = new Map();
 let renderGeneration = 0;
 let nearGeneration = 0;
 let renderTimer;
+let nearTimer;
+let drawFrame;
+let canvasMetrics;
+let transformCache;
+let visibilityCache;
+let renderCoverage;
 let pointerStart;
 let dragDistance = 0;
 const activePointers = new Map();
@@ -46,7 +52,10 @@ function setStatus(message) {
   const layerCounts = new Map();
   for (const point of cslPoints) layerCounts.set(point[2], (layerCounts.get(point[2]) || 0) + 1);
   const byLayer = Array.from(layerCounts, ([layer, count]) => `${layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`}: ${count}`).join(", ");
-  $("status").innerHTML = `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`;
+  setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`);
+}
+function setHTML(element, html) {
+  if (element.innerHTML !== html) element.innerHTML = html;
 }
 function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
@@ -63,11 +72,16 @@ worker.onmessage = ({data}) => {
   const item = awaiting.get(data.id);
   if (!item) return;
   awaiting.delete(data.id);
-  if (data.type === "error") item.reject(new Error(data.message));
+  if (data.type === "error") {
+    const error = new Error(data.message);
+    error.name = data.name || "Error";
+    item.reject(error);
+  }
   else item.resolve(data.result);
 };
 worker.onerror = () => fail(new Error("The local engine could not start. Check your connection and reload."));
 function fail(error) {
+  if (error.name === "AbortError") return;
   const message = error.message || String(error);
   setStatus(message);
   if (!pattern) {
@@ -78,9 +92,7 @@ function fail(error) {
 }
 
 function viewSize() {
-  const rect = canvas.getBoundingClientRect();
-  const drawW = Math.max(100, rect.width - 63);
-  const drawH = Math.max(100, rect.height - 66);
+  const {width: drawW, height: drawH} = refreshCanvasMetrics().plot;
   state.width = 12 * state.scale;
   state.height = state.width * drawH / drawW;
 }
@@ -100,15 +112,35 @@ function rotate(point, degrees) {
   return [c * point[0] - s * point[1], s * point[0] + c * point[1]];
 }
 function plotRect() {
+  return (canvasMetrics || refreshCanvasMetrics()).plot;
+}
+function refreshCanvasMetrics() {
   const rect = canvas.getBoundingClientRect();
-  return { left: 35, top: 30, width: Math.max(100, rect.width - 63),
-           height: Math.max(100, rect.height - 66) };
+  if (!canvasMetrics || canvasMetrics.width !== rect.width || canvasMetrics.height !== rect.height) {
+    canvasMetrics = {width: rect.width, height: rect.height,
+      plot: {left: 35, top: 30, width: Math.max(100, rect.width - 63),
+             height: Math.max(100, rect.height - 66)}};
+  }
+  return canvasMetrics;
+}
+function viewTransform() {
+  const r = plotRect();
+  if (!transformCache || transformCache.rect !== r ||
+      transformCache.cx !== state.center[0] || transformCache.cy !== state.center[1] ||
+      transformCache.width !== state.width || transformCache.height !== state.height ||
+      transformCache.rotation !== state.displayRotation) {
+    const radians = state.displayRotation * Math.PI / 180;
+    transformCache = {rect: r, cx: state.center[0], cy: state.center[1],
+      width: state.width, height: state.height, rotation: state.displayRotation,
+      cosine: Math.cos(radians), sine: Math.sin(radians),
+      ox: r.left + r.width / 2, oy: r.top + r.height / 2};
+  }
+  return transformCache;
 }
 function screen(point) {
-  const r = plotRect();
-  const p = rotate(point, state.displayRotation);
-  return [r.left + r.width / 2 + (p[0] - state.center[0]) * r.width / state.width,
-          r.top + r.height / 2 - (p[1] - state.center[1]) * r.height / state.height];
+  const t = viewTransform();
+  return [t.ox + (t.cosine * point[0] - t.sine * point[1] - t.cx) * t.rect.width / t.width,
+          t.oy - (t.sine * point[0] + t.cosine * point[1] - t.cy) * t.rect.height / t.height];
 }
 function modelFromScreen(x, y) {
   const r = plotRect();
@@ -128,40 +160,84 @@ function sideVisible(point, grain) {
          (state.regions[2 * grain + 1] && cross <= 1e-9);
 }
 function visiblePoints(grain) {
-  if (!pattern) return [];
-  return pattern.grains[grain].filter(p => state.visibleLayers[grain].has(p[2]) && sideVisible(p, grain) && inView(p));
+  return visibleData().points[grain];
 }
 function visibleCSL() {
-  if (!pattern) return [];
-  return pattern.coincidences.filter(p => state.visibleLayers[0].has(p[2]) &&
-    state.visibleLayers[1].has(p[2]) && sideVisible(p, 0) && sideVisible(p, 1) && inView(p));
+  return visibleData().csl;
 }
 function visibleLocal() {
-  if (!pattern || !state.nearEnabled || state.nearMethod !== "local") return [];
-  return (pattern.local || []).filter(p => state.visibleLayers[0].has(p[4]) &&
-    state.visibleLayers[1].has(p[4]) && sideVisible(p, 0) && sideVisible(p.slice(2), 1) &&
-    inView([(p[0] + p[2]) / 2, (p[1] + p[3]) / 2]));
+  return visibleData().local;
+}
+function visibleData() {
+  const transform = viewTransform();
+  const selection = `${[...state.visibleLayers[0]]}|${[...state.visibleLayers[1]]}|${state.boundary.flat()}|${state.regions}|${state.nearEnabled}|${state.nearMethod}`;
+  if (visibilityCache?.pattern === pattern && visibilityCache.transform === transform &&
+      visibilityCache.selection === selection) return visibilityCache;
+  const data = {pattern, transform, selection, points: [[], []],
+    atoms: [[], []], csl: [], cslMarkers: [], local: [], localMarkers: []};
+  const r = transform.rect;
+  const projected = (point) => {
+    const [x, y] = screen(point);
+    return x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height
+      ? {point, x, y} : null;
+  };
+  if (pattern) {
+    for (let grain = 0; grain < 2; grain++) {
+      for (const point of pattern.grains[grain]) {
+        if (!state.visibleLayers[grain].has(point[2]) || !sideVisible(point, grain)) continue;
+        const record = projected(point);
+        if (record) { data.points[grain].push(point); data.atoms[grain].push(record); }
+      }
+    }
+    for (const point of pattern.coincidences) {
+      if (!state.visibleLayers[0].has(point[2]) || !state.visibleLayers[1].has(point[2]) ||
+          !sideVisible(point, 0) || !sideVisible(point, 1)) continue;
+      const record = projected(point);
+      if (record) { data.csl.push(point); data.cslMarkers.push(record); }
+    }
+    if (state.nearEnabled && state.nearMethod === "local") {
+      for (const pair of pattern.local || []) {
+        if (!state.visibleLayers[0].has(pair[4]) || !state.visibleLayers[1].has(pair[4]) ||
+            !sideVisible(pair, 0) || !sideVisible([pair[2], pair[3]], 1) ||
+            !projected([(pair[0] + pair[2]) / 2, (pair[1] + pair[3]) / 2])) continue;
+        const [x1, y1] = screen(pair), [x2, y2] = screen([pair[2], pair[3]]);
+        data.local.push(pair); data.localMarkers.push({x1, y1, x2, y2});
+      }
+    }
+  }
+  visibilityCache = data;
+  return data;
 }
 function renderRequest() {
   clearTimeout(renderTimer);
+  worker.postMessage({type: "cancel", action: "render"});
   const generation = ++renderGeneration;
   renderTimer = setTimeout(async () => {
     try {
       viewSize();
-      setStatus("Calculating lattice…");
       const modelCenter = rotate(state.center, -state.displayRotation);
       const dimensions = renderDimensions();
-      const result = await request("render", {
+      const parameters = {
         lattice: state.lattice, axis: state.axis, angle: state.angle,
-        width: dimensions.width, height: dimensions.height,
-        center: modelCenter, deformations: state.deformations,
+        deformations: state.deformations,
         translations: state.translations,
         local_matching: state.nearEnabled && state.nearMethod === "local",
         local_distance: Number($("local-distance").value),
+      };
+      const signature = JSON.stringify(parameters);
+      if (renderCoverage?.signature === signature && coveredView(renderCoverage)) {
+        draw(); updateSummary(); setStatus("Ready · choose an interaction tool"); return;
+      }
+      setStatus("Calculating lattice…");
+      const raw = await request("render", {
+        ...parameters, width: dimensions.width, height: dimensions.height, center: modelCenter,
       });
       if (generation !== renderGeneration) return;
+      const result = window.DichromaticRenderData.decodeRenderResult(raw);
       state.angle = result.angle;
       pattern = result;
+      renderCoverage = {signature: JSON.stringify({...parameters, angle: result.angle}),
+        center: modelCenter, ...dimensions};
       $("engine-overlay").classList.add("hidden");
       document.querySelector(".control-pane").classList.remove("loading");
       $("tutorial-start").disabled = false;
@@ -172,12 +248,24 @@ function renderRequest() {
     } catch (error) { if (generation === renderGeneration) fail(error); }
   }, 45);
 }
+function coveredView(coverage) {
+  for (const x of [-state.width / 2, state.width / 2]) {
+    for (const y of [-state.height / 2, state.height / 2]) {
+      const point = rotate([state.center[0] + x, state.center[1] + y], -state.displayRotation);
+      if (Math.abs(point[0] - coverage.center[0]) > coverage.width / 2 ||
+          Math.abs(point[1] - coverage.center[1]) > coverage.height / 2) return false;
+    }
+  }
+  return true;
+}
 
 function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
+  const rect = canvasMetrics || refreshCanvasMetrics();
   const dpr = Math.min(devicePixelRatio || 1, 2);
-  canvas.width = Math.max(1, Math.round(rect.width * dpr));
-  canvas.height = Math.max(1, Math.round(rect.height * dpr));
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 function marker(context, x, y, radius, symbol, stroke, fill, lineWidth = 1.25) {
@@ -324,22 +412,21 @@ function drawBoundary(context) {
 }
 function drawAtoms(context, clean = false) {
   const r = plotRect();
+  const visible = visibleData();
   context.save(); context.beginPath(); context.rect(r.left, r.top, r.width, r.height); context.clip();
   for (let grain = 0; grain < 2; grain++) {
-    for (const point of visiblePoints(grain)) {
-      const [x, y] = screen(point), layer = point[2];
+    for (const {point, x, y} of visible.atoms[grain]) {
+      const layer = point[2];
       const radius = Math.max(2, Math.min(8, 4.5 * (state.sizes[layer] || 1) / Math.sqrt(state.scale)));
       marker(context, x, y, radius, state.symbols[layer],
         grain === 0 ? "#2e6799" : state.colors[1], grain === 0 ? state.colors[0] : null);
     }
   }
   if (!clean) {
-    for (const point of visibleCSL()) {
-      const [x, y] = screen(point);
+    for (const {point, x, y} of visible.cslMarkers) {
       marker(context, x, y, 10, state.symbols[point[2]], "#e5a50a", null, 2.2);
     }
-    for (const pair of visibleLocal()) {
-      const [x1, y1] = screen(pair), [x2, y2] = screen(pair.slice(2));
+    for (const {x1, y1, x2, y2} of visible.localMarkers) {
       context.strokeStyle = "#aa45bb"; context.lineWidth = 1.4; context.setLineDash([2, 2]);
       context.beginPath(); context.moveTo(x1, y1); context.lineTo(x2, y2); context.stroke(); context.setLineDash([]);
       context.beginPath(); context.arc((x1 + x2) / 2, (y1 + y2) / 2, 10, 0, Math.PI * 2);
@@ -349,6 +436,8 @@ function drawAtoms(context, clean = false) {
   context.restore();
 }
 function draw() {
+  if (drawFrame !== undefined) { cancelAnimationFrame(drawFrame); drawFrame = undefined; }
+  refreshCanvasMetrics();
   resizeCanvas();
   const r = plotRect();
   drawGrid(ctx, r);
@@ -384,6 +473,10 @@ function draw() {
   updateReferenceAxesToggle();
   positionVectorAnnotation();
   drawLegend();
+}
+function scheduleDraw() {
+  if (drawFrame !== undefined) return;
+  drawFrame = requestAnimationFrame(() => { drawFrame = undefined; draw(); });
 }
 function updateReferenceAxesToggle() {
   const button = $("reference-axes-toggle");
@@ -449,7 +542,7 @@ function drawLegend() {
   }
   if (visibleCSL().length) parts.push(`<span><b class="legend-marker" style="color:#e5a50a">◎</b>CSL</span>`);
   if (visibleLocal().length) parts.push(`<span><b class="legend-marker" style="color:#aa45bb">◎</b>Near pair</span>`);
-  $("plot-legend").innerHTML = parts.join("");
+  setHTML($("plot-legend"), parts.join(""));
 }
 
 function updateSummary() {
@@ -561,7 +654,7 @@ async function loadMetadata(reset = true, supplied = null) {
   rebuildPreset(); rebuildLayers(); updateSummary(); renderRequest();
 }
 function resetSelections() {
-  nearGeneration++;
+  cancelNearSearch();
   state.boundary = []; state.atoms = []; state.manual = [];
   state.manualLocalCutoff = null; state.manualFit = null; state.manualOriginal = null;
   state.nearCell = null; state.nearSolutions = [];
@@ -809,28 +902,37 @@ function applyNearCell(index) {
   $("near-info").textContent = cell.readout || `${cell.label}\nG1 F = ${JSON.stringify(cell.f1)}\nG2 F = ${JSON.stringify(cell.f2)}`;
   renderRequest(); updateSummary();
 }
-async function searchNear() {
+function cancelNearSearch() {
+  nearGeneration++;
+  clearTimeout(nearTimer);
+  worker.postMessage({type: "cancel", action: "near_search"});
+}
+function searchNear() {
+  cancelNearSearch();
   if (!state.nearEnabled || state.nearMethod !== "strain") return;
-  const generation = ++nearGeneration;
+  const generation = nearGeneration;
   state.nearCell = null; state.nearSolutions = [];
   state.deformations = identity(); state.translations = [[0, 0], [0, 0]];
   state.boundary = []; state.atoms = []; state.manual = [];
   $("vector-annotation").hidden = true;
   renderRequest(); updateSummary();
-  try {
-    setStatus("Searching strained periodic cells locally…");
-    $("near-info").textContent = "Searching compatible periodic cells in the browser worker…";
-    const result = await request("near_search", {angle: state.angle,
-      percent: Number($("strain-percent").value), index: Number($("search-index").value),
-      lattice: state.lattice, axis: state.axis});
-    if (generation !== nearGeneration || !state.nearEnabled || state.nearMethod !== "strain") return;
-    state.nearSolutions = result;
-    $("near-results").replaceChildren();
-    result.forEach((cell, i) => $("near-results").add(new Option(cell.label, String(i))));
-    if (result.length) applyNearCell(0);
-    else $("near-info").textContent = "No compatible cell found within this bounded search. Increase the index or strain limit.";
-    updateSummary(); setStatus(result.length ? "Strained common cells ready" : "No strained common cell found");
-  } catch (error) { if (generation === nearGeneration) fail(error); }
+  $("near-info").textContent = "Waiting for the current angle…";
+  nearTimer = setTimeout(async () => {
+    try {
+      setStatus("Searching strained periodic cells locally…");
+      $("near-info").textContent = "Searching compatible periodic cells in the browser worker…";
+      const result = await request("near_search", {angle: state.angle,
+        percent: Number($("strain-percent").value), index: Number($("search-index").value),
+        lattice: state.lattice, axis: state.axis});
+      if (generation !== nearGeneration || !state.nearEnabled || state.nearMethod !== "strain") return;
+      state.nearSolutions = result;
+      $("near-results").replaceChildren();
+      result.forEach((cell, i) => $("near-results").add(new Option(cell.label, String(i))));
+      if (result.length) applyNearCell(0);
+      else $("near-info").textContent = "No compatible cell found within this bounded search. Increase the index or strain limit.";
+      updateSummary(); setStatus(result.length ? "Strained common cells ready" : "No strained common cell found");
+    } catch (error) { if (generation === nearGeneration) fail(error); }
+  }, 150);
 }
 function downloadBlob(blob, name) {
   const url = URL.createObjectURL(blob);
@@ -839,6 +941,8 @@ function downloadBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 function exportPNG() {
+  // A download can precede the animation frame queued by the latest input.
+  draw();
   const clean = $("clean-png").checked;
   const copy = document.createElement("canvas"); copy.width = canvas.width; copy.height = canvas.height;
   const context = copy.getContext("2d");
@@ -983,7 +1087,7 @@ $("preset").addEventListener("change", () => { if ($("preset").value) changeAngl
 $("angle-number").addEventListener("change", () => changeAngle($("angle-number").value));
 $("angle-slider").addEventListener("input", () => changeAngle($("angle-slider").value));
 function rotationChanged(value) {
-  state.displayRotation = Number(value); updateSummary(); draw(); renderRequest();
+  state.displayRotation = Number(value); updateSummary(); scheduleDraw(); renderRequest();
 }
 $("rotation-number").addEventListener("change", () => rotationChanged($("rotation-number").value));
 $("rotation-slider").addEventListener("input", () => rotationChanged($("rotation-slider").value));
@@ -1023,7 +1127,7 @@ $("show-all-sides").addEventListener("click", () => regionPreset([true,true,true
 $("sides-one").addEventListener("click", () => regionPreset([true,false,false,true]));
 $("sides-two").addEventListener("click", () => regionPreset([false,true,true,false]));
 $("field-slider").addEventListener("input", () => {
-  state.scale = Number($("field-slider").value); updateSummary(); renderRequest();
+  state.scale = Number($("field-slider").value); viewSize(); updateSummary(); scheduleDraw(); renderRequest();
 });
 document.querySelectorAll("[data-scale]").forEach(button => button.addEventListener("click", () => {
   state.scale = Number(button.dataset.scale); $("field-slider").value = state.scale;
@@ -1050,8 +1154,8 @@ for (const id of ["plot-legend-panel", "vector-annotation"]) {
     if (panel.open && !event.target.closest("summary")) panel.open = false;
   });
 }
-$("g1-color").addEventListener("input", () => { state.colors[0] = $("g1-color").value; draw(); });
-$("g2-color").addEventListener("input", () => { state.colors[1] = $("g2-color").value; draw(); });
+$("g1-color").addEventListener("input", () => { state.colors[0] = $("g1-color").value; scheduleDraw(); });
+$("g2-color").addEventListener("input", () => { state.colors[1] = $("g2-color").value; scheduleDraw(); });
 $("lattice-constant").addEventListener("change", () => {
   const value = Number($("lattice-constant").value);
   if (Number.isFinite(value) && value > 0) state.a0 = value;
@@ -1064,7 +1168,7 @@ $("reset-appearance").addEventListener("click", () => {
   rebuildLayers(); draw();
 });
 $("near-method").addEventListener("change", () => {
-  nearGeneration++;
+  cancelNearSearch();
   state.boundary = []; state.atoms = []; state.manual = [];
   $("vector-annotation").hidden = true;
   state.nearMethod = $("near-method").value;
@@ -1074,7 +1178,7 @@ $("near-method").addEventListener("change", () => {
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();
 });
 $("near-toggle").addEventListener("click", () => {
-  nearGeneration++;
+  cancelNearSearch();
   state.nearEnabled = !state.nearEnabled;
   if (!state.nearEnabled) {
     state.boundary = []; state.atoms = []; state.manual = [];
@@ -1145,7 +1249,7 @@ function updatePinch() {
   gestureNeedsRender = true;
   $("field-slider").value = String(state.scale);
   $("field-label").textContent = `${state.scale.toFixed(1)}×`;
-  draw();
+  scheduleDraw();
 }
 function finishPointer(event, cancelled = false) {
   if (!activePointers.has(event.pointerId)) return;
@@ -1195,7 +1299,7 @@ canvas.addEventListener("pointermove", event => {
       const r = plotRect();
       state.center = [pointerStart.center[0] - dx * state.width / r.width,
                       pointerStart.center[1] + dy * state.height / r.height];
-      draw();
+      scheduleDraw();
     }
   }
 });
@@ -1206,7 +1310,7 @@ canvas.addEventListener("wheel", event => {
   event.preventDefault();
   state.scale = Math.max(.1, Math.min(5, state.scale * (event.deltaY > 0 ? 1.13 : 1 / 1.13)));
   $("field-slider").value = state.scale;
-  updateSummary(); renderRequest();
+  viewSize(); updateSummary(); scheduleDraw(); renderRequest();
 }, {passive:false});
 document.addEventListener("keydown", event => {
   if (["INPUT","SELECT","TEXTAREA"].includes(document.activeElement?.tagName) || $("completion-dialog").open) return;

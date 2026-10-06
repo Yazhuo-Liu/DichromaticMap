@@ -1,5 +1,7 @@
 """Atom-only PNGs preserve displayed styles without changing the live viewer."""
 
+import threading
+
 import numpy as np
 import pytest
 
@@ -10,8 +12,95 @@ import pyqtgraph.exporters
 
 from test_appearance import choose_color, image_array, open_appearance, select_symbol
 from test_workflows import pick_exact_cell
+from dichromatic_map import crystal
+from dichromatic_map.ui import window as window_module
 
 pytestmark = pytest.mark.gui
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_immediate_export_waits_for_pending_angle_scene(gui, monkeypatch, tmp_path, clean):
+    window = gui.window(workers=1)
+    output = tmp_path / "pending.png"
+    release = threading.Event()
+    started = threading.Event()
+    original_worker = window_module.generate_grain_worker
+    original_export = pyqtgraph.exporters.ImageExporter.export
+    observations = []
+    exported = []
+
+    def blocked_worker(*args):
+        started.set()
+        assert release.wait(10)
+        return original_worker(*args)
+
+    def export(exporter, *args, **kwargs):
+        assert window.state.angle_deg == 22
+        assert window.state.grain_signature == window._geometry_signature()
+        assert not window.state.csl_updating
+        assert window.compute.parallel_stage is None
+        assert not window.view_counts_timer.isActive()
+        for index, (grain, sign) in enumerate(zip(window.state.grains, (1, -1))):
+            planar = (0.5 * grain.half_indices) @ window.state.geometry.frame[:, :2]
+            expected = planar @ crystal.rotation_matrix_2d(sign * 11).T
+            np.testing.assert_allclose(grain.positions, expected, atol=1e-12)
+            for layer, item in enumerate(window.plot.grain_layer_items[index]):
+                np.testing.assert_allclose(
+                    np.column_stack(item.getData()),
+                    window.plot._to_view(expected[grain.layers == layer]), atol=1e-12,
+                )
+        exported.append(window.state.angle_deg)
+        return original_export(exporter, *args, **kwargs)
+
+    monkeypatch.setattr(window_module, "generate_grain_worker", blocked_worker)
+    monkeypatch.setattr(pyqtgraph.exporters.ImageExporter, "export", export)
+    timer = gui.QtCore.QTimer()
+
+    def release_after_save_has_started():
+        if not started.is_set():
+            return
+        observations.append((
+            output.exists(), exported[:],
+            window.state.grain_signature == window._geometry_signature(),
+        ))
+        timer.stop()
+        release.set()
+
+    timer.timeout.connect(release_after_save_has_started)
+    timer.start(10)
+    try:
+        window.controls.angle_spin.setValue(22)
+        # No settle call: this goes through the same alias as the export button.
+        window.save(output, clean=clean)
+        assert observations == [(False, [], False)]
+        assert exported == [22]
+        assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    finally:
+        timer.stop()
+        release.set()
+
+
+def test_immediate_export_flushes_pending_zoom_marker_sizes(gui, monkeypatch, tmp_path):
+    window = gui.window(workers=1)
+    item = window.plot.grain_layer_items[0][0]
+    old_size = item.opts["size"]
+    original_export = pyqtgraph.exporters.ImageExporter.export
+    exported = []
+    window.controls.view_slider.setValue(90)
+    assert window.view_counts_timer.isActive()
+    assert not window.view_refresh_timer.isActive()
+    expected = window.plot._view_marker_diameter()
+    assert expected != pytest.approx(old_size)
+
+    def export(exporter, *args, **kwargs):
+        assert item.opts["size"] == pytest.approx(expected)
+        assert not window.view_counts_timer.isActive()
+        exported.append(expected)
+        return original_export(exporter, *args, **kwargs)
+
+    monkeypatch.setattr(pyqtgraph.exporters.ImageExporter, "export", export)
+    window.save(tmp_path / "zoom.png", clean=True)
+    assert exported == [expected]
 
 
 def plot_snapshot(window):

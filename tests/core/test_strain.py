@@ -263,3 +263,125 @@ def test_candidate_prefilters_retain_all_small_range_compatible_vectors():
         first, second = strain_ops.candidate_vectors(angle, percent, extent, lattice, axis)
         actual = {tuple(np.r_[i, j]) for i, j in zip(first, second)}
         assert actual == expected, (lattice, axis, angle)
+
+
+def test_cell_qr_solution_is_minimum_norm_without_normal_equations(monkeypatch):
+    rng = np.random.default_rng(2026)
+    constraints = rng.normal(size=(24, 4, 6))
+    rhs = rng.normal(size=(24, 4))
+    reference = (np.linalg.pinv(constraints, rcond=1e-11)
+                 @ rhs[..., None])[..., 0]
+    _, _, right = np.linalg.svd(constraints, full_matrices=True)
+
+    def unexpected_svd(*args, **kwargs):
+        raise AssertionError("These well-conditioned systems should use QR")
+
+    monkeypatch.setattr(np.linalg, "pinv", unexpected_svd)
+    result = strain_ops._least_norm_cell_solution(constraints, rhs)
+    np.testing.assert_allclose(result, reference, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(
+        (constraints @ result[..., None])[..., 0], rhs, rtol=1e-12, atol=1e-12
+    )
+    # No null-space component: among all solutions, this has minimum norm.
+    np.testing.assert_allclose(
+        (right[:, 4:] @ result[..., None])[..., 0], 0, atol=1e-12
+    )
+
+
+def test_cell_qr_retains_svd_rank_cutoff_and_degenerate_solutions():
+    rng = np.random.default_rng(27)
+    left, _ = np.linalg.qr(rng.normal(size=(4, 4)))
+    right, _ = np.linalg.qr(rng.normal(size=(6, 6)))
+    constraints, targets = [], []
+    for scale in (1e-8, 1, 1e8):
+        for smallest in (1e-3, 1e-7, 1e-10, 1.001e-11, 0.999e-11, 1e-12, 0):
+            diagonal = np.zeros((4, 6))
+            diagonal[:, :4] = np.diag([1, 0.8, 0.6, smallest])
+            constraints.append(scale * left @ diagonal @ right.T)
+            targets.append(scale * rng.normal(size=4))
+    constraints.append(np.zeros((4, 6)))
+    targets.append(rng.normal(size=4))
+    constraints = np.array(constraints)
+    targets = np.array(targets)
+    reference = (np.linalg.pinv(constraints, rcond=1e-11)
+                 @ targets[..., None])[..., 0]
+    np.testing.assert_allclose(
+        strain_ops._least_norm_cell_solution(constraints, targets), reference,
+        rtol=1e-11, atol=1e-10,
+    )
+
+
+def test_cell_zero_rhs_needs_no_factorization(monkeypatch):
+    def unexpected_factorization(*args, **kwargs):
+        raise AssertionError("Zero is already the exact minimum-norm solution")
+
+    monkeypatch.setattr(np.linalg, "qr", unexpected_factorization)
+    monkeypatch.setattr(np.linalg, "pinv", unexpected_factorization)
+    np.testing.assert_array_equal(
+        strain_ops._least_norm_cell_solution(np.ones((3, 4, 6)), np.zeros((3, 4))),
+        np.zeros((3, 6)),
+    )
+
+
+def test_cell_qr_rejects_bad_backward_error(monkeypatch):
+    rng = np.random.default_rng(31)
+    constraints = rng.normal(size=(8, 4, 6))
+    rhs = rng.normal(size=(8, 4))
+    reference = (np.linalg.pinv(constraints, rcond=1e-11)
+                 @ rhs[..., None])[..., 0]
+    monkeypatch.setattr(np.linalg, "solve", lambda matrix, target: np.zeros_like(target))
+    np.testing.assert_array_equal(
+        strain_ops._least_norm_cell_solution(constraints, rhs), reference
+    )
+
+    def factorization_failure(*args, **kwargs):
+        raise np.linalg.LinAlgError("Simulated factorization failure")
+
+    monkeypatch.setattr(np.linalg, "solve", factorization_failure)
+    np.testing.assert_array_equal(
+        strain_ops._least_norm_cell_solution(constraints, rhs), reference
+    )
+
+
+def test_optimized_search_retains_complete_svd_pareto_candidates(monkeypatch):
+    optimized = strain_ops._least_norm_cell_solution
+
+    def original_svd(constraints, rhs):
+        return (np.linalg.pinv(constraints, rcond=1e-11) @ rhs[..., None])[..., 0]
+
+    scenarios = [
+        ("FCC", "110", 39.5, 2, 12),
+        ("FCC", "110", 39.5, 2, 20),
+        ("FCC", "110", 39.5, 2, 40),
+        ("FCC", "110", 22, 10, 40),
+        ("FCC", "110", crystal.csl_angle_deg(4, 1), 2, 12),
+        ("FCC", "110", 0, 2, 12),
+        ("FCC", "112", 17.2, 2, 12),
+        ("BCC", "100", 37.2, 2, 12),
+        ("SC", "100", 37.2, 2, 12),
+        ("FCC", "1 -1 3", 21.4, 2, 12),
+        ("FCC", "110", 13.25, 0.001, 3),
+    ]
+    for lattice, axis, angle, percent, extent in scenarios:
+        first, second = strain_ops.candidate_vectors(angle, percent, extent, lattice, axis)
+
+        def search(solver):
+            monkeypatch.setattr(strain_ops, "_least_norm_cell_solution", solver)
+            parts = []
+            for start in range(0, len(first), 8):
+                parts.extend(strain_ops.solve_cells_chunk(
+                    angle, percent, first, second, start, start + 8, lattice, axis
+                )[1])
+            return strain_ops.pareto_cells(parts)
+
+        expected, actual = search(original_svd), search(optimized)
+        assert len(actual) == len(expected), (lattice, axis, angle, extent)
+        for reference, result in zip(expected, actual):
+            assert result.atoms == reference.atoms
+            assert result.max_strain == reference.max_strain
+            for field in ("m1", "m2", "f1", "f2", "cell"):
+                np.testing.assert_array_equal(getattr(result, field), getattr(reference, field))
+            np.testing.assert_array_equal(
+                strain_ops.strain_tensors(result, angle),
+                strain_ops.strain_tensors(reference, angle),
+            )

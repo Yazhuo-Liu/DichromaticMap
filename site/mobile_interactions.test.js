@@ -28,6 +28,7 @@ const sandbox = {
     addEventListener() {},
   },
   setTimeout, clearTimeout,
+  requestAnimationFrame: () => 1, cancelAnimationFrame() {},
 };
 vm.createContext(sandbox);
 const source = fs.readFileSync(path.join(__dirname, "use.js"), "utf8");

@@ -35,7 +35,9 @@ def test_site_publishes_documentation_and_preserves_deep_links():
     assert (output / "src/dichromatic_map/crystal.py").read_bytes() == (ROOT / "src/dichromatic_map/crystal.py").read_bytes()
     online = (output / "use.html").read_text(encoding="utf-8")
     assert './tutorial.js' in PageLinks(online).targets
-    assert (output / "tutorial.js").read_bytes() == (ROOT / "site/tutorial.js").read_bytes()
+    assert './render_data.js' in PageLinks(online).targets
+    for name in ("tutorial.js", "render_data.js", "worker_queue.mjs"):
+        assert (output / name).read_bytes() == (ROOT / "site" / name).read_bytes()
     validate_links(output)
 
 

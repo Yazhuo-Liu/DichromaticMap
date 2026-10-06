@@ -51,6 +51,8 @@ jobs:
           node --input-type=module --check < site/use_worker.js
           node site/mobile_interactions.test.js
           node site/tutorial.test.js
+          node site/view_performance.test.js
+          node --test site/worker_queue.test.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:

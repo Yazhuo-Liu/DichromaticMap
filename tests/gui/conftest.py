@@ -68,6 +68,7 @@ class GuiHarness:
                         window.angle_preview_timer,
                         window.coincidence_timer,
                         window.view_refresh_timer,
+                        window.view_counts_timer,
                         window.near_debounce_timer,
                     )
                 )

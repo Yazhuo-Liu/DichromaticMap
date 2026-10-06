@@ -39,6 +39,12 @@ changes you make while trying the features remain. App shortcuts such as **R**
 (boundary), **V** (vector), **M** (manual cell), **C** (center), **1 / 2** (boundary
 sides), and **F** (all sides) work when focus is outside input fields.
 
+The online app combines continuous angle input and searches the final parameters
+after you pause. Parameter changes or disabling Near-CSL cancel obsolete searches.
+Panning, zooming and measurements remain available during search. Views within
+the generated area reuse atom data. The browser engine still downloads Python
+and NumPy on its first start.
+
 ## Installation and launch
 
 For a viewer without installing Python, download the archive for your OS and
@@ -298,9 +304,11 @@ not the actual sheared or stretched lattice vectors. Vector measurements report
 actual displacements; their readout is placed above the axes while the overlay
 is visible. Normal PNG export includes the axes when enabled; clean export omits them.
 
-In `PERFORMANCE`, `CPU workers` controls calculation processes. Changing it
-refreshes calculations. More workers can help larger views and searches but
-use more CPU resources; choose 1 if process creation is restricted. Navigation
+In `PERFORMANCE`, `CPU workers` controls calculation processes and changing it
+refreshes calculations. Angle previews run in the background even with one
+worker, retaining only the newest pending view. Search blocks run continuously
+in the background, independently of progress display updates. More workers can
+help larger views and searches but use more CPU resources; choose 1 if process creation is restricted. Navigation
 remains available during calculation. After a geometry change, wait for new
 atom positions before picking.
 
