@@ -48,6 +48,8 @@ jobs:
           node --check site/index.js
           node --check site/use.js
           node --check site/gpu_renderer.js
+          node --check site/gpu_renderer.browser.test.js
+          node --check site/spatial_index.js
           node --check site/tutorial.js
           node --input-type=module --check < site/use_worker.js
           node site/mobile_interactions.test.js
@@ -55,6 +57,7 @@ jobs:
           node site/view_performance.test.js
           node --test site/marker_geometry.test.js
           node --test site/gpu_renderer.test.js
+          node --test site/spatial_index.test.js
           node --test site/worker_queue.test.mjs
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4

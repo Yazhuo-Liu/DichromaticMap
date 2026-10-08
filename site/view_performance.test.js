@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const renderData = require("./render_data.js");
+const spatialIndex = require("./spatial_index.js");
 
 async function main() {
 const nodes = new Map(), frames = new Map(), timers = new Map(), messages = [];
@@ -33,7 +34,7 @@ const sandbox = {
   Worker: class {postMessage(message) {messages.push(message);}},
   Option: class {}, devicePixelRatio: 1,
   window: {matchMedia: () => ({matches: false}), addEventListener() {},
-    DichromaticRenderData: renderData},
+    DichromaticRenderData: renderData, DichromaticSpatialIndex: spatialIndex},
   document: {getElementById: node, querySelectorAll: () => [],
     querySelector: () => node("dummy"), addEventListener() {}, createElement: () => ({getContext: () => context, toBlob() {}})},
   requestAnimationFrame(callback) { const id = ++sequence; frames.set(id, callback); return id; },
@@ -51,7 +52,7 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, "use.js"), "utf8") + `
 `, sandbox);
 const app = sandbox.app;
 const pattern = {grains:[[], []], coincidences:[], local:[]};
-for (let x = -20; x <= 20; x++) for (let y = -8; y <= 8; y++) for (let layer=0; layer<2; layer++) {
+for (let x = -60; x <= 60; x++) for (let y = -24; y <= 24; y++) for (let layer=0; layer<2; layer++) {
   const point = [x + layer*.2, y + layer*.1, layer, x, y, layer];
   pattern.grains[0].push(point);
   pattern.grains[1].push([...point]);
@@ -65,6 +66,9 @@ const typed = renderData.decodeRenderResult({format:"dichromatic-map-render-v1",
   coincidences:new Float64Array(pattern.coincidences.flat()), local:new Float64Array(pattern.local.flat())});
 app.setPattern(typed); verify();
 const projected = app.visibleData().atoms[0], projectedX = projected.x, projectedIndices = projected.indices;
+const candidates = projected.spatial.queryViewport(app.visibleData().transform);
+assert(candidates && candidates.length < projected.rows.length / 4,
+  "the app queries a conservative spatial subset before its exact Float64 viewport tests");
 app.state.center = [1,-2]; verify();
 assert.equal(app.visibleData().atoms[0],projected,"panning reuses the selection object");
 assert.equal(app.visibleData().atoms[0].x,projectedX,"panning reuses projected Float64 coordinates");

@@ -208,7 +208,9 @@ function visibleData() {
   const makeSelection = (source, stride, local = false) => {
     const rows = DenseRows.from(source || [], stride);
     const result = {rows, indices: new Uint32Array(rows.length), x: new Float64Array(rows.length),
-      y: new Float64Array(rows.length), count: 0};
+      y: new Float64Array(rows.length), count: 0, layers: new Set(),
+      spatial: window.DichromaticSpatialIndex
+        ? new window.DichromaticSpatialIndex.RowSpatialIndex(rows, {midpoints: local}) : null};
     if (local) { result.x2 = new Float64Array(rows.length); result.y2 = new Float64Array(rows.length); }
     result.points = new SelectedRows(rows, result);
     return result;
@@ -228,8 +230,11 @@ function visibleData() {
   const {cosine, sine, cx, cy, ox, oy, width, height} = transform;
   for (let grain = 0; grain < 2; grain++) {
     const record = data.atoms[grain], flat = record.rows.flat;
-    record.count = 0;
-    for (let index = 0; index < record.rows.length; index++) {
+    record.count = 0; record.layers.clear();
+    const candidates = record.spatial?.queryViewport(transform);
+    const length = candidates?.length ?? record.rows.length;
+    for (let cursor = 0; cursor < length; cursor++) {
+      const index = candidates ? candidates[cursor] : cursor;
       const offset = index * 6, px = flat[offset], py = flat[offset + 1], layer = flat[offset + 2];
       if (!state.visibleLayers[grain].has(layer) || !sideVisibleXY(px, py, grain)) continue;
       const x = ox + (cosine * px - sine * py - cx) * r.width / width;
@@ -237,12 +242,16 @@ function visibleData() {
       if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) {
         const at = record.count++;
         record.indices[at] = index; record.x[at] = x; record.y[at] = y;
+        record.layers.add(layer);
       }
     }
   }
   const csl = data.cslMarkers, common = csl.rows.flat;
   csl.count = 0;
-  for (let index = 0; index < csl.rows.length; index++) {
+  const commonCandidates = csl.spatial?.queryViewport(transform);
+  const commonLength = commonCandidates?.length ?? csl.rows.length;
+  for (let cursor = 0; cursor < commonLength; cursor++) {
+    const index = commonCandidates ? commonCandidates[cursor] : cursor;
     const offset = index * 3, px = common[offset], py = common[offset + 1], layer = common[offset + 2];
     if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer) ||
         !sideVisibleXY(px, py, 0) || !sideVisibleXY(px, py, 1)) continue;
@@ -257,7 +266,10 @@ function visibleData() {
   const local = data.localMarkers, pairs = local.rows.flat;
   local.count = 0;
   if (state.nearEnabled && state.nearMethod === "local") {
-    for (let index = 0; index < local.rows.length; index++) {
+    const localCandidates = local.spatial?.queryViewport(transform);
+    const localLength = localCandidates?.length ?? local.rows.length;
+    for (let cursor = 0; cursor < localLength; cursor++) {
+      const index = localCandidates ? localCandidates[cursor] : cursor;
       const offset = index * 5, ax = pairs[offset], ay = pairs[offset + 1],
         bx = pairs[offset + 2], by = pairs[offset + 3], layer = pairs[offset + 4];
       if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer) ||
