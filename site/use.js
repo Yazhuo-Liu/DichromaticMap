@@ -357,7 +357,7 @@ function marker(context, x, y, radius, symbol, stroke, fill, lineWidth = 1.25) {
     }
   } else {
     const sides = {d:4,t:3,s:4,p:5,h:6,star:10,t1:3,t2:3,t3:3}[symbol] || 6;
-    const start = symbol === "d" ? 0 : -Math.PI / 2;
+    const start = {d: 0, s: -Math.PI / 4, t1: Math.PI / 2, t2: 0, t3: Math.PI}[symbol] ?? -Math.PI / 2;
     for (let i = 0; i < sides; i++) {
       const rad = start + i * Math.PI * 2 / sides;
       const rr = symbol === "star" && i % 2 ? radius * .44 : radius;

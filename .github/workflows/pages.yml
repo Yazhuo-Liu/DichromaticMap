@@ -53,6 +53,7 @@ jobs:
           node site/mobile_interactions.test.js
           node site/tutorial.test.js
           node site/view_performance.test.js
+          node --test site/marker_geometry.test.js
           node --test site/gpu_renderer.test.js
           node --test site/worker_queue.test.mjs
       - uses: actions/configure-pages@v5
