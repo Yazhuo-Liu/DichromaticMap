@@ -41,6 +41,9 @@ let gpuRenderer;
 let renderCoverage;
 let renderPending;
 let renderError;
+let angleSliderDragging = false;
+let angleDragFinished;
+let anglePreview;
 let pointerStart;
 let dragDistance = 0;
 const activePointers = new Map();
@@ -55,12 +58,15 @@ if (window.matchMedia("(max-width: 820px)").matches) {
 }
 
 function setStatus(message) {
-  const g1 = pattern ? visiblePoints(0).length : 0;
-  const g2 = pattern ? visiblePoints(1).length : 0;
+  const displayed = currentPattern() ? visibleData() : previewVisibleData();
+  const g1 = displayed?.atoms[0].count || 0;
+  const g2 = displayed?.atoms[1].count || 0;
   const cslPoints = pattern ? visibleCSL() : [];
   const layerCounts = currentPattern() ? visibleData().layerCounts : new Map();
   const byLayer = Array.from(layerCounts, ([layer, count]) => `${layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`}: ${count}`).join(", ");
-  setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`);
+  const edgeHint = !currentPattern() && displayed && !displayed.coverageComplete
+    ? `<br>${angleSliderDragging ? "Release to update edge atoms." : "Updating edge atoms…"}` : "";
+  setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${currentPattern() ? cslPoints.length : "updating"}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}${edgeHint}<br>Compute: on this device`);
 }
 function setHTML(element, html) {
   if (element.innerHTML !== html) element.innerHTML = html;
@@ -105,6 +111,7 @@ function postToWorker(message) {
   catch (error) { retireWorker(error); return false; }
 }
 function retireWorker(error) {
+  releaseAngleDrag();
   workerFailure = error;
   worker?.terminate();
   renderGeneration++; geometryGeneration++; nearGeneration++;
@@ -157,10 +164,18 @@ function renderDimensions() {
   const radians = state.displayRotation * Math.PI / 180;
   const cosine = Math.abs(Math.cos(radians));
   const sine = Math.abs(Math.sin(radians));
-  return {
+  const dimensions = {
     width: Math.max(state.width * 1.43, cosine * state.width + sine * state.height + 2),
     height: Math.max(state.height * 1.43, sine * state.width + cosine * state.height + 2),
   };
+  // Cover centered angle previews through any rotation when the extra buffer
+  // is small. Keep wide or distant views bounded instead of allocating a huge
+  // origin-centered circle just for a transient preview.
+  const diagonal = Math.hypot(state.width, state.height) + .5;
+  const width = Math.max(dimensions.width, diagonal), height = Math.max(dimensions.height, diagonal);
+  if (width <= 150 && height <= 150 && width * height <= dimensions.width * dimensions.height * 1.25)
+    return {width, height};
+  return dimensions;
 }
 function rotate(point, degrees) {
   const a = degrees * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
@@ -235,10 +250,11 @@ function currentRenderParameters() {
   };
 }
 function currentPattern() {
-  return !!pattern && renderCoverage?.signature === JSON.stringify(currentRenderParameters());
+  return !angleSliderDragging && !!pattern && renderCoverage?.signature === JSON.stringify(currentRenderParameters());
 }
 async function waitForCurrentRender() {
   for (;;) {
+    if (angleSliderDragging) { await angleDragFinished.promise; continue; }
     viewSize();
     if (currentPattern() && coveredView(renderCoverage)) return;
     if (!renderPending || renderPending.settled) renderRequest();
@@ -247,6 +263,87 @@ async function waitForCurrentRender() {
     if (pending !== renderPending) continue;
     if (renderError) throw renderError;
   }
+}
+
+// Angle previews only feed drawing. The committed Float64 rows, identities,
+// matching results and currentPattern guard remain the scientific source.
+function prepareAnglePreview() {
+  if (anglePreview?.source === pattern && anglePreview.parameters.lattice === state.lattice &&
+      anglePreview.parameters.axis === state.axis) return;
+  anglePreview = undefined;
+  if (!pattern || !renderCoverage) return;
+  const parameters = JSON.parse(renderCoverage.signature);
+  if (parameters.lattice !== state.lattice || parameters.axis !== state.axis) return;
+  const inverse = parameters.deformations.map(f => {
+    const det = f[0][0] * f[1][1] - f[0][1] * f[1][0];
+    return [f[1][1] / det, -f[0][1] / det, -f[1][0] / det, f[0][0] / det];
+  });
+  if (!inverse.flat().every(Number.isFinite)) return;
+  const atoms = pattern.grains.map(source => {
+    const rows = window.DichromaticRenderData.DenseRows.from(source, 6);
+    return {rows, indices: new Uint32Array(rows.length), x: new Float64Array(rows.length),
+      y: new Float64Array(rows.length), count: 0, layers: new Set()};
+  });
+  anglePreview = {source: pattern, parameters, inverse, atoms, angle: pattern.angle ?? parameters.angle,
+    coverage: {center: [...renderCoverage.center], width: renderCoverage.width, height: renderCoverage.height},
+    cslMarkers: {count: 0}, localMarkers: {count: 0}};
+}
+function previewVisibleData() {
+  const preview = anglePreview;
+  if (!preview || preview.source !== pattern || preview.parameters.lattice !== state.lattice ||
+      preview.parameters.axis !== state.axis ||
+      preview.signature !== JSON.stringify(currentRenderParameters())) return null;
+  const transform = viewTransform();
+  const selection = `${[...state.visibleLayers[0]]}|${[...state.visibleLayers[1]]}|${state.boundary.flat()}|${state.regions}`;
+  if (preview.drawnSignature === preview.signature && preview.transform === transform &&
+      preview.selection === selection) return preview;
+  preview.drawnSignature = preview.signature; preview.transform = transform; preview.selection = selection;
+  preview.revision = ++visibleRevision;
+  preview.coverageComplete = true;
+  preview.reference_axes = [];
+  const {cosine, sine, cx, cy, ox, oy, width, height, rect: r} = transform;
+  for (let grain = 0; grain < 2; grain++) {
+    const radians = (1 - 2 * grain) * (state.angle - preview.angle) * Math.PI / 360;
+    const c = Math.cos(radians), s = Math.sin(radians), inv = preview.inverse[grain];
+    const f = state.deformations[grain], oldShift = preview.parameters.translations[grain];
+    const shift = state.translations[grain];
+    // p = F R q + t. Undo the committed F/t before applying the new rotation
+    // and current F/t; angle changes also reset a previously fitted structure.
+    const b00 = c * inv[0] - s * inv[2], b01 = c * inv[1] - s * inv[3];
+    const b10 = s * inv[0] + c * inv[2], b11 = s * inv[1] + c * inv[3];
+    const a00 = f[0][0] * b00 + f[0][1] * b10, a01 = f[0][0] * b01 + f[0][1] * b11;
+    const a10 = f[1][0] * b00 + f[1][1] * b10, a11 = f[1][0] * b01 + f[1][1] * b11;
+    const det = a00 * a11 - a01 * a10, coverage = preview.coverage;
+    for (const dx of [-width / 2, width / 2]) for (const dy of [-height / 2, height / 2]) {
+      const mx = cosine * (cx + dx) + sine * (cy + dy) - shift[0];
+      const my = -sine * (cx + dx) + cosine * (cy + dy) - shift[1];
+      const oldX = (a11 * mx - a01 * my) / det + oldShift[0];
+      const oldY = (-a10 * mx + a00 * my) / det + oldShift[1];
+      if (!(Math.abs(oldX - coverage.center[0]) <= coverage.width / 2 &&
+            Math.abs(oldY - coverage.center[1]) <= coverage.height / 2)) preview.coverageComplete = false;
+    }
+    const record = preview.atoms[grain], flat = record.rows.flat;
+    record.count = 0; record.layers.clear();
+    // The original spatial index uses old coordinates. Scan its immutable
+    // rows and clip the transformed points, without rebuilding an index/frame.
+    for (let index = 0; index < record.rows.length; index++) {
+      const offset = index * 6, layer = flat[offset + 2];
+      if (!state.visibleLayers[grain].has(layer)) continue;
+      const ax = flat[offset] - oldShift[0], ay = flat[offset + 1] - oldShift[1];
+      const px = a00 * ax + a01 * ay + shift[0], py = a10 * ax + a11 * ay + shift[1];
+      if (!sideVisibleXY(px, py, grain)) continue;
+      const x = ox + (cosine * px - sine * py - cx) * r.width / width;
+      const y = oy - (sine * px + cosine * py - cy) * r.height / height;
+      if (x >= r.left && x <= r.left + r.width && y >= r.top && y <= r.top + r.height) {
+        const at = record.count++;
+        record.indices[at] = index; record.x[at] = x; record.y[at] = y; record.layers.add(layer);
+      }
+    }
+    const polar = Math.atan2(f[1][0] - f[0][1], f[0][0] + f[1][1]) * 180 / Math.PI;
+    const rotation = polar + (1 - 2 * grain) * state.angle / 2;
+    preview.reference_axes.push([rotate([1, 0], rotation), rotate([0, 1], rotation)]);
+  }
+  return preview;
 }
 function visibleData() {
   const transform = viewTransform();
@@ -341,6 +438,7 @@ function visibleData() {
   return data;
 }
 function renderRequest() {
+  if (angleSliderDragging) { scheduleDraw(); return angleDragFinished.promise; }
   clearTimeout(renderTimer);
   renderPending?.finish();
   renderError = undefined;
@@ -363,16 +461,19 @@ function renderRequest() {
       const parameters = clone(currentRenderParameters());
       const signature = JSON.stringify(parameters);
       if (renderCoverage?.signature === signature && coveredView(renderCoverage)) {
+        if (!angleSliderDragging) anglePreview = undefined;
         draw(); updateSummary(); setStatus("Ready · choose an interaction tool"); return;
       }
       setStatus("Calculating lattice…");
       const raw = await request("render", {
         ...parameters, width: dimensions.width, height: dimensions.height, center: modelCenter,
       });
-      if (generation !== renderGeneration || signature !== JSON.stringify(currentRenderParameters())) return;
+      if (angleSliderDragging || generation !== renderGeneration ||
+          signature !== JSON.stringify(currentRenderParameters())) return;
       const result = window.DichromaticRenderData.decodeRenderResult(raw);
       state.angle = result.angle;
       pattern = result;
+      anglePreview = undefined;
       renderCoverage = {signature: JSON.stringify({...parameters, angle: result.angle}),
         center: modelCenter, ...dimensions};
       $("engine-overlay").classList.add("hidden");
@@ -551,9 +652,9 @@ function drawBoundary(context) {
   });
 }
 function drawAtoms(context, clean = false) {
-  if (!currentPattern()) return;
+  const visible = currentPattern() ? visibleData() : !clean && context === ctx ? previewVisibleData() : null;
+  if (!visible) return;
   const r = plotRect();
-  const visible = visibleData();
   context.save(); context.beginPath(); context.rect(r.left, r.top, r.width, r.height); context.clip();
   let gpuCanvas = null;
   if (context === ctx && !clean && window.DichromaticGPU &&
@@ -664,7 +765,8 @@ function referenceAxesBounds(r) {
   return {left: r.left + 14, top: r.top + r.height - 138, width: 178, height: 123};
 }
 function drawReferenceAxes(context, r) {
-  if (!currentPattern() || !pattern?.reference_axes || !metadata?.reference_labels) return;
+  const axes = currentPattern() ? pattern?.reference_axes : previewVisibleData()?.reference_axes;
+  if (!axes || !metadata?.reference_labels) return;
   const box = referenceAxesBounds(r);
   const x = box.left + 68, y = box.top + 67;
   context.save();
@@ -673,7 +775,7 @@ function drawReferenceAxes(context, r) {
   context.strokeRect(box.left + .5, box.top + .5, box.width - 1, box.height - 1);
   for (let grain = 0; grain < 2; grain++) {
     for (let axis = 0; axis < 2; axis++) {
-      const direction = rotate(pattern.reference_axes[grain][axis], state.displayRotation);
+      const direction = rotate(axes[grain][axis], state.displayRotation);
       context.strokeStyle = state.colors[grain]; context.fillStyle = state.colors[grain];
       context.lineWidth = 2; context.beginPath(); context.moveTo(x, y);
       const ex = x + direction[0] * 31, ey = y - direction[1] * 31;
@@ -843,8 +945,35 @@ async function changeGeometry() {
 function changeAngle(value) {
   const angle = Number(value);
   if (!Number.isFinite(angle) || angle < 0 || angle > metadata.max_angle) return fail(new Error(`Angle must be 0–${metadata.max_angle}°`));
+  prepareAnglePreview();
   geometryGeneration++;
-  state.angle = angle; resetSelections(); rebuildPreset(); updateSummary(); renderRequest();
+  state.angle = angle; resetSelections();
+  if (anglePreview) anglePreview.signature = JSON.stringify(currentRenderParameters());
+  rebuildPreset(); updateSummary(); scheduleDraw();
+  if (angleSliderDragging) { setStatus("Rotating grains…"); return; }
+  renderRequest();
+  if (state.nearEnabled && state.nearMethod === "strain") searchNear();
+}
+function beginAngleDrag(event) {
+  if (angleSliderDragging || event.button > 0 || event.isPrimary === false) return;
+  prepareAnglePreview();
+  if (anglePreview) anglePreview.signature = JSON.stringify(currentRenderParameters());
+  angleSliderDragging = true;
+  angleDragFinished = {};
+  angleDragFinished.promise = new Promise(resolve => { angleDragFinished.resolve = resolve; });
+  clearTimeout(renderTimer); renderGeneration++; renderPending?.finish();
+  postToWorker({type: "cancel", action: "render"});
+  scheduleDraw(); updateSummary();
+}
+function releaseAngleDrag() {
+  if (!angleSliderDragging) return false;
+  angleSliderDragging = false;
+  angleDragFinished.resolve();
+  return true;
+}
+function finishAngleDrag() {
+  if (!releaseAngleDrag()) return;
+  renderRequest();
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();
 }
 function setMode(mode) {
@@ -1330,6 +1459,11 @@ $("custom-axis").addEventListener("keydown", e => { if (e.key === "Enter") chang
 $("preset").addEventListener("change", () => { if ($("preset").value) changeAngle($("preset").value); });
 $("angle-number").addEventListener("change", () => changeAngle($("angle-number").value));
 $("angle-slider").addEventListener("input", () => changeAngle($("angle-slider").value));
+$("angle-slider").addEventListener("pointerdown", beginAngleDrag);
+$("angle-slider").addEventListener("change", finishAngleDrag);
+window.addEventListener("pointerup", finishAngleDrag);
+window.addEventListener("pointercancel", finishAngleDrag);
+window.addEventListener("blur", finishAngleDrag);
 function rotationChanged(value) {
   state.displayRotation = Number(value); updateSummary(); scheduleDraw(); renderRequest();
 }

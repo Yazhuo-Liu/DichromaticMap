@@ -6,7 +6,7 @@ const path = require("node:path");
 const renderData = require("./render_data.js");
 
 function harness() {
-  const nodes = new Map(), timers = new Map(), messages = [], titles = [];
+  const nodes = new Map(), timers = new Map(), frames = new Map(), windowEvents = new Map(), messages = [], titles = [];
   let sequence = 0, exports = 0;
   const context = new Proxy({fillText(text, x, y) { if (y === 17) titles.push(text); }},
     {get(target, key) { return target[key] ?? (() => {}); }});
@@ -26,26 +26,31 @@ function harness() {
       terminate() {this.terminated=true;}
     },
     Option: class {}, devicePixelRatio:1,
-    window: {matchMedia: () => ({matches:false}), addEventListener() {}, DichromaticRenderData:renderData},
+    window: {matchMedia: () => ({matches:false}), addEventListener(type, fn) {windowEvents.set(type, fn);}, DichromaticRenderData:renderData},
     document: {getElementById:node, querySelector: () => node("dummy"), querySelectorAll: () => [],
       addEventListener() {}, createElement: () => Object.assign(node(`created-${++sequence}`), {toBlob() {exports++;}})},
     setTimeout(fn, delay) {const id = ++sequence; timers.set(id,{fn,delay}); return id;},
-    clearTimeout: id => timers.delete(id), requestAnimationFrame: () => ++sequence, cancelAnimationFrame() {},
+    clearTimeout: id => timers.delete(id),
+    requestAnimationFrame(fn) {const id = ++sequence; frames.set(id, fn); return id;},
+    cancelAnimationFrame: id => frames.delete(id),
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname,"use.js"),"utf8") + `
     metadata = {layers:1,max_angle:90,presets:[],reference_labels:[],layer_spacing:1,axial_period:1};
     globalThis.app = {state, request, retryEngine, sessionState, renderRequest, nearestAtom, nearestCommon, screen, exportPNG,
-      updateSummary, currentPattern, changeAngle, resetSelections,
+      updateSummary, currentPattern, changeAngle, resetSelections, draw, previewVisibleData, visiblePoints,
+      get angleSliderDragging() {return angleSliderDragging;},
       updateVector, countManual, completeManual, toggleSelectedStrain, importSession,
       searchNear, cancelNearSearch, selectAt,
       get worker() {return worker;},
       get awaitingCount() {return awaiting.size;},
-      setPattern(value) {pattern=value; renderCoverage={signature:JSON.stringify(currentRenderParameters()),
-        center:[0,0],width:100,height:100}; viewSize();},
+      setPattern(value, coverage = {}) {pattern=value; renderCoverage={signature:JSON.stringify(currentRenderParameters()),
+        center:[0,0],width:100,height:100,...coverage}; viewSize();},
     };
   `,sandbox);
-  return {app:sandbox.app, node, messages, titles, sandbox,
+  return {app:sandbox.app, node, messages, titles, sandbox, windowEvents,
+    get frameCount() {return frames.size;},
+    flushFrame() {const pending=[...frames.values()]; frames.clear(); pending.forEach(fn => fn());},
     get exports() {return exports;},
     flush(delay) {for (const [id,timer] of [...timers]) if (timer.delay===delay) {timers.delete(id); timer.fn();}},
     last(action) {return messages.filter(m => m.request?.action===action).at(-1);},

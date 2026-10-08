@@ -105,6 +105,206 @@ def render_fixture(site):
     return {"request": request, "expected": json.loads(dispatch(json.dumps(request)))}
 
 
+def check_angle_drag(page, output):
+    """Drive the native range control and inspect real scheduled drawing."""
+    page.locator("#angle-slider").scroll_into_view_if_needed()
+    page.evaluate("""() => {
+      const probe = window.__sliderSmoke = {marker, image: ctx.drawImage,
+        toBlob: HTMLCanvasElement.prototype.toBlob, renderer: gpuRenderer,
+        exports: [], frame: {markers: [[], []], gpu: false}};
+      marker = function(...args) {
+        if (args[0] === ctx) {
+          if (args[5] === '#2e6799') probe.frame.markers[0].push([args[1], args[2]]);
+          else if (args[5] === state.colors[1]) probe.frame.markers[1].push([args[1], args[2]]);
+        }
+        return probe.marker(...args);
+      };
+      ctx.drawImage = function(...args) {
+        if (args[0] === probe.renderer.canvas) probe.frame.gpu = true;
+        return probe.image.apply(this, args);
+      };
+      HTMLCanvasElement.prototype.toBlob = function(...args) {
+        const exact = currentPattern() && state.angle === pattern.angle;
+        probe.exports.push({exact, angle: state.angle});
+        if (!exact) throw new Error('PNG copied an angle preview instead of the exact result');
+        return probe.toBlob.apply(this, args);
+      };
+    }""")
+
+    def thumb_position(value):
+        return page.locator("#angle-slider").evaluate("""(input, value) => {
+          const rect = input.getBoundingClientRect();
+          const fraction = (value - Number(input.min)) / (Number(input.max) - Number(input.min));
+          return [rect.left + 8 + (rect.width - 16) * fraction, rect.top + rect.height / 2];
+        }""", value)
+
+    def start_drag():
+        value = page.locator("#angle-slider").input_value()
+        page.mouse.move(*thumb_position(float(value)))
+        page.mouse.down()
+
+    def move_and_check(value):
+        page.evaluate("() => { __sliderSmoke.frame = {markers: [[], []], gpu: false}; }")
+        page.mouse.move(*thumb_position(value))
+        return page.evaluate("""async () => {
+          // Never draw manually: exercise the input handler's frame scheduling.
+          const checkPaint = () => {
+            const probe = __sliderSmoke;
+            if (probe.gpu ? !probe.frame.gpu : probe.frame.markers.some(points => !points.length))
+              throw new Error('Scheduled angle preview did not paint both grains');
+            // Check each sampled frame's real pixels as well as draw calls.
+            // The central region excludes the reference-axes inset and labels.
+            const r = plotRect(), ratio = canvas.width / canvas.clientWidth;
+            const size = Math.floor(Math.min(192, r.width / 2, r.height / 2) * ratio);
+            const pixels = ctx.getImageData(Math.floor((r.left + r.width / 2) * ratio - size / 2),
+              Math.floor((r.top + r.height / 2) * ratio - size / 2), size, size).data;
+            let blue = 0, orange = 0;
+            for (let at = 0; at < pixels.length; at += 4) {
+              if (pixels[at + 2] > pixels[at] + 35 && pixels[at + 2] > pixels[at + 1] + 15) blue++;
+              if (pixels[at] > pixels[at + 1] + 45 && pixels[at + 1] > pixels[at + 2] + 10) orange++;
+            }
+            if (blue < 10 || orange < 10) throw new Error('An angle-drag frame lost visible grain pixels');
+          };
+          await new Promise(requestAnimationFrame); checkPaint();
+          await new Promise(requestAnimationFrame); checkPaint();
+          if (!angleSliderDragging || currentPattern()) throw new Error('Native drag did not remain a preview');
+          const data = previewVisibleData(), probe = __sliderSmoke;
+          const positions = data.atoms.map((record, grain) => {
+            if (!record.count) throw new Error('A grain disappeared during angle dragging');
+            const sample = probe.samples[grain];
+            let projected = -1;
+            for (let index = 0; index < record.count; index++)
+              if (record.indices[index] === sample.index) { projected = index; break; }
+            if (projected < 0) throw new Error('An interior atom disappeared from the preview');
+            const key = Array.from(record.rows.flat.slice(sample.index * 6 + 2, sample.index * 6 + 6));
+            if (JSON.stringify(key) !== JSON.stringify(sample.key)) throw new Error('Preview changed physical atom identity');
+            const expected = screen(rotate(sample.position, (grain ? -1 : 1) * (state.angle - probe.angle) / 2));
+            const point = [record.x[projected], record.y[projected]];
+            if (!point.every(Number.isFinite) || Math.hypot(point[0] - expected[0], point[1] - expected[1]) > 2e-8)
+              throw new Error('Preview coordinates do not follow the physical grain rotation');
+            if (probe.previous && state.angle !== probe.previous.angle &&
+                Math.hypot(point[0] - probe.previous.positions[grain][0], point[1] - probe.previous.positions[grain][1]) < 1e-5)
+              throw new Error('A grain stayed frozen while the angle slider moved');
+            if (probe.gpu) {
+              // Query the actual vertex layout and uploaded GL buffer. This
+              // does not depend on the renderer's private CPU staging cache.
+              const gl = probe.renderer.canvas.getContext('webgl2');
+              const location = gl.getAttribLocation(gl.getParameter(gl.CURRENT_PROGRAM), 'a_position');
+              const buffer = gl.getVertexAttrib(location, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING);
+              const stride = gl.getVertexAttrib(location, gl.VERTEX_ATTRIB_ARRAY_STRIDE) || 8;
+              const offset = gl.getVertexAttribOffset(location, gl.VERTEX_ATTRIB_ARRAY_POINTER);
+              const previousBuffer = gl.getParameter(gl.ARRAY_BUFFER_BINDING), uploaded = new Float32Array(2);
+              const ordinal = projected + (grain ? data.atoms[0].count : 0);
+              try {
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+                gl.getBufferSubData(gl.ARRAY_BUFFER, offset + ordinal * stride, uploaded);
+              } finally { gl.bindBuffer(gl.ARRAY_BUFFER, previousBuffer); }
+              if (uploaded[0] !== Math.fround(point[0]) || uploaded[1] !== Math.fround(point[1]))
+                throw new Error('GPU displayed stale angle-preview coordinates');
+            } else if (!probe.frame.markers[grain].some(drawn => Math.hypot(drawn[0] - point[0], drawn[1] - point[1]) < 2e-8)) {
+              throw new Error('Canvas displayed stale angle-preview coordinates');
+            }
+            return point;
+          });
+          const origin = screen([0, 0]);
+          if (nearestAtom(...positions[0]) !== null || nearestCommon(...origin) !== null)
+            throw new Error('An approximate angle preview was selectable');
+          const oldMode = state.mode, count = state.atoms.length;
+          state.mode = 'vector';
+          try { await selectAt(...positions[0]); } finally { state.mode = oldMode; }
+          if (state.atoms.length !== count) throw new Error('Picking committed a preview atom');
+          probe.previous = {angle: state.angle, positions};
+          return {angle: state.angle, points: data.atoms.map(record => record.count)};
+        }""")
+
+    def check_exact():
+        return page.evaluate("""async () => {
+          await waitForCurrentRender();
+          if (angleSliderDragging || !currentPattern() || state.angle !== pattern.angle || !coveredView(renderCoverage))
+            throw new Error('Released angle slider did not settle to the exact current result');
+          const data = visibleData();
+          if (data.atoms.some(record => !record.count) || nearestAtom(data.atoms[0].x[0], data.atoms[0].y[0]) === null)
+            throw new Error('Exact drawing or picking did not recover after slider release');
+          return state.angle;
+        }""")
+
+    checks = []
+    try:
+        for scale, gpu in ((1, False), (5, True)):
+            page.locator("#field-slider").evaluate("""(input, scale) => {
+              input.value = String(scale); input.dispatchEvent(new Event('input', {bubbles:true}));
+            }""", scale)
+            page.evaluate("async () => { await waitForCurrentRender(); }")
+            maximum = page.locator("#angle-slider").evaluate("input => Number(input.max)")
+            page.evaluate("""gpu => {
+              const probe = __sliderSmoke, data = visibleData();
+              probe.gpu = gpu; probe.angle = state.angle; probe.previous = null;
+              probe.source = pattern; probe.originals = pattern.grains.map(rows => rows.flat.slice());
+              const radius = Math.min(state.width, state.height) / 5;
+              probe.samples = data.atoms.map(record => {
+                for (let cursor = 0; cursor < record.count; cursor++) {
+                  const index = record.indices[cursor], row = record.rows.flat.slice(index * 6, index * 6 + 6);
+                  const distance = Math.hypot(row[0], row[1]);
+                  if (distance > .25 && distance < radius)
+                    return {index, position: Array.from(row.slice(0, 2)), key: Array.from(row.slice(2))};
+                }
+                throw new Error('No interior atom is available for angle-drag regression');
+              });
+            }""", gpu)
+            start_drag()
+            frames = [move_and_check(maximum * fraction) for fraction in (.24, .265, .29, .315, .34)]
+            page.evaluate("""() => {
+              const probe = __sliderSmoke;
+              if (probe.source.grains.some((rows, grain) => !rows.flat.every((value, index) => Object.is(value, probe.originals[grain][index]))))
+                throw new Error('Angle preview modified the scientific Float64 source');
+            }""")
+            page.mouse.up()
+            released_angle = check_exact()
+
+            # A separate held drag verifies export waits for the release and
+            # exact Worker result, instead of silently exporting preview rows.
+            page.evaluate("""() => {
+              const probe = __sliderSmoke, data = visibleData();
+              probe.angle = state.angle; probe.previous = null;
+              probe.samples = probe.samples.map((sample, grain) => {
+                const rows = data.atoms[grain].rows;
+                for (let index = 0; index < rows.length; index++) {
+                  const row = rows.row(index);
+                  if (JSON.stringify(row.slice(2)) === JSON.stringify(sample.key))
+                    return {...sample, index, position: row.slice(0, 2)};
+                }
+                throw new Error('Exact result lost the test atom');
+              });
+              probe.exports = [];
+            }""")
+            start_drag()
+            move_and_check(maximum * .365)
+            with page.expect_download() as exported:
+                page.locator("#export-png").evaluate("button => button.click()")
+                page.evaluate("""async () => {
+                  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                  if (__sliderSmoke.exports.length) throw new Error('PNG exported before slider release');
+                }""")
+                page.mouse.up()
+                angle = check_exact()
+            png = output / ("slider-gpu.png" if gpu else "slider-canvas.png")
+            exported.value.save_as(png)
+            assert png.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+            snapshots = page.evaluate("() => __sliderSmoke.exports")
+            assert len(snapshots) == 1 and snapshots[0]["exact"] and snapshots[0]["angle"] == angle
+            checks.append({"renderer": "gpu" if gpu else "canvas", "frames": frames,
+                           "releaseAngle": released_angle, "exactAngle": angle, "png": png.name})
+    finally:
+        page.mouse.up()
+        page.evaluate("""() => {
+          const probe = __sliderSmoke;
+          marker = probe.marker; ctx.drawImage = probe.image;
+          HTMLCanvasElement.prototype.toBlob = probe.toBlob;
+          delete window.__sliderSmoke;
+        }""")
+    return checks
+
+
 def check_app(page, output, fixture):
     page.wait_for_function("typeof pattern !== 'undefined' && pattern && !document.getElementById('tutorial-start').disabled")
     page.evaluate("async () => { if (typeof waitForCurrentRender === 'function') await waitForCurrentRender(); draw(); }")
@@ -187,7 +387,8 @@ def check_app(page, output, fixture):
       }
       return {symbols: tested, points: gpuRenderer.count};
     }""")
-    return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu}
+    drag = check_angle_drag(page, output)
+    return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu, "angleDrag": drag}
 
 
 def main():
@@ -239,7 +440,7 @@ def main():
             assert not errors, errors
             report["runtime"] = base
             (output / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-            print("Real Chromium/Pyodide startup, Float64 parity, cancellation, session import, both PNG modes and twelve GPU markers passed.")
+            print("Real Chromium/Pyodide startup, Float64 parity, cancellation, session import, PNG, native angle dragging and twelve GPU markers passed.")
         except Exception:
             page.screenshot(path=str(output / "failure.png"), full_page=True)
             (output / "failure.txt").write_text(page.locator("#status").inner_text() + "\n" + "\n".join(errors + console), encoding="utf-8")
