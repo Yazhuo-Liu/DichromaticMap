@@ -22,6 +22,7 @@ Issues = "https://github.com/Yazhuo-Liu/DichromaticMap/issues"
 gui = ["PySide6", "pyqtgraph"]
 test = ["pytest>=8", "build>=1.2", "setuptools>=77.0.3", "wheel", "packaging>=22", "Markdown>=3.8,<4"]
 site = ["Markdown>=3.8,<4"]
+browser = ["playwright>=1.49,<2"]
 bundle = ["pyinstaller>=6.16,<7"]
 
 [project.scripts]

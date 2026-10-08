@@ -21,6 +21,10 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
+  browser:
+    name: Real browser and WebAssembly workflows
+    uses: ./.github/workflows/browser.yml
+
   core:
     name: Core / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest

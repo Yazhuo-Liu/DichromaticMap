@@ -71,6 +71,27 @@ platform, so it does not require a display server. The `packaging` suite checks
 the distributable package and keeps build artifacts in temporary directories.
 The default command runs all suites.
 
+Browser changes also require Node.js 24 and the real Chromium/Pyodide smoke
+check. From the repository root:
+
+```bash
+python -m pip install -e ".[test,browser]"
+python -m playwright install --with-deps chromium
+python scripts/build_site.py
+node --test site/*.test.js site/*.test.mjs
+python scripts/smoke_browser.py
+```
+
+The smoke check exercises startup, transferred Float64 coordinates and physical
+indices, search cancellation, session import, PNG export and the twelve common
+GPU marker shapes, including Canvas/GPU mask comparisons at device pixel ratios
+1 and 2. It downloads the Pyodide version pinned by the Worker into
+`.cache/pyodide` once and verifies package checksums from its runtime manifest.
+Use `--offline` to require an existing cache, or `--chromium /path/to/chromium`
+to use an installed browser. Diagnostics are written to `.cache/browser-smoke`.
+Pull requests run these browser checks. Pages publishes the exact artifact
+that passed the browser checks and numerical core tests.
+
 Tests remain in the source repository for contributors; they are not installed
 with the end-user wheel. Keep generated build artifacts out of contributions.
 

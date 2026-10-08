@@ -13,8 +13,11 @@ on:
       - "packaging/**"
       - "scripts/build_site.py"
       - "scripts/build_docs.py"
+      - "scripts/smoke_browser.py"
+      - "scripts/smoke_web.py"
       - "pyproject.toml"
       - ".github/workflows/pages.yml"
+      - ".github/workflows/browser.yml"
   workflow_dispatch:
 
 permissions:
@@ -27,41 +30,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  checks:
+    uses: ./.github/workflows/browser.yml
+    with:
+      check-core: true
+      upload-pages-artifact: true
+
   publish:
+    needs: checks
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Build static site
-        run: |
-          python -m pip install ".[site]"
-          python scripts/build_site.py
-      - name: Check browser adapter
-        run: |
-          python -m pip install numpy
-          python scripts/smoke_web.py
-          node --check site/index.js
-          node --check site/use.js
-          node --check site/gpu_renderer.js
-          node --check site/gpu_renderer.browser.test.js
-          node --check site/spatial_index.js
-          node --check site/tutorial.js
-          node --input-type=module --check < site/use_worker.js
-          node site/mobile_interactions.test.js
-          node site/tutorial.test.js
-          node site/view_performance.test.js
-          node --test site/marker_geometry.test.js
-          node --test site/gpu_renderer.test.js
-          node --test site/spatial_index.test.js
-          node --test site/worker_queue.test.mjs
       - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: site/_build
       - id: deployment
         uses: actions/deploy-pages@v4
