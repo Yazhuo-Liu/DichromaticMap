@@ -25,6 +25,9 @@ let callNumber = 0;
 const awaiting = new Map();
 let renderGeneration = 0;
 let nearGeneration = 0;
+let analysisGeneration = 0;
+let geometryGeneration = 0;
+const analysisRequests = new Map();
 let renderTimer;
 let nearTimer;
 let drawFrame;
@@ -53,7 +56,7 @@ function setStatus(message) {
   const g1 = pattern ? visiblePoints(0).length : 0;
   const g2 = pattern ? visiblePoints(1).length : 0;
   const cslPoints = pattern ? visibleCSL() : [];
-  const layerCounts = pattern ? visibleData().layerCounts : new Map();
+  const layerCounts = currentPattern() ? visibleData().layerCounts : new Map();
   const byLayer = Array.from(layerCounts, ([layer, count]) => `${layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`}: ${count}`).join(", ");
   setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${cslPoints.length}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}<br>Compute: on this device`);
 }
@@ -734,6 +737,9 @@ function rebuildLayers() {
 }
 async function loadMetadata(reset = true, supplied = null) {
   const result = supplied || await request("metadata", {lattice: state.lattice, axis: state.axis});
+  applyMetadata(reset, result);
+}
+function applyMetadata(reset, result) {
   metadata = result;
   state.lattice = result.lattice; state.axis = result.axis;
   if (reset) {
@@ -747,6 +753,7 @@ async function loadMetadata(reset = true, supplied = null) {
   rebuildPreset(); rebuildLayers(); updateSummary(); renderRequest();
 }
 function resetSelections() {
+  invalidateAnalyses();
   cancelNearSearch();
   state.boundary = []; state.atoms = []; state.manual = [];
   state.manualLocalCutoff = null; state.manualFit = null; state.manualOriginal = null;
@@ -756,23 +763,28 @@ function resetSelections() {
   $("vector-annotation").hidden = true; $("strain-info").classList.add("hidden");
 }
 async function changeGeometry() {
+  const generation = ++geometryGeneration;
+  invalidateAnalyses(); cancelNearSearch();
   try {
     const lattice = $("structure").value;
     const axis = $("axis").value === "custom" ? $("custom-axis").value : $("axis").value;
     const next = await request("metadata", {lattice, axis});
+    if (generation !== geometryGeneration) return;
     state.lattice = next.lattice; state.axis = next.axis;
     resetSelections();
     await loadMetadata(true, next);
     if (state.nearEnabled && state.nearMethod === "strain") searchNear();
-  } catch (error) { fail(error); }
+  } catch (error) { if (generation === geometryGeneration) fail(error); }
 }
 function changeAngle(value) {
   const angle = Number(value);
   if (!Number.isFinite(angle) || angle < 0 || angle > metadata.max_angle) return fail(new Error(`Angle must be 0–${metadata.max_angle}°`));
+  geometryGeneration++;
   state.angle = angle; resetSelections(); rebuildPreset(); updateSummary(); renderRequest();
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();
 }
 function setMode(mode) {
+  invalidateAnalyses();
   state.mode = state.mode === mode ? "idle" : mode;
   if (state.mode === "boundary") state.boundary = [];
   if (state.mode === "vector") { state.atoms = []; $("vector-annotation").hidden = true; }
@@ -854,9 +866,29 @@ function resolveCommon(candidate) {
 function manualPolygons() {
   return [0, 1].map(g => state.manual.map(v => v.endpoints[g]));
 }
+function invalidateAnalyses() {
+  analysisGeneration++;
+  if ($("completion-dialog").open) $("completion-dialog").close();
+}
+function analysisSignature(kind) {
+  const snapshot = sessionState();
+  // An exact-preset render may normalize the angle during search debounce.
+  // Explicit angle edits invalidate the analysis and near generations.
+  if (kind === "near") delete snapshot.angle;
+  return JSON.stringify([snapshot, sessionSettings()]);
+}
+function beginAnalysis(kind) {
+  const number = (analysisRequests.get(kind) || 0) + 1;
+  analysisRequests.set(kind, number);
+  return {kind, number, generation:analysisGeneration, signature:analysisSignature(kind)};
+}
+function analysisCurrent(token) {
+  return token.generation === analysisGeneration && analysisRequests.get(token.kind) === token.number &&
+    token.signature === analysisSignature(token.kind);
+}
 async function countManual() {
   if (state.manual.length !== 4) return;
-  const selected = JSON.stringify(state.manual);
+  const token = beginAnalysis("count");
   try {
     const result = await request("count", {
       polygons: manualPolygons(), angle: state.angle,
@@ -865,20 +897,22 @@ async function countManual() {
       boundary: state.boundary, use_boundary: $("count-visible").checked,
       region_states: state.regions,
     });
-    if (JSON.stringify(state.manual) !== selected) return;
+    if (!analysisCurrent(token)) return;
     const layer = state.manual[0].layer;
     const text = `G1: ${result.interior[0][layer]} interior + ${result.boundary[0][layer]} boundary\nG2: ${result.interior[1][layer]} interior + ${result.boundary[1][layer]} boundary\nAreas: ${result.areas.map(a => a.toFixed(4)).join(" / ")} a₀²`;
     $("manual-info").dataset.count = text;
     updateSummary(); setStatus("Manual cell counted");
   } catch (error) {
-    if (JSON.stringify(state.manual) === selected) {
-      state.manual.pop();
-      state.mode = "cell";
-    }
+    if (!analysisCurrent(token)) return;
+    state.manual.pop();
+    state.mode = "cell";
     draw(); updateSummary(); fail(error);
   }
 }
 async function selectAt(x, y) {
+  if (state.mode === "cell" && state.manual.length >= 4) {
+    state.mode = "idle"; updateSummary(); return;
+  }
   if (state.mode === "boundary") {
     const atom = nearestAtom(x, y); if (!atom) return setStatus("Click a visible atom for the boundary point");
     state.boundary.push(atom.position);
@@ -904,11 +938,13 @@ async function selectAt(x, y) {
 }
 async function updateVector() {
   if (state.atoms.length !== 2) return;
+  const token = beginAnalysis("vector");
   try {
     const result = await request("vector", {
       atoms: state.atoms, axial_repeat: state.axialRepeat, angle: state.angle,
       lattice: state.lattice, axis: state.axis, deformations: state.deformations,
     });
+    if (!analysisCurrent(token)) return;
     const text = [`P1→P2 · axial ${state.axialRepeat >= 0 ? "+" : ""}${state.axialRepeat}`];
     const vectors = Object.entries(result.vectors);
     for (const [grain, v] of vectors) {
@@ -924,7 +960,7 @@ async function updateVector() {
     $("vector-annotation").hidden = false;
     positionVectorAnnotation();
     setStatus("Vector measured");
-  } catch (error) { fail(error); }
+  } catch (error) { if (analysisCurrent(token)) fail(error); }
 }
 
 function fitPoints(points) {
@@ -942,12 +978,14 @@ function fitPoints(points) {
 }
 async function completeManual() {
   if (![2, 3].includes(state.manual.length)) return;
+  const token = beginAnalysis("complete");
   try {
     const candidates = await request("complete", {
       polygons: manualPolygons(), angle: state.angle, lattice: state.lattice, axis: state.axis,
       layer: state.manual[0].layer, percent: Number($("manual-strain").value),
       rotation: Number($("manual-rotation").value),
     });
+    if (!analysisCurrent(token)) return;
     if (!candidates.length) return setStatus("No compatible completion was found");
     const holder = $("completion-options"); holder.replaceChildren();
     candidates.forEach((c, index) => {
@@ -963,6 +1001,7 @@ async function completeManual() {
     });
     const dialog = $("completion-dialog"); dialog.showModal();
     $("completion-accept").onclick = async () => {
+      if (!analysisCurrent(token)) { dialog.close(); return; }
       const selected = holder.querySelector('input[name="completion"]:checked');
       if (!selected) return;
       const c = candidates[Number(selected.value)], oldCount = state.manual.length;
@@ -972,12 +1011,14 @@ async function completeManual() {
         const source = Math.hypot(endpoints[0][0] - endpoints[1][0], endpoints[0][1] - endpoints[1][1]) <= 1e-6 ? "CSL" : c.source;
         state.manual.push({position: midpoint, endpoints, layer: state.manual[0].layer, source});
       }
+      state.mode = "idle";
       dialog.close(); await countManual(); draw(); updateSummary();
     };
-  } catch (error) { fail(error); }
+  } catch (error) { if (analysisCurrent(token)) fail(error); }
 }
 async function toggleSelectedStrain() {
   if (state.manualFit) {
+    invalidateAnalyses();
     state.manual = state.manualOriginal;
     state.manualOriginal = null; state.manualFit = null;
     state.boundary = []; state.atoms = []; $("vector-annotation").hidden = true;
@@ -988,12 +1029,15 @@ async function toggleSelectedStrain() {
     return;
   }
   if (state.manual.length !== 4 || !state.manual.some(v => v.source !== "CSL")) return;
+  const token = beginAnalysis("fit");
   try {
     const fit = await request("fit_selected", {
       polygons: manualPolygons(), angle: state.angle, lattice: state.lattice,
       axis: state.axis, layer: state.manual[0].layer,
       percent: Number($("manual-strain").value), rotation: Number($("manual-rotation").value),
     });
+    if (!analysisCurrent(token)) return;
+    invalidateAnalyses(); cancelNearSearch();
     state.manualOriginal = clone(state.manual);
     state.manualFit = fit; state.nearCell = fit.cell;
     state.boundary = []; state.atoms = []; $("vector-annotation").hidden = true;
@@ -1007,11 +1051,12 @@ async function toggleSelectedStrain() {
     $("strain-info").classList.remove("hidden");
     $("strain-info").textContent = fit.readout || `Applied selected-cell strain\nMax principal strain: ${(fit.cell.max_strain * 100).toFixed(6)}%`;
     renderRequest(); await countManual(); updateSummary();
-  } catch (error) { fail(error); }
+  } catch (error) { if (analysisCurrent(token)) fail(error); }
 }
 function applyNearCell(index) {
   const cell = state.nearSolutions[index];
   if (!cell) return;
+  invalidateAnalyses();
   state.boundary = []; state.atoms = []; state.manual = [];
   state.nearCell = cell;
   state.deformations = [cell.f1, cell.f2]; state.translations = [[0, 0], [0, 0]];
@@ -1026,6 +1071,7 @@ function cancelNearSearch() {
 function searchNear() {
   cancelNearSearch();
   if (!state.nearEnabled || state.nearMethod !== "strain") return;
+  invalidateAnalyses();
   const generation = nearGeneration;
   state.nearCell = null; state.nearSolutions = [];
   state.deformations = identity(); state.translations = [[0, 0], [0, 0]];
@@ -1033,21 +1079,23 @@ function searchNear() {
   $("vector-annotation").hidden = true;
   renderRequest(); updateSummary();
   $("near-info").textContent = "Waiting for the current angle…";
+  const token = beginAnalysis("near");
   nearTimer = setTimeout(async () => {
     try {
+      if (generation !== nearGeneration || !analysisCurrent(token)) return;
       setStatus("Searching strained periodic cells locally…");
       $("near-info").textContent = "Searching compatible periodic cells in the browser worker…";
       const result = await request("near_search", {angle: state.angle,
         percent: Number($("strain-percent").value), index: Number($("search-index").value),
         lattice: state.lattice, axis: state.axis});
-      if (generation !== nearGeneration || !state.nearEnabled || state.nearMethod !== "strain") return;
+      if (generation !== nearGeneration || !analysisCurrent(token) || !state.nearEnabled || state.nearMethod !== "strain") return;
       state.nearSolutions = result;
       $("near-results").replaceChildren();
       result.forEach((cell, i) => $("near-results").add(new Option(cell.label, String(i))));
       if (result.length) applyNearCell(0);
       else $("near-info").textContent = "No compatible cell found within this bounded search. Increase the index or strain limit.";
       updateSummary(); setStatus(result.length ? "Strained common cells ready" : "No strained common cell found");
-    } catch (error) { if (generation === nearGeneration) fail(error); }
+    } catch (error) { if (generation === nearGeneration && analysisCurrent(token)) fail(error); }
   }, 150);
 }
 function downloadBlob(blob, name) {
@@ -1139,13 +1187,18 @@ async function saveSession() {
 }
 async function importSession(file) {
   if (!file) return;
+  invalidateAnalyses(); cancelNearSearch(); geometryGeneration++;
+  const token = beginAnalysis("import");
   try {
     const dataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader(); reader.onload = () => resolve(reader.result);
       reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
     });
     const loaded = await request("load_session", {bytes: dataUrl.split(",")[1]});
+    if (!analysisCurrent(token)) return;
     const raw = loaded.state, p = raw.parameters;
+    const nextMetadata = await request("metadata", {lattice:p.lattice, axis:p.axis});
+    if (!analysisCurrent(token)) return;
     state.lattice = p.lattice; state.axis = p.axis; state.angle = p.angle_deg;
     state.a0 = p.lattice_constant; state.mode = raw.interaction_mode;
     state.displayRotation = raw.display_rotation_deg; state.referenceAxes = raw.show_reference_axes;
@@ -1167,7 +1220,15 @@ async function importSession(file) {
     state.center = [(loaded.view_range[0] + loaded.view_range[1]) / 2,
                     (loaded.view_range[2] + loaded.view_range[3]) / 2];
     state.scale = Math.max(.1, Math.min(5, (loaded.view_range[1] - loaded.view_range[0]) / 12));
-    await loadMetadata(false);
+    $("vector-annotation").hidden = true;
+    $("vector-readout").textContent = "";
+    $("manual-info").dataset.count = "";
+    $("near-results").replaceChildren();
+    if (state.nearCell) $("near-results").add(new Option(state.nearCell.label || "Imported cell", "0"));
+    $("near-info").textContent = state.nearCell ? state.nearCell.readout || "Imported common cell" : "";
+    $("strain-info").classList.toggle("hidden", !state.manualFit);
+    $("strain-info").textContent = state.manualFit ? state.manualFit.readout || "Imported selected-cell strain" : "";
+    applyMetadata(false, nextMetadata);
     $("structure").value = state.lattice;
     const known = ["100","110","111","112"].includes(state.axis);
     $("axis").value = known ? state.axis : "custom";
@@ -1191,8 +1252,8 @@ async function importSession(file) {
     if (state.atoms.length === 2) updateVector();
     if (state.manual.length === 4) countManual();
     setStatus("Session imported");
-  } catch (error) { fail(error); }
-  $("session-file").value = "";
+  } catch (error) { if (analysisCurrent(token)) fail(error); }
+  finally { $("session-file").value = ""; }
 }
 
 $("structure").addEventListener("change", changeGeometry);
