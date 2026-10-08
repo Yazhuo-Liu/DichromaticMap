@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from .cells import count_cell_atoms
+from .cells import StrainedCell, count_cell_atoms
 from .crystal import crystal_vector_coordinates, rotation_matrix_2d
+from .matching import exact_csl_cell
 from .state import PatternState
-from .strain import strain_tensors
+from .strain import canonical_cell_basis, strain_tensors
 
 
 COUNT_COLUMNS = (
@@ -201,6 +202,30 @@ def _strain_rows(state, a0):
          "degree", "display_xy"),
         ("both", "lattice_constant", "", a0, "angstrom", "reference_cubic"),
     ))
+    # Supplement the unchanged physical tensors with a reproducible basis for
+    # a currently applied common cell, or the undeformed exact CSL cell.
+    current_cell = state.near_cell
+    if not isinstance(current_cell, StrainedCell):
+        current_cell = None
+    if current_cell is None and np.array_equal(state.deformations, (np.eye(2), np.eye(2))):
+        current_cell = exact_csl_cell(state.angle_deg, lattice=state.geometry.lattice,
+                                      axis=state.geometry.axis)
+    if (current_cell is not None
+            and current_cell.lattice == state.geometry.lattice
+            and current_cell.axis == state.geometry.axis
+            and np.array_equal(state.deformations, (current_cell.f1, current_cell.f2))):
+        canonical = canonical_cell_basis(current_cell, state.angle_deg)
+        for grain, matrix in zip(("G1", "G2"), (canonical.m1, canonical.m2)):
+            for i in range(2):
+                for j in range(2):
+                    rows.append((grain, "canonical_cell_indices", f"{i+1}{j+1}",
+                                 int(matrix[i, j]), "1", "reference_planar_lattice"))
+        for i, axis in enumerate("xy"):
+            for j in range(2):
+                value = canonical.cell[i, j]
+                for unit, scale in (("a0", 1), ("angstrom", a0)):
+                    rows.append(("both", "canonical_cell_vectors", f"{axis}{j+1}",
+                                 value * scale, unit, "analysis_xy"))
     return rows
 
 
@@ -269,6 +294,17 @@ Display rotation is separate and has no effect on strain or counts.
 Default sessions with no deformation or translation report identity F/R/U and
 zero E/strain/translation. Pure rigid rotations have zero strain but nonidentity
 F/R; a translation alone also leaves strain zero.
+
+canonical_cell_indices and canonical_cell_vectors describe the current applied
+common translation cell, or the undeformed exact CSL cell when available.
+Indices are the columns of m1 (G1) and m2 (G2) in each reference planar lattice.
+G1 fixes an exact column-Hermite convention: m1=[[a,b],[0,c]], a,c>0, 0<=b<a.
+The same integer unimodular column operation is applied to G2. Components 11,
+12,21,22 are row/column indices; x1,x2,y1,y2 are shared vector components.
+F, grain assignments and the selected UI cell remain unchanged. This identifies
+different bases of the SAME cell; it does not fold crystal symmetries, exchange
+grains, make the cell primitive, round floating tensors, or guarantee identical
+floating results across platforms. Translations/origins remain the saved ones.
 """
 
 

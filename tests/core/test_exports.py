@@ -238,3 +238,71 @@ def test_invalid_complete_cell_does_not_become_an_empty_table():
     current.manual_vertices = [CellVertex(np.zeros(2), 0, "csl") for _ in range(4)]
     with pytest.raises(ValueError, match="Cell atom endpoints"):
         build_export_tables(current, {})
+
+
+def test_same_common_cell_basis_variants_export_same_canonical_csv_without_mutation():
+    from dataclasses import replace
+    from dichromatic_map.strain import find_strained_cells
+
+    current = state("FCC", "110", 39.5)
+    original = find_strained_cells(39.5, 2, 12)[-1]
+    current.near_cell = original
+    current.deformations = (original.f1, original.f2)
+    expected = build_export_tables(current, {})["strain.csv"]
+    for transform in (np.array([[0, 1], [-1, 0]]), np.array([[1, 3], [0, 1]])):
+        variant = replace(original, m1=original.m1 @ transform,
+                          m2=original.m2 @ transform, cell=original.cell @ transform)
+        current.near_cell = variant
+        assert build_export_tables(current, {})["strain.csv"] == expected
+        np.testing.assert_array_equal(current.near_cell.m1, original.m1 @ transform)
+        np.testing.assert_array_equal(current.deformations, (original.f1, original.f2))
+    canonical = [row for row in rows({"strain.csv": expected}, "strain.csv")
+                 if row["quantity"] == "canonical_cell_indices"]
+    assert len(canonical) == 8
+    assert {row["grain"] for row in canonical} == {"G1", "G2"}
+
+
+def test_undeformed_exact_cell_export_has_canonical_basis_metadata():
+    current = state()
+    tables = build_export_tables(current, {})
+    canonical = [row for row in rows(tables, "strain.csv")
+                 if row["quantity"] == "canonical_cell_indices"]
+    assert len(canonical) == 8
+    assert [row["value"] for row in canonical] == ["1", "0", "0", "1"] * 2
+    assert "SAME cell" in tables["README.txt"]
+
+
+def test_browser_session_archive_contains_shared_canonical_basis_metadata():
+    import base64
+    import importlib.util
+    from pathlib import Path
+    from zipfile import ZipFile
+
+    current = state()
+    path = Path(__file__).resolve().parents[2] / "site" / "web_bridge.py"
+    spec = importlib.util.spec_from_file_location("canonical_export_bridge", path)
+    bridge = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bridge)
+    browser = {
+        "lattice": "SC", "axis": "100", "angle": 0, "a0": 2.5,
+        "colors": current.grain_colors, "symbols": current.layer_symbols,
+        "sizes": current.layer_size_scales,
+        "visible_layers": [list(layers) for layers in current.visible_grain_layers],
+        "boundary": [], "atoms": [], "manual": [],
+        "deformations": [np.eye(2).tolist(), np.eye(2).tolist()],
+        "translations": np.zeros((2, 2)).tolist(),
+    }
+    settings = dict(region_states=[True] * 4, manual_visible=False, show_common_cell=False,
+                    local_distance=0.1, strain_percent=2, search_index=12,
+                    manual_strain_percent=2, manual_rotation_deg=1)
+    encoded = bridge._save_session(dict(state=browser, settings=settings,
+                                        view_range=[-5, 5, -5, 5]))
+    with ZipFile(io.BytesIO(base64.b64decode(encoded))) as archive:
+        result = archive.read("strain.csv").decode("utf-8")
+        assert "canonical_cell_indices" in result
+        assert "canonical_cell_vectors" in result
+        assert "SAME cell" in archive.read("README.txt").decode("utf-8")
+        expected = build_export_tables(current, settings)["strain.csv"]
+        canonical_rows = lambda text: [row for row in csv.DictReader(io.StringIO(text))
+                                      if row["quantity"].startswith("canonical_cell_")]
+        assert canonical_rows(result) == canonical_rows(expected)

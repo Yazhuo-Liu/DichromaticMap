@@ -686,3 +686,12 @@ and frames; a₀/Å and a₀²/Å² conversions use the saved lattice constant. 
 manual-cell or vector selections produce header-only tables, whereas an
 unstrained grain has a real identity F and zero E. Numerical export errors fail
 the save instead of silently writing partial or stale results.
+
+`canonical_cell_basis(cell, angle)` uses exact integer extended Euclid to produce
+the G1 column-Hermite form `[[a,b],[0,c]]`, `a,c>0`, `0<=b<a`. The same unimodular
+column transform is applied to G2; common physical vectors are reconstructed
+from the unchanged G1 F, reference basis and canonical indices. `strain.csv`
+includes these indices/vectors for a current applied cell or an undeformed exact
+CSL cell. Search representatives, UI cells, grain assignments and F are unchanged.
+This canonicalizes bases of one cell, not crystal symmetry/grain-exchange classes;
+cross-platform floating bit identity is deliberately not obtained by rounding.

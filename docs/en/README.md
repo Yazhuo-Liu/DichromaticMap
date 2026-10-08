@@ -662,7 +662,7 @@ change the copy's extension to `.zip`). Its contents are:
 | `session.json` | Versioned state used by `Import session…` |
 | `counts.csv` | Each grain's selected-layer manual-cell counts: interior, boundary, closed and available half-open counts, area, and GB-filter status |
 | `vectors.csv` | P1→P2 in analysis/display coordinates and applicable grain polar/lattice frames, with axial-image and length information |
-| `strain.csv` | Per-grain deformation, polar rotation/stretch, Green–Lagrange strain, principal strains, translations and reference/current angles |
+| `strain.csv` | Per-grain deformation, polar rotation/stretch, Green–Lagrange strain, principal strains, translations, reference/current angles and canonical common-cell basis when available |
 | `README.txt` | Table units, coordinate conventions and missing-result rules |
 
 Open the CSV files in a spreadsheet or read them with Python's `csv` module.
@@ -673,6 +673,14 @@ its optional GB-side filter, independently of the viewport. With fewer than four
 cell vertices, `counts.csv` contains only its header; with fewer than two vector
 endpoints, `vectors.csv` does the same. Unstrained grains have identity deformation
 and zero strain, not a missing result. Editing a CSV does not change restored state.
+
+For an applied common cell or an undeformed exact CSL cell, `strain.csv` also
+records `canonical_cell_indices` and `canonical_cell_vectors`. The G1 integer
+edge matrix uses the exact column-Hermite convention `[[a,b],[0,c]]`, with
+`a,c > 0` and `0 <= b < a`; G2 receives the same integer change of basis.
+This makes different bases of the same cell comparable without changing F,
+grain labels or the selected UI cell. It does not fold crystal symmetries or
+grain exchange, make a cell primitive, or round floating results for file identity.
 
 PNG remains a separate figure export. The `.dmap` file contains numerical state
 and tables; export a PNG as well when you need the rendered image.

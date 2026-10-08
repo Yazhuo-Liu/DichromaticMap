@@ -33,6 +33,84 @@ class SelectedCellStrain:
     stretches: np.ndarray  # singular values, not eigenvalues of a nonsymmetric F
 
 
+@dataclass(frozen=True)
+class CanonicalCellBasis:
+    """A shared integer change of basis; grain labels and deformations are fixed."""
+
+    m1: np.ndarray
+    m2: np.ndarray
+    cell: np.ndarray
+    transform: np.ndarray
+
+
+def canonical_cell_basis(cell, angle):
+    """Canonical column-Hermite basis of the SAME common translation lattice.
+
+    G1 fixes the convention: m1 = [[a,b],[0,c]], a,c > 0, 0 <= b < a.
+    The same exact integer unimodular transform is applied to m2. Python
+    integers prevent overflow in extended Euclid and column operations.
+    Common vectors are rebuilt from the unchanged G1 F and reference basis,
+    not from a floating sequence of swaps/subtractions. This normalizes basis
+    choice only; it does not fold crystal symmetries, exchange grains, round
+    angles/F, or promise identical floating outputs across NumPy platforms.
+    """
+    if not np.isfinite(angle):
+        raise ValueError("Canonical cell requires a finite reference angle")
+    matrices = []
+    for matrix in (cell.m1, cell.m2):
+        array = np.asarray(matrix)
+        if (array.shape != (2, 2) or array.dtype.kind not in "iufO"
+                or any(isinstance(value, (bool, np.bool_)) for value in array.flat)):
+            raise ValueError("Canonical cell requires integer 2-by-2 edge matrices")
+        values = []
+        for value in array.flat:
+            if isinstance(value, (int, np.integer)):
+                values.append(int(value))
+            elif (isinstance(value, (float, np.floating)) and np.isfinite(value)
+                  and value == np.floor(value)):
+                values.append(int(value))
+            else:
+                raise ValueError("Canonical cell requires finite integer edge matrices")
+        matrices.append(np.array(values, dtype=object).reshape(2, 2))
+    m1, m2 = matrices
+    det1, det2 = determinant(m1), determinant(m2)
+    if det1 * det2 <= 0:
+        raise ValueError("Canonical cell requires compatible nonzero edge determinants")
+    f = np.asarray((cell.f1, cell.f2), dtype=float)
+    common = np.asarray(cell.cell, dtype=float)
+    if (f.shape != (2, 2, 2) or common.shape != (2, 2)
+            or not np.all(np.isfinite(f)) or not np.all(np.isfinite(common))):
+        raise ValueError("Canonical cell requires finite deformations and common vectors")
+    grain_bases = bases(angle, cell.lattice, cell.axis)
+    for deformation, basis, matrix in zip(f, grain_bases, matrices):
+        if not np.allclose(deformation @ basis @ np.asarray(matrix, dtype=float),
+                           common, atol=1e-8, rtol=1e-9):
+            raise ValueError("Canonical cell has inconsistent common translations")
+
+    # Extended Euclid: c*u + d*v = gcd(c,d), with a positive gcd.
+    c, d = m1[1]
+    old_r, r, old_u, u, old_v, v = abs(c), abs(d), 1, 0, 0, 1
+    while r:
+        quotient = old_r // r
+        old_r, r = r, old_r - quotient * r
+        old_u, u = u, old_u - quotient * u
+        old_v, v = v, old_v - quotient * v
+    divisor = old_r
+    second = np.array([old_u * (1 if c >= 0 else -1),
+                       old_v * (1 if d >= 0 else -1)], dtype=object)
+    first = np.array([d // divisor, -c // divisor], dtype=object)
+    if det1 < 0:
+        first = -first
+    width = abs(det1) // divisor
+    second -= ((m1[0] @ second) // width) * first
+    transform = np.column_stack((first, second))
+    canonical_m1, canonical_m2 = m1 @ transform, m2 @ transform
+    canonical_common = (f[0] @ grain_bases[0]) @ np.asarray(canonical_m1, dtype=float)
+    if not np.all(np.isfinite(canonical_common)):
+        raise ValueError("Canonical cell vectors exceed the numerical range")
+    return CanonicalCellBasis(canonical_m1, canonical_m2, canonical_common, transform)
+
+
 def _selected_deformations(solution, pure_strain):
     f = np.tile(np.eye(2), (2, 1, 1))
     if pure_strain:
