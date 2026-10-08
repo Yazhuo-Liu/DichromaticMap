@@ -558,7 +558,7 @@ function drawAtoms(context, clean = false) {
   let gpuCanvas = null;
   if (context === ctx && !clean && window.DichromaticGPU &&
       visible.atoms[0].count + visible.atoms[1].count >= 12000) {
-    if (gpuRenderer === undefined) gpuRenderer = window.DichromaticGPU.createRenderer();
+    if (gpuRenderer === undefined) gpuRenderer = window.DichromaticGPU.createRenderer({onRestored: scheduleDraw});
     if (gpuRenderer) {
       const metrics = canvasMetrics || refreshCanvasMetrics();
       gpuCanvas = gpuRenderer.render({width: metrics.width, height: metrics.height,

@@ -60,8 +60,10 @@ test("unavailable WebGL or initialization errors return the Canvas fallback", ()
 
 function fakeRenderer() {
   const uploads = [], draws = [], allocations = [], styleUpdates = [];
-  let lost = false, error = 0;
+  const listeners = new Map();
+  let lost = false, error = 0, time = 0, programs = 0, restored = 0;
   const functions = {NO_ERROR: 0, getParameter: () => [1, 1024],
+    createProgram: () => ({id: ++programs}), createBuffer: () => ({}),
     getShaderParameter: () => true, getProgramParameter: () => true,
     getAttribLocation: () => 0, isContextLost: () => lost, getError: () => error,
     bufferData: (_, size) => allocations.push(size),
@@ -70,11 +72,16 @@ function fakeRenderer() {
     drawArrays: (_, __, count) => draws.push(count)};
   const gl = new Proxy(functions, {get: (target, name) => name in target ? target[name]
     : /^[A-Z_]+$/.test(name) ? 1 : () => {}});
-  const canvas = {width: 0, height: 0, getContext: () => gl, addEventListener: () => {}};
-  const renderer = createRenderer({document: {createElement: () => canvas}, minimumAtoms: 0});
+  const canvas = {width: 0, height: 0, getContext: () => gl,
+    addEventListener: (name, callback) => listeners.set(name, callback)};
+  const renderer = createRenderer({document: {createElement: () => canvas}, minimumAtoms: 0,
+    now: () => time, onRestored: () => restored++});
   const options = {...style, width: 100, height: 100, dpr: 1,
     plot: {left: 0, top: 0, width: 100, height: 100}, atoms: [selection, []]};
-  return {renderer, options, uploads, draws, allocations, styleUpdates, setLost: value => {lost = value;}, setError: value => {error = value;}};
+  return {renderer, options, uploads, draws, allocations, styleUpdates,
+    setLost: value => {lost = value;}, setError: value => {error = value;},
+    advance: value => {time += value;}, dispatch: (name, event = {}) => listeners.get(name)(event),
+    programCount: () => programs, restoredCount: () => restored};
 }
 
 test("reused projections upload on viewport revision and style changes", () => {
@@ -111,6 +118,80 @@ test("context loss and runtime GPU errors immediately select Canvas fallback", (
   second.setError(0);
   assert.equal(second.renderer.render(second.options), null);
   assert.equal(second.draws.length, 1);
+});
+
+test("transient GPU errors rebuild after cooldown and refresh unchanged revision buffers", () => {
+  const fixture = fakeRenderer();
+  const {renderer, options, uploads, styleUpdates, allocations} = fixture;
+  assert.ok(renderer.render({...options, revision: 3}));
+  const storage = renderer.storage;
+  fixture.setError(1285);
+  assert.equal(renderer.render({...options, revision: 3}), null);
+  fixture.setError(0);
+  fixture.advance(999);
+  assert.equal(renderer.render({...options, revision: 3}), null);
+  assert.equal(fixture.programCount(), 1, "failed frames do not rebuild immediately");
+  fixture.advance(1);
+  assert.ok(renderer.render({...options, revision: 3}));
+  assert.equal(fixture.programCount(), 2);
+  assert.equal(uploads.length, 2, "new GL resources need coordinates even at the same revision");
+  assert.equal(styleUpdates.length, 2, "new programs need their style uniforms again");
+  assert.equal(allocations.length, 2);
+  assert.equal(renderer.storage, storage, "CPU staging capacity survives recovery");
+  assert.equal(renderer.retries, 0);
+});
+
+test("persistent GPU errors use two bounded rebuilds with backoff then remain on Canvas", () => {
+  const fixture = fakeRenderer();
+  const {renderer, options} = fixture;
+  fixture.setError(1285);
+  assert.equal(renderer.render(options), null);
+  fixture.advance(1000);
+  assert.equal(renderer.render(options), null);
+  assert.equal(renderer.retries, 1);
+  assert.equal(fixture.programCount(), 2);
+  fixture.advance(1999);
+  assert.equal(renderer.render(options), null);
+  assert.equal(fixture.programCount(), 2);
+  fixture.advance(1);
+  assert.equal(renderer.render(options), null);
+  assert.equal(renderer.retries, 2);
+  assert.equal(renderer.retryAt, Infinity);
+  assert.equal(fixture.programCount(), 3);
+  fixture.setError(0);
+  fixture.advance(100000);
+  assert.equal(renderer.render(options), null);
+  assert.equal(fixture.programCount(), 3, "persistent failures cannot trigger an endless rebuild loop");
+});
+
+test("context restoration resumes idle plots and uploads the latest view without changing scientific rows", () => {
+  const fixture = fakeRenderer();
+  const {renderer, options, uploads, styleUpdates} = fixture;
+  const before = rows.flat.slice(), originalX = selection.x[0];
+  assert.ok(renderer.render({...options, revision: 9}));
+  const oldProgram = renderer.program;
+  let prevented = false;
+  fixture.setLost(true);
+  fixture.dispatch("webglcontextlost", {preventDefault: () => {prevented = true;}});
+  assert.ok(prevented, "the browser is permitted to restore the context");
+  assert.equal(renderer.program, null);
+  assert.equal(renderer.render({...options, revision: 9}), null);
+  fixture.advance(100000);
+  assert.equal(renderer.render({...options, revision: 9}), null);
+  assert.equal(fixture.programCount(), 1, "context loss does not consume rebuild attempts");
+  try {
+    selection.x[0] = 57;
+    fixture.setLost(false);
+    fixture.dispatch("webglcontextrestored");
+    assert.equal(fixture.restoredCount(), 1, "the app schedules an idle redraw");
+    assert.ok(renderer.render({...options, revision: 10, colors: ["#ff0000", "#00ff00"]}));
+    assert.notEqual(renderer.program, oldProgram);
+    assert.equal(uploads.length, 2);
+    assert.equal(uploads[1][0], 57);
+    assert.equal(styleUpdates.at(-1)[4], 1);
+    assert.equal(renderer.revision, 10);
+    assert.deepEqual(rows.flat, before);
+  } finally { selection.x[0] = originalX; }
 });
 
 test("all twelve base symbols have distinct GPU styles; font glyphs keep Canvas", () => {

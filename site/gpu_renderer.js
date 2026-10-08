@@ -184,16 +184,31 @@ void main() {
 }`;
 
 class AtomRenderer {
-  constructor(documentObject, minimumAtoms) {
+  constructor(documentObject, minimumAtoms, {now = () => Date.now(), onRestored = null,
+    retryDelay = 1000, maximumRetries = 2} = {}) {
     this.canvas = documentObject.createElement("canvas");
     this.gl = this.canvas.getContext("webgl2", {
       alpha: true, antialias: false, premultipliedAlpha: true, preserveDrawingBuffer: true,
     });
     if (!this.gl) throw new Error("WebGL 2 unavailable");
     this.minimumAtoms = minimumAtoms;
+    this.now = now; this.onRestored = onRestored;
+    this.retryDelay = retryDelay; this.maximumRetries = maximumRetries;
+    this.retries = 0; this.retryAt = 0; this.contextLost = false;
     this.disabled = false;
     this.canvas.addEventListener("webglcontextlost", event => {
-      event.preventDefault(); this.disabled = true;
+      event.preventDefault();
+      this.contextLost = true; this.disabled = true; this.retryAt = Infinity;
+      // Old GL handles are invalid after loss. Keep only the reusable CPU
+      // staging buffer; scientific Float64 rows remain owned by the app.
+      this.discardResources(false);
+    });
+    this.canvas.addEventListener("webglcontextrestored", () => {
+      this.contextLost = false; this.disabled = true;
+      this.retries = 0; this.retryAt = this.now();
+      // The next render rebuilds resources and uploads its latest revision.
+      // Notify the app so an idle plot can also resume GPU rendering.
+      this.onRestored?.();
     });
     this.initializeResources();
   }
@@ -212,6 +227,34 @@ class AtomRenderer {
     if (gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1] < 44 || gl.getError() !== gl.NO_ERROR)
       throw new Error("GPU atom rendering unavailable");
     this.gpuCapacity = 0;
+    this.signature = undefined; this.styles = undefined;
+    this.uploadedStyleKey = undefined; this.revision = undefined; this.atoms = undefined;
+    this.count = 0;
+  }
+  discardResources(removeGLObjects = true) {
+    if (removeGLObjects && !this.gl.isContextLost()) {
+      for (const entry of Object.values(this.programs || {}))
+        if (entry) this.gl.deleteProgram(entry.program);
+      if (this.buffer) this.gl.deleteBuffer(this.buffer);
+    }
+    this.programs = null; this.program = null; this.buffer = null; this.gpuCapacity = 0;
+  }
+  scheduleRetry() {
+    this.disabled = true;
+    this.retryAt = this.retries >= this.maximumRetries ? Infinity
+      : this.now() + this.retryDelay * 2 ** this.retries;
+  }
+  recover() {
+    if (this.contextLost || this.gl.isContextLost() || this.now() < this.retryAt ||
+        this.retries >= this.maximumRetries) return false;
+    this.retries++;
+    try {
+      this.discardResources();
+      // Consume prior error flags before checking a newly rebuilt pipeline.
+      for (let count = 0; count < 16 && this.gl.getError() !== this.gl.NO_ERROR; count++) {}
+      this.initializeResources(); this.disabled = false;
+      return true;
+    } catch (_) { this.scheduleRetry(); return false; }
   }
   createProgram(fragmentSource, simple = false) {
     const gl = this.gl;
@@ -239,6 +282,7 @@ class AtomRenderer {
       Number.isFinite(width) && Number.isFinite(height) && Number.isFinite(dpr);
   }
   render(options) {
+    if (this.disabled && !this.recover()) return null;
     if (!this.canRender(options)) return null;
     try {
       const gl = this.gl;
@@ -279,13 +323,15 @@ class AtomRenderer {
         Math.ceil((height - plot.top) * dpr) - bottom);
       gl.useProgram(this.program); gl.uniform2f(program.size, width, height); gl.uniform1f(program.dpr, dpr);
       gl.drawArrays(gl.POINTS, 0, this.count);
-      if (gl.isContextLost() || gl.getError() !== gl.NO_ERROR) { this.disabled = true; return null; }
+      if (gl.isContextLost()) { this.disabled = true; return null; }
+      if (gl.getError() !== gl.NO_ERROR) { this.scheduleRetry(); return null; }
+      this.retries = 0;
       return this.canvas;
-    } catch (_) { this.disabled = true; return null; }
+    } catch (_) { this.scheduleRetry(); return null; }
   }
 }
-function createRenderer({document: documentObject = globalThis.document, minimumAtoms = GPU_MIN_ATOMS} = {}) {
-  try { return new AtomRenderer(documentObject, minimumAtoms); }
+function createRenderer({document: documentObject = globalThis.document, minimumAtoms = GPU_MIN_ATOMS, ...options} = {}) {
+  try { return new AtomRenderer(documentObject, minimumAtoms, options); }
   catch (_) { return null; }
 }
 const gpuExports = {createRenderer, packAtoms, gpuColor, gpuStyles, GPU_MIN_ATOMS, GPU_SYMBOL_IDS};
