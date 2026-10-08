@@ -78,6 +78,59 @@ class PhysicsTests(unittest.TestCase):
         self.assertEqual(solve("FCC", "110", 13.25, 0.001, 3), [])
 
 class SelectedStrainPhysicsTests(unittest.TestCase):
+    def test_bounded_square_fit_finds_feasible_49_51_cells(self):
+        uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
+        for angle, rotation_limit in ((0, 0), (0, 1), (2, 1)):
+            with self.subTest(angle=angle, rotation_limit=rotation_limit):
+                # Shifts must be genuine original lattice translations.
+                vertices = np.stack([
+                    uv @ (basis * size).T + basis @ offset
+                    for basis, size, offset in zip(
+                        cell_ops.bases(angle, "SC", "100"), (49, 51),
+                        ([3, -2], [-4, 7]),
+                    )
+                ])
+                before = vertices.copy()
+                fit = strain_ops.strain_selected_cell(
+                    vertices, angle, 2, "SC", "100",
+                    max_rotation_deg=rotation_limit,
+                )
+                np.testing.assert_array_equal(vertices, before)
+                self.assertLessEqual(fit.cell.max_strain, 0.02 + 1e-12)
+                np.testing.assert_allclose(fit.stretches, [[1.02, 1.02], [.98, .98]],
+                                           atol=2e-12, rtol=0)
+                self.assertLessEqual(np.max(np.abs(fit.rotations_deg)), rotation_limit + 1e-9)
+                self.assertLess(fit.residual, 1e-8)
+                np.testing.assert_allclose(fit.vertices[0], fit.vertices[1], atol=1e-8)
+                self.assertEqual(fit.cell.atoms, (49**2, 51**2))
+                self.assertGreater(np.min(np.linalg.det([fit.cell.f1, fit.cell.f2])), 0)
+
+    def test_bounded_square_fit_rejects_strain_or_rotation_infeasibility(self):
+        uv = np.array([[0, 0], [1, 0], [1, 1], [0, 1]])
+        for angle, percent, rotation_limit in ((0, 1.9, 0), (2.2, 3, 1)):
+            vertices = np.stack([
+                uv @ (basis * size).T
+                for basis, size in zip(cell_ops.bases(angle, "SC", "100"), (49, 51))
+            ])
+            before = vertices.copy()
+            with self.assertRaisesRegex(ValueError, "No bounded fit found"):
+                strain_ops.strain_selected_cell(
+                    vertices, angle, percent, "SC", "100", max_rotation_deg=rotation_limit
+                )
+            np.testing.assert_array_equal(vertices, before)
+
+    def test_compliant_selected_fit_never_runs_fallback(self):
+        from unittest.mock import patch
+        _, vertices = fcc22_diamond_pairs()
+        expected = strain_ops.strain_selected_cell(vertices, 22, layer=1)
+        with patch.object(strain_ops, "_bounded_selected_solution",
+                          side_effect=AssertionError("Original compliant fit must be kept")):
+            actual = strain_ops.strain_selected_cell(vertices, 22, layer=1)
+        for field in ("f1", "f2", "cell"):
+            np.testing.assert_array_equal(getattr(actual.cell, field), getattr(expected.cell, field))
+        np.testing.assert_array_equal(actual.translations, expected.translations)
+        np.testing.assert_array_equal(actual.vertices, expected.vertices)
+
     def test_sc_100_shifted_near_sigma5_four_pairs_fit_and_count(self):
         # Independent square-lattice construction: at cos(theta)=3/5 and
         # sin(theta)=4/5 these integer edge pairs become a common square.

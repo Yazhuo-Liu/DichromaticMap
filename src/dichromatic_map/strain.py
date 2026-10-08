@@ -33,6 +33,99 @@ class SelectedCellStrain:
     stretches: np.ndarray  # singular values, not eigenvalues of a nonsymmetric F
 
 
+def _selected_deformations(solution, pure_strain):
+    f = np.tile(np.eye(2), (2, 1, 1))
+    if pure_strain:
+        for g in (0, 1):
+            f[g, 0, 0] += solution[3 * g]
+            f[g, 1, 1] += solution[3 * g + 1]
+            f[g, 0, 1] = f[g, 1, 0] = solution[3 * g + 2] / np.sqrt(2)
+    else:
+        f += solution.reshape(2, 2, 2)
+    return f
+
+
+def _selected_components(f, pure_strain):
+    increments = f - np.eye(2)
+    if pure_strain:
+        return np.column_stack((increments[:, 0, 0], increments[:, 1, 1],
+                                np.sqrt(2) * increments[:, 0, 1])).ravel()
+    return increments.ravel()
+
+
+def _project_selected_bounds(f, strain_limit, rotation_limit):
+    """Nearest bounded 2D polar deformation, with no grain exchange.
+
+    For fixed R, the closest admissible U is the spectral clipping of
+    sym(R.T F). In 2D its eigenvalue gap is independent of the rotation;
+    its trace is largest at F's proper polar angle. Thus the closest allowed
+    angle is that polar angle clipped to the permitted interval. This also
+    handles singular/reflected intermediate iterates without accepting them.
+    """
+    projected = np.empty_like(f)
+    for grain, matrix in enumerate(f):
+        polar_angle = np.arctan2(matrix[1, 0] - matrix[0, 1], np.trace(matrix))
+        angle = np.clip(polar_angle, -rotation_limit, rotation_limit)
+        cosine, sine = np.cos(angle), np.sin(angle)
+        rotation = np.array(((cosine, -sine), (sine, cosine)))
+        stretch = rotation.T @ matrix
+        stretch = (stretch + stretch.T) / 2
+        values, vectors = np.linalg.eigh(stretch)
+        values = np.clip(values, 1 - strain_limit, 1 + strain_limit)
+        projected[grain] = rotation @ ((vectors * values) @ vectors.T)
+    return projected
+
+
+def _bounded_selected_solution(constraints, rhs, solution, strain_limit,
+                               max_rotation_deg, pure_strain):
+    """Try an equality-preserving bounded fit only after the default exceeds limits.
+
+    Dykstra projections solve the convex pure-strain feasibility problem.
+    Allowing rotations makes the stretch lower bound nonconvex; the same
+    bounded iteration is a feasibility attempt, not an infeasibility proof or
+    elastic optimum. Every returned fit is checked independently below.
+    The pseudoinverse uses the original least-squares rank cutoff.
+    """
+    if np.max(np.abs(constraints @ solution - rhs)) > 1e-8:
+        return None  # Incompatible fourth vertices cannot be fixed by bounds.
+    inverse = np.linalg.pinv(constraints, rcond=1e-11)
+    affine_correction = np.zeros_like(solution)
+    bounds_correction = np.zeros_like(solution)
+    rotation_limit = np.radians(max_rotation_deg)
+    current = solution.copy()
+    unchanged = 0
+    for _ in range(4096):
+        trial = current + bounds_correction
+        bounded = _selected_components(_project_selected_bounds(
+            _selected_deformations(trial, pure_strain), strain_limit, rotation_limit
+        ), pure_strain)
+        bounds_correction = trial - bounded
+        trial = bounded + affine_correction
+        aligned = trial + inverse @ (rhs - constraints @ trial)
+        affine_correction = trial - aligned
+        f = _selected_deformations(aligned, pure_strain)
+        left, stretches, right = np.linalg.svd(f)
+        rotation = left @ right
+        angles = np.degrees(np.arctan2(rotation[:, 1, 0], rotation[:, 0, 0]))
+        if (np.all(np.linalg.det(f) > 0)
+                and np.max(np.abs(stretches - 1)) <= strain_limit + 1e-12
+                and np.max(np.abs(angles)) <= max_rotation_deg + 1e-9
+                and np.max(np.abs(constraints @ aligned - rhs)) <= 1e-9):
+            return aligned
+        # Disjoint sets can leave the primal iterate stationary while dual
+        # corrections grow. Bound both runtime and numerical accumulation.
+        if np.max(np.abs(aligned - current)) <= 128 * np.finfo(float).eps:
+            unchanged += 1
+            if unchanged == 32:
+                return None
+        else:
+            unchanged = 0
+        if not np.all(np.isfinite(aligned)):
+            return None
+        current = aligned
+    return None
+
+
 def strain_selected_cell(
     vertices,
     angle,
@@ -44,7 +137,8 @@ def strain_selected_cell(
 ):
     """Align all four pairs by bounded, homogeneous in-plane deformation.
 
-    Minimize sum_g ||Fg-I||_F^2 under equality of the centered vertex sets.
+    First minimize sum_g ||Fg-I||_F^2 under equality of centered vertex sets.
+    If that solution exceeds the bounds, attempt a bounded feasible fit.
     Small rotations are allowed and bounded separately using Fg = Rg Ug.
     A zero rotation limit selects the symmetric, pure-strain solve instead.
     No candidate search or individual atom snapping is used.
@@ -101,15 +195,9 @@ def strain_selected_cell(
         else:
             constraints[2 * i] = (x, y, 0, 0, -u, -v, 0, 0)
             constraints[2 * i + 1] = (0, 0, x, y, 0, 0, -u, -v)
-    solution = np.linalg.lstsq(constraints, (b - a).ravel(), rcond=1e-11)[0]
-    f = np.tile(np.eye(2), (2, 1, 1))
-    if pure_strain:
-        for g in (0, 1):
-            f[g, 0, 0] += solution[3 * g]
-            f[g, 1, 1] += solution[3 * g + 1]
-            f[g, 0, 1] = f[g, 1, 0] = solution[3 * g + 2] / root2
-    else:
-        f += solution.reshape(2, 2, 2)
+    rhs = (b - a).ravel()
+    solution = np.linalg.lstsq(constraints, rhs, rcond=1e-11)[0]
+    f = _selected_deformations(solution, pure_strain)
     left, stretches, right = np.linalg.svd(f)
     rotation = left @ right
     rotations_deg = np.degrees(np.arctan2(rotation[:, 1, 0], rotation[:, 0, 0]))
@@ -118,13 +206,47 @@ def strain_selected_cell(
             "All four pairs cannot be aligned without collapse/reflection; choose another cell"
         )
     max_strain = float(np.max(np.abs(stretches - 1)))
+    if (max_strain > percent / 100 + 1e-12
+            or np.max(np.abs(rotations_deg)) > max_rotation_deg + 1e-9):
+        # Any bounded F maps each edge length into [(1-e)L, (1+e)L].
+        # This necessary certificate cheaply rules out many impossible fits
+        # before the iterative fallback, independently of allowed rotations.
+        edge_lengths = np.linalg.norm(
+            vertices[:, :, None, :] - vertices[:, None, :, :], axis=-1
+        )
+        length_difference = np.abs(edge_lengths[0] - edge_lengths[1])
+        feasible_lengths = np.all(length_difference <=
+            (percent / 100 + 1e-12) * edge_lengths.sum(axis=0) + 1e-10)
+        # F2 = F1 T. For two positive stretches bounded by 1 +/- e,
+        # the polar rotation of their product differs from the intervening
+        # rotation by at most asin(e**2): in 2D each stretch's anisotropy
+        # (lambda_max-lambda_min)/(lambda_max+lambda_min) is at most e.
+        # Hence this is a necessary rotation certificate, not a heuristic.
+        original_edges = [basis @ matrix for basis, matrix in zip(grain_bases, matrices)]
+        relative = np.linalg.solve(original_edges[1].T, original_edges[0].T).T
+        relative_angle = abs(np.degrees(np.arctan2(
+            relative[1, 0] - relative[0, 1], np.trace(relative)
+        )))
+        angle_slack = (1e-8 + 256 * np.finfo(float).eps
+                       * np.linalg.cond(original_edges[1]) * 180 / np.pi)
+        feasible_rotation = relative_angle <= (2 * max_rotation_deg
+            + np.degrees(np.arcsin((percent / 100 + 1e-12)**2)) + angle_slack)
+        bounded = (_bounded_selected_solution(
+            constraints, rhs, solution, percent / 100, max_rotation_deg, pure_strain
+        ) if feasible_lengths and feasible_rotation else None)
+        if bounded is not None:
+            f = _selected_deformations(bounded, pure_strain)
+            left, stretches, right = np.linalg.svd(f)
+            rotation = left @ right
+            rotations_deg = np.degrees(np.arctan2(rotation[:, 1, 0], rotation[:, 0, 0]))
+            max_strain = float(np.max(np.abs(stretches - 1)))
     if max_strain > percent / 100 + 1e-12:
         raise ValueError(
-            f"Least-change fit uses {100*max_strain:.6f}% principal strain, above the {percent:.4f}% limit. Nothing was changed."
+            f"No bounded fit found; least-change fit uses {100*max_strain:.6f}% principal strain, above the {percent:.4f}% limit. Nothing was changed."
         )
     if np.max(np.abs(rotations_deg)) > max_rotation_deg + 1e-9:
         raise ValueError(
-            f"Least-change fit uses {np.max(np.abs(rotations_deg)):.6f}° rotation, above the {max_rotation_deg:.4f}° per-grain limit. Nothing was changed."
+            f"No bounded fit found; least-change fit uses {np.max(np.abs(rotations_deg)):.6f}° rotation, above the {max_rotation_deg:.4f}° per-grain limit. Nothing was changed."
         )
     shifts = centroids.mean(axis=0) - np.einsum("gij,gj->gi", f, centroids)
     transformed = np.einsum("gij,gnj->gni", f, vertices) + shifts[:, None, :]

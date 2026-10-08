@@ -382,6 +382,18 @@ Normally all four entries of each gradient are free, giving eight equations in e
 A rotation limit of exactly zero switches to symmetric gradients and six Frobenius-scaled
 unknowns. Both variants use `numpy.linalg.lstsq` with `rcond=1e-11`.
 
+The original least-change solution is kept unchanged whenever it satisfies both
+limits. Otherwise, up to 4096 Dykstra projection iterations alternate the exact
+affine vertex equalities and bounded polar deformations, using the same `1e-11`
+rank cutoff. The zero-rotation problem is convex: the symmetric gradients have
+eigenvalues in `[1-p/100, 1+p/100]`. With rotation allowed the lower singular-value
+bound is nonconvex, so this is a bounded feasibility attempt, not a proof of
+infeasibility or a global constrained optimum. A stationary failed iteration
+terminates early. Every proposed fallback independently passes all original
+stretch, rotation, vertex and common-edge checks before it can be applied.
+For example, SC [100] squares of side 49 and 51 admit stretches 1.02 and 0.98
+at a 2% limit, despite the unconstrained least-change fit needing 2.039184%.
+
 The common target centroid is `c=(c1+c2)/2`, so each grain receives the uniform translation
 `tg = c - Fg cg`. These translations are essential when the selected cell is away from the
 origin or belongs to a shifted axial phase.

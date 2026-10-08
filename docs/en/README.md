@@ -588,8 +588,9 @@ Pan, zoom, display rotation and worker changes preserve an applied fit.
 Apply/restore clears old GB and vector selections; changing lattice, axis,
 reference angle or method clears the applied state.
 
-The fit favors small changes from the original grains and checks the limits;
-it does not search all possible admissible fits. It is an imposed geometric
+The fit keeps the least-change solution when it satisfies the limits. If it
+exceeds a limit, a bounded fallback attempts an admissible alignment. Failure
+does not prove that all possible fits are inadmissible. It is an imposed geometric
 transformation, not a stress-free configuration or an energy relaxation.
 
 <a id="gui-export"></a>
