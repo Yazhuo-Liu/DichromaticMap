@@ -6,6 +6,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const renderData = require("./render_data.js");
 
+async function main() {
 const nodes = new Map(), frames = new Map(), timers = new Map(), messages = [];
 let sequence = 0, boundsReads = 0, backingWrites = 0;
 const context = new Proxy({}, {get(target, key) { return target[key] ?? (() => {}); }});
@@ -45,7 +46,8 @@ vm.runInContext(fs.readFileSync(path.join(__dirname, "use.js"), "utf8") + `
   metadata = {layers:2, max_angle:90, presets:[], reference_labels:[], layer_spacing:1, axial_period:1};
   globalThis.app = {state, draw, scheduleDraw, exportPNG, visiblePoints, visibleCSL, visibleLocal, visibleData, screen,
     viewSize, coveredView, searchNear, cancelNearSearch, nearestAtom, nearestCommon, resolveCommon, setStatus, updateSummary, drawAtoms, sessionState,
-    setPattern(value) {pattern = value;}};
+    setPattern(value) {pattern = value; renderCoverage = {signature:JSON.stringify(currentRenderParameters()),
+      center: [0,0], width:1e6, height:1e6};}};
 `, sandbox);
 const app = sandbox.app;
 const pattern = {grains:[[], []], coincidences:[], local:[]};
@@ -123,7 +125,7 @@ function referenceSideVisible(point,grain) {
   return app.state.regions[2*grain] && cross>=-1e-9 || app.state.regions[2*grain+1] && cross<=1e-9;
 }
 function verify() {
-  app.viewSize(); app.draw();
+  app.viewSize(); app.setPattern(pattern); app.draw();
   for (let grain=0; grain<2; grain++) {
     assert.deepEqual(Array.from(app.visiblePoints(grain)), pattern.grains[grain].filter(p =>
       app.state.visibleLayers[grain].has(p[2]) && referenceVisible(p,grain)));
@@ -161,7 +163,7 @@ assert.equal(boundsReads,1,"a draw measures the canvas once regardless of point 
 assert.equal(backingWrites,0,"unchanged canvas size must retain its backing store");
 app.scheduleDraw(); app.draw(); assert.equal(frames.size,0,"a synchronous export/selection draw cancels a pending duplicate");
 node("clean-png").checked = false; node("vector-annotation").hidden = true;
-app.scheduleDraw(); app.exportPNG();
+app.scheduleDraw(); await app.exportPNG();
 assert.equal(frames.size,0,"PNG export must flush the latest scheduled view before copying pixels");
 
 const large = new Float64Array(6500*6);
@@ -214,3 +216,6 @@ app.searchNear(); app.cancelNearSearch();
 assert.equal([...timers.values()].filter(t=>t.delay===150).length,0,"disabling search clears delayed work");
 assert(messages.some(m=>m.type==="cancel" && m.action==="near_search"));
 console.log("Viewport filtering, frame coalescing, backing-store reuse, and latest-angle search passed.");
+
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

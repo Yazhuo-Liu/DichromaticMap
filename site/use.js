@@ -34,6 +34,8 @@ let visibilityCache;
 let visibleRevision = 0;
 let gpuRenderer;
 let renderCoverage;
+let renderPending;
+let renderError;
 let pointerStart;
 let dragDistance = 0;
 const activePointers = new Map();
@@ -164,13 +166,35 @@ function sideVisibleXY(x, y, grain) {
          (state.regions[2 * grain + 1] && cross <= 1e-9);
 }
 function visiblePoints(grain) {
-  return visibleData().points[grain];
+  return currentPattern() ? visibleData().points[grain] : [];
 }
 function visibleCSL() {
-  return visibleData().csl;
+  return currentPattern() ? visibleData().csl : [];
 }
 function visibleLocal() {
-  return visibleData().local;
+  return currentPattern() ? visibleData().local : [];
+}
+function currentRenderParameters() {
+  return {
+    lattice: state.lattice, axis: state.axis, angle: state.angle,
+    deformations: state.deformations, translations: state.translations,
+    local_matching: state.nearEnabled && state.nearMethod === "local",
+    local_distance: Number($("local-distance").value),
+  };
+}
+function currentPattern() {
+  return !!pattern && renderCoverage?.signature === JSON.stringify(currentRenderParameters());
+}
+async function waitForCurrentRender() {
+  for (;;) {
+    viewSize();
+    if (currentPattern() && coveredView(renderCoverage)) return;
+    if (!renderPending || renderPending.settled) renderRequest();
+    const pending = renderPending;
+    await pending.promise;
+    if (pending !== renderPending) continue;
+    if (renderError) throw renderError;
+  }
 }
 function visibleData() {
   const transform = viewTransform();
@@ -254,20 +278,22 @@ function visibleData() {
 }
 function renderRequest() {
   clearTimeout(renderTimer);
+  renderPending?.finish();
+  renderError = undefined;
+  const pending = {settled: false};
+  pending.promise = new Promise(resolve => {
+    pending.finish = () => { pending.settled = true; resolve(); };
+  });
+  renderPending = pending;
   worker.postMessage({type: "cancel", action: "render"});
   const generation = ++renderGeneration;
+  scheduleDraw();
   renderTimer = setTimeout(async () => {
     try {
       viewSize();
       const modelCenter = rotate(state.center, -state.displayRotation);
       const dimensions = renderDimensions();
-      const parameters = {
-        lattice: state.lattice, axis: state.axis, angle: state.angle,
-        deformations: state.deformations,
-        translations: state.translations,
-        local_matching: state.nearEnabled && state.nearMethod === "local",
-        local_distance: Number($("local-distance").value),
-      };
+      const parameters = clone(currentRenderParameters());
       const signature = JSON.stringify(parameters);
       if (renderCoverage?.signature === signature && coveredView(renderCoverage)) {
         draw(); updateSummary(); setStatus("Ready · choose an interaction tool"); return;
@@ -276,7 +302,7 @@ function renderRequest() {
       const raw = await request("render", {
         ...parameters, width: dimensions.width, height: dimensions.height, center: modelCenter,
       });
-      if (generation !== renderGeneration) return;
+      if (generation !== renderGeneration || signature !== JSON.stringify(currentRenderParameters())) return;
       const result = window.DichromaticRenderData.decodeRenderResult(raw);
       state.angle = result.angle;
       pattern = result;
@@ -289,8 +315,11 @@ function renderRequest() {
       draw();
       updateSummary();
       setStatus("Ready · choose an interaction tool");
-    } catch (error) { if (generation === renderGeneration) fail(error); }
+    } catch (error) {
+      if (generation === renderGeneration) { renderError = error; fail(error); }
+    } finally { pending.finish(); }
   }, 45);
+  return pending.promise;
 }
 function coveredView(coverage) {
   for (const x of [-state.width / 2, state.width / 2]) {
@@ -455,6 +484,7 @@ function drawBoundary(context) {
   });
 }
 function drawAtoms(context, clean = false) {
+  if (!currentPattern()) return;
   const r = plotRect();
   const visible = visibleData();
   context.save(); context.beginPath(); context.rect(r.left, r.top, r.width, r.height); context.clip();
@@ -512,7 +542,7 @@ function draw() {
   ctx.clip();
   drawAtoms(ctx);
   if (state.showCell) {
-    const cell = state.nearCell || pattern?.exact_cell;
+    const cell = state.nearCell || (currentPattern() ? pattern?.exact_cell : null);
     if (cell) drawPolygon(ctx, cellCorners(cell), "#0d9fa1", [7, 4]);
   }
   if (state.manual.length) {
@@ -554,7 +584,7 @@ function updateReferenceAxesToggle() {
 }
 function positionVectorAnnotation() {
   const annotation = $("vector-annotation");
-  if (state.referenceAxes && pattern?.reference_axes && metadata?.reference_labels) {
+  if (state.referenceAxes && currentPattern() && pattern?.reference_axes && metadata?.reference_labels) {
     const annotationBottom = referenceAxesBounds(plotRect()).top - 10;
     annotation.style.bottom = `${canvas.clientHeight - annotationBottom}px`;
     annotation.style.maxHeight = `${Math.max(1, annotationBottom - 45)}px`;
@@ -567,7 +597,7 @@ function referenceAxesBounds(r) {
   return {left: r.left + 14, top: r.top + r.height - 138, width: 178, height: 123};
 }
 function drawReferenceAxes(context, r) {
-  if (!pattern?.reference_axes || !metadata?.reference_labels) return;
+  if (!currentPattern() || !pattern?.reference_axes || !metadata?.reference_labels) return;
   const box = referenceAxesBounds(r);
   const x = box.left + 68, y = box.top + 67;
   context.save();
@@ -615,7 +645,7 @@ function updateSummary() {
     $(id).classList.toggle("selected", state.mode === mode);
   }
   const name = `${state.lattice} ⟨${state.axis}⟩`;
-  const preset = pattern?.preset ? ` · ${pattern.preset}` : "";
+  const preset = currentPattern() && pattern?.preset ? ` · ${pattern.preset}` : "";
   $("control-title").textContent = `${name} GB`;
   $("plot-title").textContent = `${name} dichromatic pattern · θ = ${state.angle.toFixed(2)}°${preset}`;
   $("angle-hint").textContent = `Exact θ = ${state.angle.toFixed(8)}° · allowed 0–${metadata.max_angle}°`;
@@ -636,11 +666,11 @@ function updateSummary() {
   $("strain-percent").closest("label").classList.toggle("hidden", state.nearMethod !== "strain");
   $("search-index").closest("label").classList.toggle("hidden", state.nearMethod !== "strain");
   $("near-results").classList.toggle("hidden", !state.nearSolutions.length);
-  if (state.nearEnabled && state.nearMethod === "local" && pattern?.local) {
+  if (state.nearEnabled && state.nearMethod === "local" && currentPattern() && pattern?.local) {
     const visible = visibleData();
     $("near-info").textContent = `Local same-layer mutual nearest pairs\nVisible pairs: ${visible.localMarkers.count}\nMaximum visible separation: ${visible.localMarkers.count ? visible.maxLocalSeparation.toFixed(5) : "—"} a₀\nOriginal atom positions retained.`;
   }
-  $("fit-cell").disabled = !(state.nearCell || pattern?.exact_cell);
+  $("fit-cell").disabled = !(state.nearCell || (currentPattern() ? pattern?.exact_cell : null));
   $("complete-cell").disabled = !(state.manual.length === 2 || state.manual.length === 3);
   $("fit-manual").disabled = !state.manual.length;
   $("apply-strain").disabled = state.manual.length !== 4 ||
@@ -754,6 +784,7 @@ function setMode(mode) {
   setStatus(({idle:"Ready · choose an interaction tool",boundary:"Pick B1, then B2 on visible atoms",vector:"Pick P1, then P2 on visible atoms",cell:"Pick four same-layer CSL or near-pair markers"})[state.mode]);
 }
 function nearestAtom(x, y) {
+  if (!currentPattern()) return null;
   let bestGrain = -1, bestIndex = -1, distance = Infinity;
   const visible = visibleData();
   for (let grain = 0; grain < 2; grain++) {
@@ -769,6 +800,7 @@ function nearestAtom(x, y) {
     half_indices: [flat[offset + 3], flat[offset + 4], flat[offset + 5]]};
 }
 function nearestCommon(x, y) {
+  if (!currentPattern()) return null;
   let bestSource = null, bestIndex = -1, distance = Infinity;
   const tiedLayers = new Set(), visible = visibleData(), csl = visible.cslMarkers;
   for (let index = 0; index < csl.count; index++) {
@@ -1024,7 +1056,9 @@ function downloadBlob(blob, name) {
   document.body.append(anchor); anchor.click(); anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
-function exportPNG() {
+async function exportPNG() {
+  try {
+  await waitForCurrentRender();
   // A download can precede the animation frame queued by the latest input.
   draw();
   const clean = $("clean-png").checked;
@@ -1061,6 +1095,7 @@ function exportPNG() {
     }
   }
   copy.toBlob(blob => { if (blob) downloadBlob(blob, clean ? "dichromatic-atoms.png" : "dichromatic-pattern.png"); });
+  } catch (error) { fail(error); }
 }
 function sessionState() {
   return {
@@ -1193,7 +1228,10 @@ $("no-layers").addEventListener("click", () => {
   state.visibleLayers = [new Set(),new Set()]; rebuildLayers(); draw(); updateSummary(); setStatus("Layers hidden");
 });
 $("show-cell").addEventListener("change", () => { state.showCell = $("show-cell").checked; draw(); });
-$("fit-cell").addEventListener("click", () => { const cell = state.nearCell || pattern?.exact_cell; if (cell) fitPoints(cellCorners(cell)); });
+$("fit-cell").addEventListener("click", () => {
+  const cell = state.nearCell || (currentPattern() ? pattern?.exact_cell : null);
+  if (cell) fitPoints(cellCorners(cell));
+});
 $("pick-gb").addEventListener("click", () => setMode("boundary"));
 $("pick-vector").addEventListener("click", () => setMode("vector"));
 $("pick-cell").addEventListener("click", () => setMode("cell"));
