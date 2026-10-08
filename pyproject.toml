@@ -19,7 +19,7 @@ Source = "https://github.com/Yazhuo-Liu/DichromaticMap"
 Issues = "https://github.com/Yazhuo-Liu/DichromaticMap/issues"
 
 [project.optional-dependencies]
-gui = ["PySide6", "pyqtgraph"]
+gui = ["PySide6", "pyqtgraph", "threadpoolctl>=3"]
 test = ["pytest>=8", "build>=1.2", "setuptools>=77.0.3", "wheel", "packaging>=22", "Markdown>=3.8,<4"]
 site = ["Markdown>=3.8,<4"]
 browser = ["playwright>=1.49,<2"]

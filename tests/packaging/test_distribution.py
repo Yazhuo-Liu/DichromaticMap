@@ -123,7 +123,7 @@ def test_wheel_contains_license_resources_and_correct_metadata(distributions):
         assert "3.10" in python_versions and "3.9" not in python_versions
         dependencies = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
         assert any(item.name.lower() == "numpy" and item.marker is None for item in dependencies)
-        for name in ("pyside6", "pyqtgraph"):
+        for name in ("pyside6", "pyqtgraph", "threadpoolctl"):
             assert any(
                 item.name.lower() == name and item.marker is not None
                 and item.marker.evaluate({"extra": "gui"})

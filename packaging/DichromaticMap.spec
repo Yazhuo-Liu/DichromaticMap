@@ -12,7 +12,7 @@ version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["
 datas = collect_data_files("dichromatic_map", includes=["ui/resources/**/*"])
 # Keep dependency metadata and its license texts with the redistributed libraries.
 # Conda combines the PySide6 distributions that pip ships separately.
-for package in ("numpy", "pyqtgraph", "PySide6", "shiboken6",
+for package in ("numpy", "pyqtgraph", "threadpoolctl", "PySide6", "shiboken6",
                 "PySide6_Essentials", "PySide6_Addons"):
     try:
         datas += copy_metadata(package)
@@ -24,7 +24,7 @@ analysis = Analysis(
     [str(root / "scripts" / "frozen_entry.py")],
     pathex=[str(root / "src")],
     datas=datas,
-    hiddenimports=["PySide6.QtSvg"],
+    hiddenimports=["PySide6.QtSvg", "threadpoolctl"],
     excludes=["PyQt5", "PyQt6", "PySide2", "matplotlib", "scipy", "IPython", "tkinter"],
 )
 pyz = PYZ(analysis.pure)

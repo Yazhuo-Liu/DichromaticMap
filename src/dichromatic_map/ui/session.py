@@ -7,6 +7,7 @@ import numpy as np
 
 from ._qt import QtCore, QtWidgets
 from .. import session as session_files
+from ..compute import run_numerical_task
 from ..crystal import projected_columns, rotation_matrix_2d
 from ..state import BUFFER_FACTOR, VIEW_SCALE_MIN, VIEW_SCALE_MAX
 from ..strain import selected_cell_strain_readout, tensor_readout
@@ -32,7 +33,7 @@ class SessionController:
             raise RuntimeError("A session operation is already running")
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1)
-        future = self._executor.submit(function, *args)
+        future = self._executor.submit(run_numerical_task, function, *args)
         self.pending_future = future
         loop = QtCore.QEventLoop()
         timer = QtCore.QTimer()

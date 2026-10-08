@@ -16,6 +16,17 @@ from test_workflows import pick_exact_cell
 pytestmark = pytest.mark.gui
 
 
+def test_session_worker_limits_blas_and_restores_external_configuration(gui):
+    threadpoolctl = pytest.importorskip("threadpoolctl")
+    window = gui.window()
+    with threadpoolctl.threadpool_limits(limits=2, user_api="blas"):
+        info = window.session._background(threadpoolctl.threadpool_info)
+        blas = [library for library in info if library["user_api"] == "blas"]
+        assert blas and all(library["num_threads"] == 1 for library in blas)
+        after = [library for library in threadpoolctl.threadpool_info() if library["user_api"] == "blas"]
+        assert all(library["num_threads"] == 2 for library in after)
+
+
 def test_initial_grains_are_generated_off_main_thread(gui, monkeypatch):
     release = threading.Event()
     started = threading.Event()

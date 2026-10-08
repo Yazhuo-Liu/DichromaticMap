@@ -7,6 +7,7 @@ modules only. The UI coordinates operations and polls completed futures.
 from __future__ import annotations
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from contextlib import contextmanager
 import multiprocessing
 import os
 import threading
@@ -26,15 +27,72 @@ PROCESS_MATCH_LAYERS = 4
 NEAR_PARALLEL_CANDIDATES = 256
 
 
+def _blas_controller():
+    try:
+        from threadpoolctl import ThreadpoolController
+    except ImportError:
+        return None  # The numerical package still supports NumPy-only installs.
+    return ThreadpoolController()
+
+
+class _SharedBlasLimit:
+    """Coordinate the process-wide BLAS setting across numerical tasks.
+
+    Per-thread limits contexts can restore another task's setting. Instead,
+    overlapping tasks share one limit, and the last task restores the setting
+    captured before the first. Idle viewers and importing this module leave
+    an embedding program's NumPy configuration alone.
+    """
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._users = 0
+        self._controller = None
+        self._loaded = False
+        self._limit = None
+
+    @contextmanager
+    def active(self):
+        with self._lock:
+            if not self._loaded:
+                self._controller = _blas_controller()
+                self._loaded = True
+            if self._users == 0 and self._controller is not None:
+                # Cache library discovery; short solve chunks only adjust the
+                # already loaded BLAS libraries, rather than scanning each time.
+                self._limit = self._controller.limit(limits=1, user_api="blas")
+            self._users += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._users -= 1
+                if self._users == 0 and self._limit is not None:
+                    limit, self._limit = self._limit, None
+                    limit.restore_original_limits()
+
+
+_thread_blas_limit = _SharedBlasLimit()
+
+
+def run_numerical_task(function, /, *args, **kwargs):
+    """Run an owned background task under the shared, temporary BLAS limit."""
+    with _thread_blas_limit.active():
+        return function(*args, **kwargs)
+
+
+class _NumericalThreadPoolExecutor(ThreadPoolExecutor):
+    def submit(self, function, /, *args, **kwargs):
+        return super().submit(run_numerical_task, function, *args, **kwargs)
+
+
 def worker_initializer():
     """Avoid each process starting its own BLAS thread team when available."""
     global _blas_limit
-    try:
-        from threadpoolctl import threadpool_limits
-
-        _blas_limit = threadpool_limits(limits=1)
-    except ImportError:
-        pass  # NumPy-only installations remain supported.
+    controller = _blas_controller()
+    if controller is not None:
+        # A spawned numerical process owns this setting until it exits.
+        _blas_limit = controller.limit(limits=1, user_api="blas")
 
 
 def worker_ready():
@@ -205,7 +263,9 @@ class NearSearch:
             self.busy = True
             self.active_workers = 1
             if self.executor is None:
-                self.executor = ThreadPoolExecutor(max_workers=self._executor_capacity)
+                self.executor = _NumericalThreadPoolExecutor(
+                    max_workers=self._executor_capacity,
+                )
             cached = get_cached_cell_search(*self.args)
             if cached is not None:
                 self._result = cached
@@ -218,7 +278,10 @@ class NearSearch:
         try:
             while not self._closed and self.jobs and len(self.running) < self.active_workers:
                 stage, function, args = self.jobs.popleft()
-                future = self.executor.submit(function, *args)
+                if isinstance(self.executor, _NumericalThreadPoolExecutor):
+                    future = self.executor.submit(function, *args)
+                else:
+                    future = self.executor.submit(run_numerical_task, function, *args)
                 self.running[future] = (
                     self.generation, stage, args[4] if stage == "solve" else -1
                 )
@@ -333,7 +396,9 @@ class ComputeSession:
 
     def thread_executor(self):
         if self.local_thread_executor is None:
-            self.local_thread_executor = ThreadPoolExecutor(max_workers=min(2, self.worker_count))
+            self.local_thread_executor = _NumericalThreadPoolExecutor(
+                max_workers=min(2, self.worker_count),
+            )
         return self.local_thread_executor
 
     def _large_multilayer_match(self, point_count, layer_count):
@@ -401,7 +466,6 @@ class ComputeSession:
             return False
         executor.shutdown(wait=False, cancel_futures=True)
         return True
-
 
     def close(self):
         for future in self.matching_warmup_futures:

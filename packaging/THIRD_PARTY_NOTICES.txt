@@ -24,5 +24,8 @@ license texts and incorporated notices, including NumPy's numerical libraries.
 Sources: https://github.com/numpy/numpy and https://github.com/pyqtgraph/pyqtgraph
 PyQtGraph also includes license notices beside its color map data.
 
+Threadpoolctl: BSD 3-Clause license, included in its bundled
+*.dist-info/licenses directory. Source: https://github.com/joblib/threadpoolctl
+
 Installed versions are recorded in each bundled *.dist-info/METADATA. These
 directories reside in _internal on Windows/Linux and inside the app on macOS.
