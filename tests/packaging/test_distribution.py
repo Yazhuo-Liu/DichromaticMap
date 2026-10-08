@@ -86,7 +86,7 @@ def test_source_distribution_includes_validation_and_documentation(distributions
         "packaging/DichromaticMap.spec", "packaging/README.txt", "docs/releases/v0.2.2.md",
         "packaging/THIRD_PARTY_NOTICES.txt", "packaging/licenses/LGPL-3.0.txt",
         "site/index.html", "site/index.js", "site/use.html", "site/use.js", "site/web_bridge.py",
-        "site/sitemap.xml",
+        "site/sitemap.xml", "site/use_worker.js", "site/worker_queue.mjs", "site/worker_queue.test.mjs",
         "scripts/build_site.py", "scripts/serve_site.py", "scripts/smoke_web.py",
     ):
         assert (source / name).is_file(), f"Missing from sdist: {name}"
@@ -94,6 +94,17 @@ def test_source_distribution_includes_validation_and_documentation(distributions
         assert list((source / "tests" / suite).glob("test_*.py"))
     assert not (source / "site" / "_build").exists()
     assert (source / "LICENSE").read_bytes() == (ROOT / "LICENSE").read_bytes()
+
+
+def test_source_distribution_builds_the_complete_online_workspace(distributions):
+    _, source, _ = distributions
+    run([sys.executable, "-B", "scripts/build_site.py"], cwd=source)
+    output = source / "site" / "_build"
+    assert (output / "use.html").is_file()
+    assert (output / "vendor" / "dichromatic_map.zip").is_file()
+    assert (output / "worker_queue.mjs").read_bytes() == (source / "site" / "worker_queue.mjs").read_bytes()
+    worker = (output / "use_worker.js").read_text(encoding="utf-8")
+    assert 'from "./worker_queue.mjs"' in worker
 
 
 def test_wheel_contains_license_resources_and_correct_metadata(distributions):
