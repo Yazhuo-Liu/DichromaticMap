@@ -67,12 +67,13 @@ class PatternParameters:
                 f"angle_deg must be between 0 and {limit:g} degrees "
                 f"for {geometry.lattice} {geometry.axis_label}"
             )
-        if self.lattice_constant <= 0.0:
-            raise ValueError("lattice_constant must be positive")
-        if self.width <= 0.0 or self.height <= 0.0:
-            raise ValueError("width and height must be positive")
-        if self.marker_size <= 0.0:
-            raise ValueError("marker_size must be positive")
+        if not np.isfinite(self.lattice_constant) or self.lattice_constant <= 0.0:
+            raise ValueError("lattice_constant must be finite and positive")
+        if (not np.isfinite(self.width) or not np.isfinite(self.height)
+                or self.width <= 0.0 or self.height <= 0.0):
+            raise ValueError("width and height must be finite and positive")
+        if not np.isfinite(self.marker_size) or self.marker_size <= 0.0:
+            raise ValueError("marker_size must be finite and positive")
         if not VIEW_SCALE_MIN <= self.view_scale <= VIEW_SCALE_MAX:
             raise ValueError(
                 f"view_scale must be between {VIEW_SCALE_MIN} and {VIEW_SCALE_MAX}"

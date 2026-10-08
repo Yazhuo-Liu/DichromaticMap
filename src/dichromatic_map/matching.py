@@ -46,6 +46,22 @@ class LocalPairs:
         return np.linalg.norm(self.first - self.second, axis=1)
 
 
+def _spatial_cells(first, second, radius):
+    """Use a common origin and reject nonfinite or overflowing bin addresses."""
+    if any(points.ndim != 2 or points.shape[1] != 2
+           or not np.all(np.isfinite(points)) for points in (first, second)):
+        raise ValueError("Matching requires finite two-dimensional point arrays")
+    origin = np.minimum(first.min(axis=0), second.min(axis=0))
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        first_cells = np.floor((first - origin) / radius)
+        second_cells = np.floor((second - origin) / radius)
+    limit = float(np.iinfo(np.int64).max)
+    if any(not np.all(np.isfinite(cells)) or np.any(cells < 0)
+           or np.any(cells >= limit) for cells in (first_cells, second_cells)):
+        raise ValueError("Matching coordinate/tolerance range exceeds integer bin limits")
+    return first_cells.astype(np.int64), second_cells.astype(np.int64)
+
+
 def _nearest_in_radius(first, second, radius):
     """Spatial bins + bounded vector batches, without a dense distance matrix.
 
@@ -58,9 +74,7 @@ def _nearest_in_radius(first, second, radius):
     if not len(first) or not len(second):
         return nearest
     # Work relative to a common origin, avoiding packed-key wraparound on pan.
-    origin = np.minimum(first.min(axis=0), second.min(axis=0))
-    first_cells = np.floor((first - origin) / radius).astype(np.int64)
-    second_cells = np.floor((second - origin) / radius).astype(np.int64)
+    first_cells, second_cells = _spatial_cells(first, second, radius)
     # Scalar integer searches are substantially faster than structured-array
     # comparisons. Pad the shared rectangle by one cell on every side, so
     # neighboring rows cannot alias even at the boundary. Keep the full-width
@@ -171,7 +185,6 @@ def local_near_pairs(
     return LocalPairs.concatenate(batches)
 
 
-@lru_cache(maxsize=256)
 def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
     """Exact, layer-preserving common cell; no strain search or atom matching.
 
@@ -185,7 +198,25 @@ def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
     whose coefficients are not invertible modulo the denominator.
     This is primitive in the A-preserving plane, not necessarily in 3D.
     Noncommensurate/unrecognized angles return None, never a strained fit.
+    Returned arrays are independent writable copies of the private cache.
     """
+    geometry = get_geometry(lattice, axis)
+    if not isinstance(max_denominator, (int, np.integer)) or max_denominator < 1:
+        raise ValueError("max_denominator must be a positive integer")
+    if not np.isfinite(angle) or not 0 <= angle <= 180:
+        return None
+    cached = _exact_csl_cell(float(angle), int(max_denominator),
+                             geometry.lattice, geometry.axis)
+    if cached is None:
+        return None
+    return StrainedCell(*(getattr(cached, field).copy()
+                         for field in ("m1", "m2", "f1", "f2", "cell")),
+                       cached.max_strain, cached.lattice, cached.axis)
+
+
+@lru_cache(maxsize=256)
+def _exact_csl_cell(angle, max_denominator, lattice, axis):
+    """Cached exact calculation; callers never receive these private arrays."""
     geometry = get_geometry(lattice, axis)
     lattice, axis = geometry.lattice, geometry.axis
     norm_squared = geometry.axis_norm_squared
@@ -233,7 +264,16 @@ def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
     # The recognition tolerance is not permission to create non-common corners.
     if not np.allclose(cell, b2 @ m2, atol=1e-8, rtol=0):
         return None
-    return StrainedCell(m1, m2, np.eye(2), np.eye(2), cell, 0.0, lattice, axis)
+    arrays = (m1, m2, np.eye(2), np.eye(2), cell)
+    for array in arrays:
+        array.setflags(write=False)
+    return StrainedCell(*arrays, 0.0, lattice, axis)
+
+
+# Preserve cache inspection/control used by Python clients of the public API.
+exact_csl_cell.cache_clear = _exact_csl_cell.cache_clear
+exact_csl_cell.cache_info = _exact_csl_cell.cache_info
+exact_csl_cell.cache_parameters = _exact_csl_cell.cache_parameters
 
 
 def same_layer_coincidence_sites(
@@ -243,18 +283,11 @@ def same_layer_coincidence_sites(
 ) -> tuple[np.ndarray, ...]:
     """Find coincidences separately in every computed axial phase."""
 
-    if tolerance <= 0.0:
-        raise ValueError("coincidence tolerance must be positive")
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("coincidence tolerance must be finite and positive")
     sites_by_layer: list[np.ndarray] = []
-    tolerance_squared = tolerance * tolerance
-
-    def packed_cell_keys(cells: np.ndarray) -> np.ndarray:
-        """Pack two signed 32-bit cell coordinates into one sortable key."""
-
-        mask = np.uint64(0xFFFFFFFF)
-        x_bits = cells[:, 0].astype(np.uint64) & mask
-        y_bits = cells[:, 1].astype(np.uint64) & mask
-        return (x_bits << np.uint64(32)) | y_bits
+    with np.errstate(over="ignore", under="ignore"):
+        tolerance_squared = np.float64(tolerance) ** 2
 
     first_layers = grain_1.layer_selections()
     second_layers = grain_2.layer_selections()
@@ -271,11 +304,27 @@ def same_layer_coincidence_sites(
             sites_by_layer.append(np.empty((0, 2)))
             continue
 
-        second_cells = np.floor(second / tolerance).astype(np.int64)
-        second_keys = packed_cell_keys(second_cells)
-        order = np.argsort(second_keys)
+        first_cells, second_cells = _spatial_cells(first, second, tolerance)
+        # Small relative rectangles keep the fast packed-key path. Larger
+        # rectangles retain both full int64 coordinates, without 32-bit wrap.
+        packed = all(np.max(cells) < np.iinfo(np.uint32).max
+                     for cells in (first_cells, second_cells))
+        if packed:
+            def cell_keys(cells):
+                unsigned = cells.astype(np.uint64)
+                return (unsigned[:, 0] << np.uint64(32)) | unsigned[:, 1]
+        else:
+            dtype = np.dtype([("x", np.int64), ("y", np.int64)])
+
+            def cell_keys(cells):
+                return np.ascontiguousarray(cells).view(dtype).reshape(-1)
+
+        second_keys = cell_keys(second_cells)
+        order = np.argsort(second_keys, kind="stable")
         sorted_keys = second_keys[order]
-        first_cells = np.floor(first / tolerance).astype(np.int64)
+        bin_starts = np.r_[0, np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]) + 1]
+        bin_keys = sorted_keys[bin_starts]
+        bin_counts = np.diff(np.r_[bin_starts, len(second)])
         matched_second = np.full(len(first), -1, dtype=np.int64)
 
         # A genuine match can lie in the same cell or one of eight neighbors.
@@ -287,25 +336,36 @@ def same_layer_coincidence_sites(
                     break
                 first_indices = np.flatnonzero(unresolved)
                 neighbor_cells = first_cells[first_indices] + (delta_x, delta_y)
-                neighbor_keys = packed_cell_keys(neighbor_cells)
-                locations = np.searchsorted(sorted_keys, neighbor_keys)
-                within = locations < len(sorted_keys)
-                safe_locations = np.minimum(locations, len(sorted_keys) - 1)
-                key_matches = within & (sorted_keys[safe_locations] == neighbor_keys)
+                neighbor_keys = cell_keys(neighbor_cells)
+                locations = np.searchsorted(bin_keys, neighbor_keys)
+                within = locations < len(bin_keys)
+                safe_locations = np.minimum(locations, len(bin_keys) - 1)
+                key_matches = within & (bin_keys[safe_locations] == neighbor_keys)
                 if not np.any(key_matches):
                     continue
                 trial_first = first_indices[key_matches]
-                trial_second = order[safe_locations[key_matches]]
-                distances_squared = np.sum(
-                    (first[trial_first] - second[trial_second]) ** 2, axis=1
-                )
-                accepted = distances_squared <= tolerance_squared
-                matched_second[trial_first[accepted]] = trial_second[accepted]
+                starts = bin_starts[safe_locations[key_matches]]
+                counts = bin_counts[safe_locations[key_matches]]
+                # Usually a tiny exact bin has one atom. When it has several,
+                # every occupant must be considered before declaring no match.
+                for occupant in range(int(np.max(counts))):
+                    active = (counts > occupant) & (matched_second[trial_first] < 0)
+                    if not np.any(active):
+                        break
+                    current_first = trial_first[active]
+                    current_second = order[starts[active] + occupant]
+                    delta = first[current_first] - second[current_second]
+                    if np.isfinite(tolerance_squared) and tolerance_squared >= np.finfo(float).tiny:
+                        with np.errstate(over="ignore", under="ignore"):
+                            accepted = np.einsum("ij,ij->i", delta, delta) <= tolerance_squared
+                    else:
+                        accepted = np.hypot(delta[:, 0], delta[:, 1]) <= tolerance
+                    matched_second[current_first[accepted]] = current_second[accepted]
             if not np.any(matched_second < 0):
                 break
 
         matched_first = np.flatnonzero(matched_second >= 0)
         sites_by_layer.append(
-            0.5 * (first[matched_first] + second[matched_second[matched_first]])
+            first[matched_first] / 2 + second[matched_second[matched_first]] / 2
         )
     return tuple(sites_by_layer)

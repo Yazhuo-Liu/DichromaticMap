@@ -398,8 +398,9 @@ def cache_cell_search(
             raise TypeError("Search cache requires StrainedCell results")
         for field in ("m1", "m2", "f1", "f2", "cell"):
             array = np.asarray(getattr(cell, field))
-            if array.shape != (2, 2) or array.dtype.kind not in "biuf":
-                raise ValueError("Search cache requires real numeric 2-by-2 cell arrays")
+            if (array.shape != (2, 2) or array.dtype.kind not in "biuf"
+                    or not np.all(np.isfinite(array))):
+                raise ValueError("Search cache requires finite real numeric 2-by-2 cell arrays")
         if not np.isfinite(cell.max_strain):
             raise ValueError("Search cache requires a finite strain")
         geometry = get_geometry(cell.lattice, cell.axis)
