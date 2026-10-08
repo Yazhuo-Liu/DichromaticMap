@@ -101,6 +101,43 @@ def test_preparation_is_bounded_and_only_complete_results_enter_cache():
         preparation.step(max_offsets=0)
 
 
+@pytest.mark.parametrize("block_size", [1, 7, 500])
+def test_retained_prefix_has_bounded_memory_and_exact_stable_ties(monkeypatch, block_size):
+    monkeypatch.setattr(strain, "MAX_VECTORS", 10)
+    preparation = strain.CandidatePreparation(22, 10, 12)
+    # Deliberate ties across batches, plus distinct adjacent floating values.
+    size = np.tile([4.0, 1.0, 1.0, np.nextafter(1.0, 0.0), 2.0], 100)
+    error = np.tile([0.1, 0.3, 0.1, 0.1, np.nextafter(0.1, 0.0)], 100)
+    first = np.column_stack((np.arange(len(size)), np.zeros(len(size), int)))
+    second = -first
+    for start in range(0, len(size), block_size):
+        stop = start + block_size
+        preparation._retain(first[start:stop], second[start:stop],
+                            error[start:stop], size[start:stop])
+        assert len(preparation._n1) <= strain.MAX_VECTORS
+        visited = min(stop, len(size))
+        expected = np.unique(np.r_[
+            np.argsort(size[:visited], kind="stable")[:5],
+            np.argsort(error[:visited], kind="stable")[:5],
+        ])
+        np.testing.assert_array_equal(preparation._n1, first[expected])
+        np.testing.assert_array_equal(preparation._n2, second[expected])
+        np.testing.assert_array_equal(preparation._sizes, size[expected])
+        np.testing.assert_array_equal(preparation._errors, error[expected])
+
+
+def test_high_index_preparation_keeps_only_bounded_candidates_between_steps():
+    preparation = strain.CandidatePreparation(22, 10, 12, "FCC", "1 1 15")
+    while not preparation.done:
+        before = preparation.completed_offsets
+        preparation.step(32)
+        assert preparation.completed_offsets - before <= 32
+        assert len(preparation._n1) <= strain.MAX_VECTORS
+        assert len(preparation._n2) <= strain.MAX_VECTORS
+        assert len(preparation._errors) <= strain.MAX_VECTORS
+        assert len(preparation._sizes) <= strain.MAX_VECTORS
+
+
 @pytest.mark.parametrize("lattice,axis,angle", [
     ("FCC", "110", 22), ("FCC", "112", 0),
     ("BCC", "100", 37.2), ("SC", "1 -1 3", 21.4),

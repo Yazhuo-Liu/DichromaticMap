@@ -231,32 +231,49 @@ class CandidatePreparation:
         self.total_offsets = self.side * self.side
         self._dx = None
         self._use_x = np.empty(0, dtype=int)
-        self._n1, self._n2, self._errors, self._sizes = [], [], [], []
+        self._n1 = np.empty((0, 2), dtype=int)
+        self._n2 = np.empty((0, 2), dtype=int)
+        self._errors = self._sizes = np.empty(0)
+        self._size_cutoff = self._error_cutoff = np.inf
 
     @property
     def done(self):
         return self._result is not None
 
+    def _retain(self, first, second, error, size):
+        """Keep the exact stable top-k of each metric for the visited prefix.
+
+        A row outside both prefix top-k lists cannot re-enter either list as
+        later rows arrive. Equal later metrics cannot displace earlier rows.
+        Retained rows remain in enumeration order, so stable sorting a merge
+        gives exactly the historical whole-enumeration selection, including
+        ties, without storing all accepted translations.
+        """
+        useful = (size < self._size_cutoff) | (error < self._error_cutoff)
+        if not np.any(useful):
+            return
+        first = np.concatenate((self._n1, first[useful]))
+        second = np.concatenate((self._n2, second[useful]))
+        error = np.concatenate((self._errors, error[useful]))
+        size = np.concatenate((self._sizes, size[useful]))
+        count = MAX_VECTORS // 2
+        by_size = np.argsort(size, kind="stable")[:count]
+        by_error = np.argsort(error, kind="stable")[:count]
+        chosen = np.unique(np.r_[by_size, by_error])
+        self._n1, self._n2 = first[chosen], second[chosen]
+        self._errors, self._sizes = error[chosen], size[chosen]
+        if len(by_size) == count:
+            self._size_cutoff = size[by_size[-1]]
+            self._error_cutoff = error[by_error[-1]]
+
     def _finish(self):
-        if not self._n1:
-            first = np.empty((0, 2), dtype=int)
-            second = np.empty((0, 2), dtype=int)
-        else:
-            first, second = np.concatenate(self._n1), np.concatenate(self._n2)
-            error, size = np.concatenate(self._errors), np.concatenate(self._sizes)
-            chosen = np.unique(np.r_[
-                np.argsort(size, kind="stable")[:MAX_VECTORS // 2],
-                np.argsort(error, kind="stable")[:MAX_VECTORS // 2],
-            ])
-            first, second = first[chosen], second[chosen]
+        first, second = self._n1, self._n2
         first.setflags(write=False)
         second.setflags(write=False)
         self._result = first, second
         _cache_put(_candidate_cache, self.parameters, self._result, _CANDIDATE_CACHE_LIMIT)
-        self._n1.clear()
-        self._n2.clear()
-        self._errors.clear()
-        self._sizes.clear()
+        # Only the two small completed arrays are retained by the preparation.
+        self._errors = self._sizes = np.empty(0)
 
     def step(self, max_offsets=32):
         """Return candidate array copies on completion, otherwise None."""
@@ -281,6 +298,11 @@ class CandidatePreparation:
                        <= self.coordinate_bounds[:, 0])
                 )
             if not len(self._use_x):
+                # This entire dx row is empty. Count the skipped logical
+                # offsets against the step budget so cancellation remains
+                # bounded exactly as before.
+                next_row = (self.completed_offsets + self.side - 1) // self.side
+                self.completed_offsets = min(stop, next_row * self.side)
                 continue
             rows = self._use_x
             use = rows[np.flatnonzero(
@@ -299,10 +321,7 @@ class CandidatePreparation:
             mask = (error <= self.e + 1e-12) & (l2 > 0)
             if not np.any(mask):
                 continue
-            self._n1.append(self.integers[use[mask]])
-            self._n2.append(other[mask])
-            self._errors.append(error[mask])
-            self._sizes.append(size[mask])
+            self._retain(self.integers[use[mask]], other[mask], error[mask], size[mask])
         if self.completed_offsets == self.total_offsets:
             self._finish()
             return tuple(array.copy() for array in self._result)
