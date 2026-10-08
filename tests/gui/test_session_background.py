@@ -19,12 +19,17 @@ pytestmark = pytest.mark.gui
 def test_session_worker_limits_blas_and_restores_external_configuration(gui):
     threadpoolctl = pytest.importorskip("threadpoolctl")
     window = gui.window()
+    supported = [library for library in threadpoolctl.threadpool_info() if library["user_api"] == "blas"]
+    if not supported:
+        pytest.skip("threadpoolctl exposes no supported BLAS library (for example, macOS Accelerate)")
     with threadpoolctl.threadpool_limits(limits=2, user_api="blas"):
+        before = [library for library in threadpoolctl.threadpool_info() if library["user_api"] == "blas"]
+        assert before and all(library["num_threads"] == 2 for library in before)
         info = window.session._background(threadpoolctl.threadpool_info)
         blas = [library for library in info if library["user_api"] == "blas"]
         assert blas and all(library["num_threads"] == 1 for library in blas)
         after = [library for library in threadpoolctl.threadpool_info() if library["user_api"] == "blas"]
-        assert all(library["num_threads"] == 2 for library in after)
+        assert after and all(library["num_threads"] == 2 for library in after)
 
 
 def test_initial_grains_are_generated_off_main_thread(gui, monkeypatch):

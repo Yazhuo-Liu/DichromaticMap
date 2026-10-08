@@ -174,8 +174,31 @@ def test_process_initializer_keeps_a_blas_only_limit(fake_blas, monkeypatch):
     assert discoveries == [True]
 
 
-def test_real_blas_limit_restores_external_configuration_and_scientific_results(monkeypatch):
+def test_empty_blas_controller_allows_tasks_failure_cleanup_and_process_initialization(monkeypatch):
     threadpoolctl = pytest.importorskip("threadpoolctl")
+    controller = threadpoolctl.ThreadpoolController().select(user_api="unsupported_test_backend")
+    assert controller.info() == []
+    monkeypatch.setattr(compute, "_blas_controller", lambda: controller)
+    monkeypatch.setattr(compute, "_thread_blas_limit", compute._SharedBlasLimit())
+    monkeypatch.setattr(compute, "_blas_limit", None, raising=False)
+    assert compute.run_numerical_task(lambda: 42) == 42
+    with pytest.raises(ValueError, match="failed without supported BLAS"):
+        compute.run_numerical_task(
+            lambda: (_ for _ in ()).throw(ValueError("failed without supported BLAS")),
+        )
+    assert compute.run_numerical_task(lambda: 43) == 43
+    compute.worker_initializer()
+    assert controller.info() == []
+
+
+@pytest.mark.parametrize("unsupported_backend", [False, True])
+def test_real_blas_limit_restores_external_configuration_and_scientific_results(monkeypatch, unsupported_backend):
+    threadpoolctl = pytest.importorskip("threadpoolctl")
+    if unsupported_backend:
+        controller = threadpoolctl.ThreadpoolController().select(user_api="unsupported_test_backend")
+        assert controller.info() == []
+        monkeypatch.setattr(compute, "_blas_controller", lambda: controller)
+        monkeypatch.setattr(threadpoolctl, "threadpool_info", controller.info)
     monkeypatch.setattr(compute, "_thread_blas_limit", compute._SharedBlasLimit())
     session = compute.ComputeSession()
     executor = session.thread_executor()
@@ -195,11 +218,17 @@ def test_real_blas_limit_restores_external_configuration_and_scientific_results(
     try:
         with threadpoolctl.threadpool_limits(limits=2, user_api="blas"):
             before, expected_grain, expected_cells = calculate()
-            assert before and all(pool["num_threads"] == 2 for pool in before)
+            # NumPy Accelerate may expose no controllable BLAS library. Numerical
+            # parity still runs; detected backends must enforce and restore limits.
+            if before:
+                assert all(pool["num_threads"] == 2 for pool in before)
             during, actual_grain, actual_cells = executor.submit(calculate).result(timeout=10)
-            assert all(pool["num_threads"] == 1 for pool in during)
             restored = [pool for pool in threadpoolctl.threadpool_info() if pool["user_api"] == "blas"]
-            assert all(pool["num_threads"] == 2 for pool in restored)
+            assert bool(during) == bool(before)
+            assert bool(restored) == bool(before)
+            if before:
+                assert during and all(pool["num_threads"] == 1 for pool in during)
+                assert restored and all(pool["num_threads"] == 2 for pool in restored)
         np.testing.assert_array_equal(actual_grain.half_indices, expected_grain.half_indices)
         np.testing.assert_array_equal(actual_grain.layers, expected_grain.layers)
         np.testing.assert_allclose(actual_grain.positions, expected_grain.positions, rtol=0, atol=1e-12)
