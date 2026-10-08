@@ -15,6 +15,25 @@ const settledOnce = (messages, ids) => {
   for (const id of ids) assert.equal(messages.filter(message => message.id === id).length, 1);
 };
 
+test("Worker engine initialization retries after an initial download failure", async () => {
+  const source=(await readFile(new URL("./use_worker.js",import.meta.url),"utf8"))
+    .replace(/^import .+\n/gm,"");
+  const first=deferred(),second=deferred(),messages=[];
+  let attempts=0;
+  const runtime={globals:new Map(),FS:{writeFile(){}},loadPackage:async()=>{},
+    runPython(code){if(code==="web_dispatch(web_request)") return JSON.stringify({ok:true});}};
+  const self={postMessage(message){messages.push(message); if(message.id===1) first.resolve(); if(message.id===2) second.resolve();}};
+  vm.runInNewContext(source,{self,LatestRequestQueue,
+    loadPyodide:async()=>{if(++attempts===1) throw new Error("download failed");return runtime;},
+    fetch:async()=>({ok:true,text:async()=>"bridge",arrayBuffer:async()=>new ArrayBuffer(1)}),
+    Uint8Array,JSON,Promise});
+  self.onmessage({data:request(1,"metadata")}); await first.promise;
+  assert.equal(messages.find(m=>m.id===1).type,"error");
+  self.onmessage({data:request(2,"metadata")}); await second.promise;
+  assert.equal(attempts,2); assert.deepEqual(messages.find(m=>m.id===2).result,{ok:true});
+  settledOnce(messages,[1,2]);
+});
+
 test("replace pending renders and searches, settle every obsolete request", async () => {
   const boot = deferred(), calls = [], messages = [];
   const queue = new LatestRequestQueue({

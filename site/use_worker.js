@@ -19,7 +19,10 @@ async function engine() {
       pyodide.runPython(source);
       self.postMessage({ type: "ready" });
       return pyodide;
-    })();
+    })().catch(error => {
+      enginePromise = undefined;
+      throw error;
+    });
   }
   return enginePromise;
 }

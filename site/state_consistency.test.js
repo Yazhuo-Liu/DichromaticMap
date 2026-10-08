@@ -21,7 +21,10 @@ function harness() {
     });
     return nodes.get(id);
   };
-  const sandbox = {Worker: class {postMessage(message) {messages.push(message);}},
+  const sandbox = {Worker: class {
+      postMessage(message) {if (sandbox.failPost) throw new Error("Cannot post message"); messages.push(message);}
+      terminate() {this.terminated=true;}
+    },
     Option: class {}, devicePixelRatio:1,
     window: {matchMedia: () => ({matches:false}), addEventListener() {}, DichromaticRenderData:renderData},
     document: {getElementById:node, querySelector: () => node("dummy"), querySelectorAll: () => [],
@@ -32,11 +35,12 @@ function harness() {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname,"use.js"),"utf8") + `
     metadata = {layers:1,max_angle:90,presets:[],reference_labels:[],layer_spacing:1,axial_period:1};
-    globalThis.app = {state, renderRequest, nearestAtom, nearestCommon, screen, exportPNG,
+    globalThis.app = {state, request, retryEngine, sessionState, renderRequest, nearestAtom, nearestCommon, screen, exportPNG,
       updateSummary, currentPattern, changeAngle, resetSelections,
       updateVector, countManual, completeManual, toggleSelectedStrain, importSession,
       searchNear, cancelNearSearch, selectAt,
       get worker() {return worker;},
+      get awaitingCount() {return awaiting.size;},
       setPattern(value) {pattern=value; renderCoverage={signature:JSON.stringify(currentRenderParameters()),
         center:[0,0],width:100,height:100}; viewSize();},
     };
@@ -155,4 +159,5 @@ async function main() {
   console.log("Committed renders, stale picking, superseded exports, and render failures passed.");
   console.log("Stale vector, fit, count errors, completion, and import/search races passed.");
 }
-main().catch(error => {console.error(error); process.exitCode=1;});
+module.exports={harness,fixture};
+if (require.main===module) main().catch(error => {console.error(error); process.exitCode=1;});

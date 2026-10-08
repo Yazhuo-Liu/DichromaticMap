@@ -390,6 +390,19 @@ class ComputeSession:
         self.parallel_stage = None
         self.parallel_payload = {}
 
+    def retire_matching_pool(self):
+        """Disable a failed process pool while keeping healthy threads available."""
+        executor, self.executor = self.executor, None
+        self.matching_warmup_failed = True
+        for future in self.matching_warmup_futures:
+            future.cancel()
+        self.matching_warmup_futures = []
+        if executor is None:
+            return False
+        executor.shutdown(wait=False, cancel_futures=True)
+        return True
+
+
     def close(self):
         for future in self.matching_warmup_futures:
             future.cancel()

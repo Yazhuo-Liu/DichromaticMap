@@ -20,7 +20,9 @@ const state = {
 };
 let metadata;
 let pattern;
-let worker = new Worker("./use_worker.js", { type: "module" });
+let worker;
+let workerFailure;
+let retryInFlight = false;
 let callNumber = 0;
 const awaiting = new Map();
 let renderGeneration = 0;
@@ -67,13 +69,18 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
 }
 function request(action, data = {}) {
+  if (workerFailure) return Promise.reject(workerFailure);
   return new Promise((resolve, reject) => {
     const id = ++callNumber;
     awaiting.set(id, {resolve, reject});
-    worker.postMessage({id, request: {action, ...data}});
+    postToWorker({id, request: {action, ...data}});
   });
 }
-worker.onmessage = ({data}) => {
+function startWorker() {
+  const owner = new Worker("./use_worker.js", {type:"module"});
+  worker = owner; workerFailure = undefined;
+  owner.onmessage = ({data}) => {
+  if (owner !== worker) return;
   if (data.type === "ready") { setStatus("Ready · choose an interaction tool"); return; }
   const item = awaiting.get(data.id);
   if (!item) return;
@@ -85,17 +92,59 @@ worker.onmessage = ({data}) => {
   }
   else item.resolve(data.result);
 };
-worker.onerror = () => fail(new Error("The local engine could not start. Check your connection and reload."));
+  owner.onerror = () => {
+    if (owner === worker) retireWorker(new Error("The local engine stopped. Check your connection and retry."));
+  };
+  owner.onmessageerror = () => {
+    if (owner === worker) retireWorker(new Error("The local engine returned an unreadable response. Retry the engine."));
+  };
+}
+function postToWorker(message) {
+  if (workerFailure) return false;
+  try { worker.postMessage(message); return true; }
+  catch (error) { retireWorker(error); return false; }
+}
+function retireWorker(error) {
+  workerFailure = error;
+  worker?.terminate();
+  renderGeneration++; geometryGeneration++; nearGeneration++;
+  invalidateAnalyses();
+  clearTimeout(renderTimer); clearTimeout(nearTimer);
+  renderError = error; renderPending?.finish();
+  const pending = [...awaiting.values()]; awaiting.clear();
+  pending.forEach(item => item.reject(error));
+  fail(error);
+}
+async function retryEngine() {
+  if (retryInFlight) return;
+  retryInFlight = true;
+  try {
+    retireWorker(new Error("Restarting the local engine…"));
+    startWorker();
+    $("retry-engine").hidden = true;
+    $("engine-overlay").querySelector("strong").textContent = "Restarting DichromaticMap";
+    $("engine-overlay").querySelector("span").textContent = "Loading Python + NumPy on your device…";
+    $("engine-overlay").querySelector(".engine-spinner").classList.remove("hidden");
+    renderCoverage = undefined;
+    await loadMetadata(false);
+    if (state.atoms.length === 2) updateVector();
+    if (state.manual.length === 4) countManual();
+  } catch (error) { retireWorker(error); }
+  finally { retryInFlight = false; }
+}
 function fail(error) {
   if (error.name === "AbortError") return;
   const message = error.message || String(error);
   setStatus(message);
-  if (!pattern) {
+  if (!pattern || workerFailure) {
+    $("engine-overlay").classList.remove("hidden");
     $("engine-overlay").querySelector("strong").textContent = "Unable to start the online app";
     $("engine-overlay").querySelector("span").textContent = message;
     $("engine-overlay").querySelector(".engine-spinner").classList.add("hidden");
+    $("retry-engine").hidden = false;
   }
 }
+try { startWorker(); } catch (error) { retireWorker(error); }
 
 function viewSize() {
   const {width: drawW, height: drawH} = refreshCanvasMetrics().plot;
@@ -300,7 +349,10 @@ function renderRequest() {
     pending.finish = () => { pending.settled = true; resolve(); };
   });
   renderPending = pending;
-  worker.postMessage({type: "cancel", action: "render"});
+  if (!postToWorker({type: "cancel", action: "render"})) {
+    renderError = workerFailure;
+    pending.finish(); return pending.promise;
+  }
   const generation = ++renderGeneration;
   scheduleDraw();
   renderTimer = setTimeout(async () => {
@@ -1078,7 +1130,7 @@ function applyNearCell(index) {
 function cancelNearSearch() {
   nearGeneration++;
   clearTimeout(nearTimer);
-  worker.postMessage({type: "cancel", action: "near_search"});
+  postToWorker({type: "cancel", action: "near_search"});
 }
 function searchNear() {
   cancelNearSearch();
@@ -1406,6 +1458,7 @@ $("completion-cancel").addEventListener("click", () => $("completion-dialog").cl
 $("count-visible").addEventListener("change", countManual);
 $("apply-strain").addEventListener("click", toggleSelectedStrain);
 $("export-png").addEventListener("click", exportPNG);
+$("retry-engine").addEventListener("click", retryEngine);
 $("save-session").addEventListener("click", saveSession);
 $("import-session").addEventListener("click", () => $("session-file").click());
 $("session-file").addEventListener("change", () => importSession($("session-file").files[0]));

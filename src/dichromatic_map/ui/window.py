@@ -5,6 +5,7 @@ window attributes below are properties onto those owners for API compatibility.
 """
 
 from __future__ import annotations
+from concurrent.futures.process import BrokenProcessPool
 import html
 import os
 from pathlib import Path
@@ -1791,6 +1792,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _parallel_failure(self, error: Exception) -> None:
         local_failure = self.compute.parallel_stage == "local"
         self._cancel_parallel_work()
+        if isinstance(error, BrokenProcessPool) and self.compute.retire_matching_pool():
+            if local_failure:
+                self._start_local_matching()
+            elif len(self.state.grains) == 2 and self.state.grain_signature == self._geometry_signature():
+                self._start_parallel_coincidences()
+            else:
+                self._start_parallel_regeneration(True)
+            self._update_status("Matching process exited; retrying on a background thread.")
+            return
         if local_failure:
             self.state.local_updating = False
             self.state.local_error = str(error)
