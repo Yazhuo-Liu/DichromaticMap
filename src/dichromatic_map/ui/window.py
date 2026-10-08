@@ -301,7 +301,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._create_shortcuts()
         self._update_geometry_labels()
         self.plot._set_initial_view()
-        self._regenerate_buffer(compute_coincidences=True)
+        self._start_parallel_regeneration(compute_coincidences=True)
         self.view_refresh_timer.stop()
         self._set_mode("idle")
 
@@ -2539,5 +2539,6 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
         self.parallel_poll_timer.stop()
+        self.session.close()
         self.compute.close()
         super().closeEvent(event)

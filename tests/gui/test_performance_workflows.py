@@ -161,6 +161,14 @@ def test_single_layer_visibility_updates_only_affected_grain_and_csl(gui, monkey
 
 def test_display_rotation_coalesces_to_latest_and_preserves_physical_grains(gui, monkeypatch):
     window = gui.window()
+    # Reuse applies while the rotated viewport remains inside the buffer;
+    # a layout-expanded initial viewport can legitimately need more atoms.
+    x0, x1, y0, y1 = window.plot._view_range()
+    window.plot.view_box.setRange(
+        xRange=((3 * x0 + x1) / 4, (x0 + 3 * x1) / 4),
+        yRange=((3 * y0 + y1) / 4, (y0 + 3 * y1) / 4), padding=0,
+    )
+    gui.settle(window)
     updates = []
     original = window._apply_display_rotation
     grains = window.state.grains

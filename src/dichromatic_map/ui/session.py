@@ -1,6 +1,7 @@
 """Session file dialogs and restoration of the viewer's physical state."""
 
 from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import numpy as np
 
@@ -14,6 +15,47 @@ from ..strain import selected_cell_strain_readout, tensor_readout
 class SessionController:
     def __init__(self, owner):
         self.owner = owner
+        self.pending_future = None
+        self._executor = None
+        self._closed = False
+
+    def _background(self, function, *args):
+        """Keep painting/completion active while preserving synchronous API calls.
+
+        A separate, single session worker lets import replace an analysis whose
+        numerical worker is still busy. Workers never access widgets or the
+        live mutable state. Only this main-thread continuation commits a load.
+        """
+        if self._closed:
+            raise RuntimeError("The viewer is closed")
+        if self.pending_future is not None:
+            raise RuntimeError("A session operation is already running")
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=1)
+        future = self._executor.submit(function, *args)
+        self.pending_future = future
+        loop = QtCore.QEventLoop()
+        timer = QtCore.QTimer()
+        timer.timeout.connect(lambda: loop.quit() if self._closed or future.done() else None)
+        try:
+            if not future.done():
+                timer.start(10)
+                loop.exec(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            if self._closed:
+                future.cancel()
+                raise RuntimeError("The viewer closed during the session operation")
+            return future.result()
+        finally:
+            timer.stop()
+            self.pending_future = None
+
+    def close(self):
+        self._closed = True
+        if self.pending_future is not None:
+            self.pending_future.cancel()
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
 
     def settings(self):
         controls = self.owner.controls
@@ -35,24 +77,60 @@ class SessionController:
         # results are not the source of the exported numerical tables.
         if owner.state.angle_update_active or owner.angle_preview_timer.isActive():
             owner._finish_angle_update()
-        session_files.save_session(
-            path, owner.state, self.settings(), owner.plot._view_range(),
+        # The small physical payload excludes large display buffers and copies
+        # every saved array before Qt completion events can change live state.
+        payload = dict(
+            format=session_files.FORMAT, schema_version=session_files.SCHEMA_VERSION,
+            state=session_files._state_payload(owner.state),
+            settings=self.settings(), view_range=list(owner.plot._view_range()),
         )
+        self._background(self._save_payload, path, payload)
+
+    @staticmethod
+    def _save_payload(path, payload):
+        snapshot = session_files._snapshot_from_payload(payload)
+        session_files.save_session(path, snapshot.state, snapshot.settings, snapshot.view_range)
+
+    @classmethod
+    def _prepare_load(cls, path):
+        snapshot = session_files.load_session(path)
+        return snapshot, cls._check_view(snapshot)
 
     def load(self, path):
-        snapshot = session_files.load_session(path)
-        self._check_view(snapshot)
+        self.owner._flush_display_rotation()
+        inputs = self._input_key()
+        snapshot, prepared = self._background(self._prepare_load, path)
+        if inputs != self._input_key():
+            raise RuntimeError("Session import cancelled because the current controls changed")
         owner = self.owner
         previous = session_files.SessionSnapshot(
             owner.state, self.settings(), owner.plot._view_range(),
         )
+        previous_prepared = (
+            (owner.state.grains, owner.state.buffer_bounds)
+            if len(owner.state.grains) == 2 and owner.state.buffer_bounds is not None
+            and owner.state.grain_signature == owner._geometry_signature() else None
+        )
         try:
-            self._apply(snapshot)
+            self._apply(snapshot, prepared)
         except Exception:
             # Validation normally rejects bad files before this point. Keep
             # the current session recoverable if applying a valid file fails.
-            self._apply(previous)
+            self._apply(previous, previous_prepared)
             raise
+
+    def _input_key(self):
+        """Detect programmatic/reentrant edits while ordinary input is paused."""
+        state, controls = self.owner.state, self.owner.controls
+        return (
+            id(state), state.parameters, state.geometry.lattice, state.geometry.axis,
+            state.pending_angle, controls.angle_spin.value(), controls.rotation_spin.value(),
+            tuple(frozenset(layers) for layers in state.visible_grain_layers),
+            tuple(state.grain_colors), tuple(state.layer_symbols), tuple(state.layer_size_scales),
+            state.axial_repeat, state.show_reference_axes, state.near_enabled, state.near_method,
+            self.owner._region_states(),
+            tuple(sorted(self.settings().items())),
+        )
 
     @staticmethod
     def _check_view(snapshot):
@@ -63,19 +141,27 @@ class SessionController:
         low, high = corners.min(axis=0), corners.max(axis=0)
         width, height = BUFFER_FACTOR * (high - low)
         if state.near_enabled and state.near_method == "local" and state.manual_strain_fit is None:
-            width = max(width, 4.4 * snapshot.settings["local_distance"])
-            height = max(height, 4.4 * snapshot.settings["local_distance"])
+            width = max(width, high[0] - low[0] + 4.4 * snapshot.settings["local_distance"])
+            height = max(height, high[1] - low[1] + 4.4 * snapshot.settings["local_distance"])
         # Exercise the same allocation limits before replacing the current
         # state. No workers, widgets or selections are changed during this check.
-        for grain, sign in enumerate((1, -1)):
+        grains = [
             projected_columns(
                 width, height, sign * state.angle_deg / 2,
                 center=(low + high) / 2, deformation=state.deformations[grain],
                 lattice=state.geometry.lattice, axis=state.geometry.axis,
                 translation=state.translations[grain],
             )
+            for grain, sign in enumerate((1, -1))
+        ]
+        center = (low + high) / 2
+        bounds = (center[0] - width / 2, center[0] + width / 2,
+                  center[1] - height / 2, center[1] + height / 2)
+        return grains, bounds
 
-    def _apply(self, snapshot):
+    def _apply(self, snapshot, prepared=None):
+        if prepared is None:
+            prepared = self._background(self._check_view, snapshot)
         owner = self.owner
         controls, plot, compute = owner.controls, owner.plot, owner.compute
         for timer in (owner.angle_preview_timer, owner.coincidence_timer,
@@ -168,7 +254,11 @@ class SessionController:
         plot._draw_vector()
         plot._draw_manual_cell()
         owner._set_mode(state.interaction_mode)
-        owner._start_parallel_regeneration(True)
+        state.grains, state.buffer_bounds = prepared
+        state.grain_signature = owner._geometry_signature()
+        state.render_error = None
+        owner._update_visible_points()
+        owner._start_parallel_coincidences()
         owner._queue_manual_count()
         owner._update_status("Session restored.")
 
@@ -211,7 +301,9 @@ class SessionController:
             path = path.with_suffix(".dmap")
         try:
             self.save(path)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, RuntimeError) as error:
+            if self._closed:
+                return
             QtWidgets.QMessageBox.warning(self.owner, "Cannot save session", str(error))
             return
         self.owner._update_status(f"Saved session and numerical tables: {path.name}")
@@ -224,5 +316,7 @@ class SessionController:
             return
         try:
             self.load(Path(filename))
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, RuntimeError) as error:
+            if self._closed:
+                return
             QtWidgets.QMessageBox.warning(self.owner, "Cannot import session", str(error))

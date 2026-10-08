@@ -61,6 +61,7 @@ class GuiHarness:
                 and not state.local_updating
                 and compute.manual_count_future is None
                 and compute.manual_count_pending is None
+                and window.session.pending_future is None
                 and (compute.near_search is None or not compute.near_search.busy)
                 and not any(
                     timer.isActive()
