@@ -30,6 +30,7 @@ class SessionController:
 
     def save(self, path):
         owner = self.owner
+        owner._flush_display_rotation()
         # Commit a slider preview before serializing; cached counts and worker
         # results are not the source of the exported numerical tables.
         if owner.state.angle_update_active or owner.angle_preview_timer.isActive():
@@ -81,6 +82,8 @@ class SessionController:
                       owner.view_refresh_timer, owner.near_debounce_timer,
                       owner.near_poll_timer, owner.manual_count_timer):
             timer.stop()
+        owner.display_rotation_timer.stop()
+        owner._pending_display_rotation = None
         owner._cancel_parallel_work()
         if compute.near_search is not None:
             compute.near_search.cancel()

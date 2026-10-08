@@ -840,6 +840,7 @@ class PatternPlot:
         its completion timers and paint events running while save waits.
         """
         owner = self.owner
+        owner._flush_display_rotation()
         if (
             owner.state.angle_update_active
             or owner.angle_preview_timer.isActive()

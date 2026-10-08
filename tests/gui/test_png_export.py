@@ -18,6 +18,29 @@ from dichromatic_map.ui import window as window_module
 pytestmark = pytest.mark.gui
 
 
+def test_immediate_export_commits_latest_pending_display_rotation(gui, monkeypatch, tmp_path):
+    window = gui.window()
+    original = pyqtgraph.exporters.ImageExporter.export
+
+    def export(exporter, *args, **kwargs):
+        assert window.state.display_rotation_deg == 37
+        assert not window.display_rotation_timer.isActive()
+        for grain, items in zip(window.state.grains, window.plot.grain_layer_items):
+            for layer, item in enumerate(items):
+                np.testing.assert_allclose(
+                    np.column_stack(item.getData()),
+                    window.plot._to_view(grain.positions[grain.layers == layer]), atol=1e-12,
+                )
+        return original(exporter, *args, **kwargs)
+
+    monkeypatch.setattr(pyqtgraph.exporters.ImageExporter, "export", export)
+    for angle in (10, 20, 37):
+        window.controls.rotation_spin.setValue(angle)
+    output = tmp_path / "rotation.png"
+    window.save(output)
+    assert output.read_bytes().startswith(b"\x89PNG")
+
+
 @pytest.mark.parametrize("clean", [False, True])
 def test_immediate_export_waits_for_pending_angle_scene(gui, monkeypatch, tmp_path, clean):
     window = gui.window(workers=1)

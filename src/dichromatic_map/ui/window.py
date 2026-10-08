@@ -282,6 +282,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot = PatternPlot(self)
         self.controls = ControlDock(self)
         self.session = SessionController(self)
+        self._pending_display_rotation = None
         available_cpus = max(1, os.cpu_count() or 1)
         automatic_workers = min(4, available_cpus)
         self.compute.worker_count = int(worker_count or automatic_workers)
@@ -305,6 +306,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._set_mode("idle")
 
     def _create_timers(self) -> None:
+        self.display_rotation_timer = QtCore.QTimer(self)
+        self.display_rotation_timer.setSingleShot(True)
+        self.display_rotation_timer.setInterval(16)
+        self.display_rotation_timer.timeout.connect(self._flush_display_rotation)
         self.angle_preview_timer = QtCore.QTimer(self)
         self.angle_preview_timer.setSingleShot(True)
         self.angle_preview_timer.setInterval(18)
@@ -400,6 +405,23 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot._update_reference_axes()
 
     def _on_display_rotation(self, angle):
+        self._pending_display_rotation = float(angle)
+        with (
+            QtCore.QSignalBlocker(self.controls.rotation_spin),
+            QtCore.QSignalBlocker(self.controls.rotation_slider),
+        ):
+            self.controls.rotation_spin.setValue(angle)
+            self.controls.rotation_slider.setValue(round(angle * 10))
+        if not self.display_rotation_timer.isActive():
+            self.display_rotation_timer.start()
+
+    def _flush_display_rotation(self):
+        self.display_rotation_timer.stop()
+        angle, self._pending_display_rotation = self._pending_display_rotation, None
+        if angle is not None:
+            self._apply_display_rotation(angle)
+
+    def _apply_display_rotation(self, angle):
         angle = float(angle)
         if abs(angle - self.state.display_rotation_deg) < 1e-10:
             return
@@ -1003,6 +1025,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _set_all_layers_visible(self, visible: bool) -> None:
         layers = set(range(self.state.geometry.layer_count)) if visible else set()
+        dirty_grains = {
+            (grain, layer)
+            for grain, previous in enumerate(self.state.visible_grain_layers)
+            for layer in previous ^ layers
+        }
+        dirty_coincidences = self.state.visible_layers ^ layers
         self.state.visible_grain_layers = [set(layers), set(layers)]
         self._sync_shared_visible_layers()
         for checks in self.controls.grain_layer_checks:
@@ -1013,7 +1041,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.state.selected_layer = -1
         with QtCore.QSignalBlocker(self.controls.layer_combo):
             self.controls.layer_combo.setCurrentIndex(0)
-        self._apply_layer_visibility()
+        self._apply_layer_visibility(dirty_grains, dirty_coincidences)
 
     def _sync_shared_visible_layers(self) -> None:
         self.state.visible_layers = set.intersection(*self.state.visible_grain_layers)
@@ -1038,7 +1066,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if equal_selections and len(self.state.visible_layers) == 1
             else -1
         )
-        self._apply_layer_visibility()
+        self._apply_layer_visibility({(grain, layer)}, {layer})
 
     def _on_axial_layer_toggled(self, layer: int, visible: bool) -> None:
         for grain in (0, 1):
@@ -1054,11 +1082,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if len(self.state.visible_layers) == 1
             else -1
         )
-        self._apply_layer_visibility()
+        self._apply_layer_visibility({(0, layer), (1, layer)}, {layer})
 
-    def _apply_layer_visibility(self) -> None:
+    def _apply_layer_visibility(self, dirty_grains=None, dirty_coincidences=None) -> None:
         self.plot._rebuild_legend()
-        self._update_visible_points()
+        self._update_visible_points(
+            dirty_grain_layers=dirty_grains,
+            dirty_coincidence_layers=dirty_coincidences,
+        )
 
     def _on_layer_changed(self, *_args):
         self.state.selected_layer = self.controls.layer_combo.currentData()
@@ -1853,18 +1884,28 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _region_states(self) -> tuple[bool, bool, bool, bool]:
         return tuple(check.isChecked() for check in self.controls.region_checks)  # type: ignore[return-value]
 
-    def _update_visible_points(self, *_args, grains_changed=True) -> None:
+    def _update_visible_points(
+        self, *_args, grains_changed=True,
+        dirty_grain_layers=None, dirty_coincidence_layers=None,
+    ) -> None:
         self.plot._update_reference_axes()
         if len(self.state.grains) != 2:
             return
         states = self._region_states()
         boundary_ready = len(self.state.selected_points) == 2
-        if grains_changed:
+        incremental = dirty_grain_layers is not None and len(self.state.visible_atom_masks) == 2
+        if grains_changed and not incremental:
             self.state.visible_atom_masks = []
         grain_items = enumerate(self.state.grains) if grains_changed else ()
         for grain_index, grain in grain_items:
+            changed_layers = (
+                {layer for index, layer in dirty_grain_layers if index == grain_index}
+                if incremental else None
+            )
+            if changed_layers == set():
+                continue
             selections = grain.layer_selections()
-            if boundary_ready:
+            if boundary_ready and not incremental:
                 mask = selected_region_mask(
                     grain.positions,
                     self.state.selected_points[0],
@@ -1872,26 +1913,44 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     states[2 * grain_index],
                     states[2 * grain_index + 1],
                 )
-            else:
+            elif not incremental:
                 mask = np.ones(len(grain.positions), dtype=bool)
-            visible_mask = np.zeros(len(grain.positions), dtype=bool)
+            visible_mask = (
+                self.state.visible_atom_masks[grain_index]
+                if incremental else np.zeros(len(grain.positions), dtype=bool)
+            )
             for layer, item in enumerate(self.plot.grain_layer_items[grain_index]):
+                if changed_layers is not None and layer not in changed_layers:
+                    continue
                 selection = selections.get(layer, slice(0, 0))
                 if layer in self.state.visible_grain_layers[grain_index]:
-                    layer_mask = mask[selection]
+                    if incremental:
+                        layer_mask = (
+                            selected_region_mask(
+                                grain.positions[selection], *self.state.selected_points,
+                                states[2 * grain_index], states[2 * grain_index + 1],
+                            )
+                            if boundary_ready else np.ones(len(grain.positions[selection]), dtype=bool)
+                        )
+                    else:
+                        layer_mask = mask[selection]
                     visible_mask[selection] = layer_mask
                     points = (
                         grain.positions[selection][layer_mask]
                         if boundary_ready else grain.positions[selection]
                     )
                 else:
+                    visible_mask[selection] = False
                     points = np.empty((0, 2))
                 self.plot._set_scatter(item, points)
-            self.state.visible_atom_masks.append(visible_mask)
+            if not incremental:
+                self.state.visible_atom_masks.append(visible_mask)
 
         for layer, (points, item) in enumerate(
             zip(self.state.coincident_points, self.plot.coincidence_items, strict=True)
         ):
+            if dirty_coincidence_layers is not None and layer not in dirty_coincidence_layers:
+                continue
             if boundary_ready:
                 first_mask = selected_region_mask(
                     points,
@@ -2472,6 +2531,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 label.setOpenExternalLinks(True)
             message.exec()
         self.manual_count_timer.stop()
+        self.display_rotation_timer.stop()
         self.angle_preview_timer.stop()
         self.coincidence_timer.stop()
         self.view_refresh_timer.stop()

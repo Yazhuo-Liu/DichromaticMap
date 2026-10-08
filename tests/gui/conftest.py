@@ -65,6 +65,7 @@ class GuiHarness:
                 and not any(
                     timer.isActive()
                     for timer in (
+                        window.display_rotation_timer,
                         window.angle_preview_timer,
                         window.coincidence_timer,
                         window.view_refresh_timer,

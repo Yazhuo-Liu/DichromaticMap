@@ -128,3 +128,73 @@ def test_navigation_coalesces_counts_and_updates_final_view(gui, monkeypatch):
             x, y = item.getData()
             expected += np.count_nonzero((x >= x0) & (x <= x1) & (y >= y0) & (y <= y1))
         assert window.state.visible_atom_counts[grain] == expected
+
+
+def test_single_layer_visibility_updates_only_affected_grain_and_csl(gui, monkeypatch):
+    window = gui.window(lattice="SC", axis="2 3 5")
+    plot = window.plot
+    affected = {plot.grain_layer_items[0][1], plot.coincidence_items[1]}
+    originals = {
+        item: np.column_stack(item.getData()).copy()
+        for group in (*plot.grain_layer_items, plot.coincidence_items)
+        for item in group if item not in affected
+    }
+    calls = []
+    scatter = plot._set_scatter
+
+    def update(item, points):
+        assert item in affected
+        calls.append(item)
+        return scatter(item, points)
+
+    monkeypatch.setattr(plot, "_set_scatter", update)
+    masks = [mask.copy() for mask in window.state.visible_atom_masks]
+    window.controls.grain_layer_checks[0][1].click()
+    assert set(calls) == affected and len(calls) == 2
+    assert not np.any(window.state.visible_atom_masks[0][window.state.grains[0].layers == 1])
+    np.testing.assert_array_equal(window.state.visible_atom_masks[1], masks[1])
+    for item, points in originals.items():
+        np.testing.assert_array_equal(np.column_stack(item.getData()), points)
+    window.controls.grain_layer_checks[0][1].click()
+    np.testing.assert_array_equal(window.state.visible_atom_masks[0], masks[0])
+
+
+def test_display_rotation_coalesces_to_latest_and_preserves_physical_grains(gui, monkeypatch):
+    window = gui.window()
+    updates = []
+    original = window._apply_display_rotation
+    grains = window.state.grains
+
+    def apply(angle):
+        updates.append(angle)
+        return original(angle)
+
+    monkeypatch.setattr(window, "_apply_display_rotation", apply)
+    for angle in (10, 20, 30, 37):
+        window.controls.rotation_spin.setValue(angle)
+    assert updates == []
+    gui.settle(window)
+    assert updates == [37]
+    assert window.state.display_rotation_deg == 37
+    assert all(actual is expected for actual, expected in zip(window.state.grains, grains))
+    for grain, items in zip(grains, window.plot.grain_layer_items):
+        for layer, item in enumerate(items):
+            np.testing.assert_allclose(
+                np.column_stack(item.getData()),
+                window.plot._to_view(grain.positions[grain.layers == layer]), atol=1e-12,
+            )
+
+
+def test_navigation_within_existing_buffer_reuses_scatter_geometry(gui, monkeypatch):
+    window = gui.window()
+    grain_signature = window.state.grain_signature
+
+    def rebuild(*_args, **_kwargs):
+        pytest.fail("Navigation within the buffered region must reuse scatter data")
+
+    for group in (*window.plot.grain_layer_items, window.plot.coincidence_items):
+        for item in group:
+            monkeypatch.setattr(item, "setData", rebuild)
+    window.plot.view_box.translateBy(x=0.1, y=0.1)
+    gui.settle(window)
+    assert window.state.grain_signature == grain_signature
