@@ -7,6 +7,7 @@ from functools import lru_cache
 import os
 from threading import RLock
 import numpy as np
+from .affine import affine_points
 from .crystal import get_geometry, rotation_matrix_2d
 from .cells import (
     StrainedCell, bases, checked_integer_array, determinant, reduce_cell, validate_cell_vertices,
@@ -330,8 +331,11 @@ def strain_selected_cell(
         raise ValueError(
             f"No bounded fit found; least-change fit uses {np.max(np.abs(rotations_deg)):.6f}° rotation, above the {max_rotation_deg:.4f}° per-grain limit. Nothing was changed."
         )
-    shifts = centroids.mean(axis=0) - np.einsum("gij,gj->gi", f, centroids)
-    transformed = np.einsum("gij,gnj->gni", f, vertices) + shifts[:, None, :]
+    target_centroid = centroids.mean(axis=0)
+    shifts = np.array([affine_points(centroid, -deformation, target_centroid)
+                       for centroid, deformation in zip(centroids, f)])
+    transformed = np.array([affine_points(polygon, deformation, shift)
+                            for polygon, deformation, shift in zip(vertices, f, shifts)])
     residual = float(np.max(np.linalg.norm(transformed[0] - transformed[1], axis=1)))
     common = f[0] @ grain_bases[0] @ matrices[0]
     periodic_error = np.max(np.abs(common - f[1] @ grain_bases[1] @ matrices[1]))

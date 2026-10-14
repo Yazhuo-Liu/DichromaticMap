@@ -11,6 +11,7 @@ from itertools import permutations, product
 from math import ceil, floor, gcd, lcm
 import re
 import numpy as np
+from .affine import affine_needs_compensation, affine_points
 
 SUPPORTED_LATTICES = ("FCC", "BCC", "SC")
 
@@ -493,7 +494,8 @@ def projected_columns(
         selected_layers = sorted(set(selected_layers))
     radians = np.deg2rad(rotation_deg)
     cosine, sine = np.cos(radians), np.sin(radians)
-    transform = np.array([[cosine, -sine], [sine, cosine]])
+    rotation = np.array([[cosine, -sine], [sine, cosine]])
+    transform = rotation
     range_error = (
         "View exceeds the supported numerical coordinate range. "
         "Zoom in or reduce --width/--height."
@@ -521,6 +523,7 @@ def projected_columns(
     # late limit failure used to discard almost an entire full-size grain.
     plans = []
     candidate_count = 0
+    coordinate_bound = 0
     index_limits = np.iinfo(np.dtype(int))
     basis_bound = max(sum(abs(int(value)) for value in row)
                       for row in geometry.basis_half_indices)
@@ -548,7 +551,9 @@ def projected_columns(
             raise GeometryLimitError(range_error)
         # Reference half-indices must also fit their integer array, even if
         # the smaller two-dimensional mesh coordinates themselves still fit.
-        if max(map(abs, (*minima, *maxima))) * basis_bound + offset_bound > index_limits.max:
+        mesh_bound = max(map(abs, (*minima, *maxima)))
+        coordinate_bound = max(coordinate_bound, mesh_bound)
+        if mesh_bound * basis_bound + offset_bound > index_limits.max:
             for row, origin in zip(geometry.basis_half_indices, offset):
                 smallest = int(origin) + sum(
                     int(coefficient) * (low_bound if coefficient >= 0 else high_bound)
@@ -583,6 +588,14 @@ def projected_columns(
     # turn its numerical edge margin into a hundred-unit rectangle. Each axis
     # uses its own extent so a thin deformed crop is not enlarged by the other.
     crop_epsilon = 1.0e-10 * half_size
+    deformation_matrix = np.eye(2) if deformation is None else deformation
+    # An orthonormal cubic-frame row has L1 norm <= sqrt(3). Dividing
+    # half-indices by two bounds a rotated reference component by this
+    # already-known integer-coordinate bound, without another bulk scan.
+    reference_bound = coordinate_bound * basis_bound + offset_bound
+    compensated = affine_needs_compensation(reference_bound, deformation_matrix, translation)
+    if compensated:
+        reference_basis = rotation @ geometry.planar_basis
     for layer, offset, screen_offset, minima, maxima, nx, ny in plans:
         # Fill the final coordinate array directly, preserving meshgrid's
         # row-major order without allocating two intermediate dense meshes.
@@ -590,7 +603,18 @@ def projected_columns(
         grid[:, :, 0] = np.arange(minima[0], maxima[0] + 1)
         grid[:, :, 1] = np.arange(minima[1], maxima[1] + 1)[:, None]
         coordinates = grid.reshape(-1, 2)
-        positions = coordinates @ screen_basis.T + screen_offset
+        if compensated:
+            # F must act on the same current unstrained reference positions
+            # that a picked atom provides. Precombining F with the lattice
+            # basis rounds coefficients before multiplying huge mesh indices.
+            reference_offset = rotation @ (offset @ geometry.frame[:, :2] / 2)
+            try:
+                reference_positions = affine_points(coordinates, reference_basis, reference_offset)
+                positions = affine_points(reference_positions, deformation_matrix, translation)
+            except ValueError as error:
+                raise GeometryLimitError(range_error) from error
+        else:
+            positions = coordinates @ screen_basis.T + screen_offset
         relative = positions - center
         keep = (
             (relative[:, 0] >= -half_size[0] - crop_epsilon[0])

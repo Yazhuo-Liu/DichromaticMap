@@ -16,6 +16,7 @@ import zlib
 
 import numpy as np
 
+from .affine import affine_points
 from .appearance import validate_appearance, validate_layer_size_scales
 from .cells import StrainedCell, bases, determinant, validate_cell_vertices
 from .crystal import rotation_matrix_2d
@@ -207,7 +208,10 @@ def _read_fit(value, state):
         _same(getattr(cell, field), getattr(state.near_cell, field), "manual strain cell")
     _same(translations, state.translations, "manual translations")
     before = np.stack([vertex.grain_positions for vertex in original], axis=1)
-    _same(vertices, np.einsum("gij,gnj->gni", state.deformations, before) + translations[:, None, :],
+    transformed = np.array([affine_points(polygon, deformation, shift)
+                            for polygon, deformation, shift in
+                            zip(before, state.deformations, translations)])
+    _same(vertices, transformed,
           "transformed vertices")
     _same(vertices, np.stack([vertex.grain_positions for vertex in state.manual_vertices], axis=1),
           "selected transformed vertices")
@@ -295,8 +299,9 @@ def _snapshot_from_payload(payload):
         reference = indices - state.geometry.layer_offsets_half_indices[layer]
         coefficients = np.linalg.lstsq(state.geometry.basis_half_indices, reference, rcond=None)[0]
         _same(state.geometry.basis_half_indices @ np.rint(coefficients), reference, "atom lattice indices")
-        physical = (state.deformations[grain] @ rotation_matrix_2d((1 - 2 * grain) * state.angle_deg / 2)
-                    @ (indices @ state.geometry.frame[:, :2] / 2) + state.translations[grain])
+        reference = (rotation_matrix_2d((1 - 2 * grain) * state.angle_deg / 2)
+                     @ (indices @ state.geometry.frame[:, :2] / 2))
+        physical = affine_points(reference, state.deformations[grain], state.translations[grain])
         _same(position, physical, "atom position")
         state.selected_atoms.append(SelectedAtom(position, grain, layer, indices))
     state.manual_vertices = _read_vertices(raw["manual_vertices"], state, "manual vertices", version)
