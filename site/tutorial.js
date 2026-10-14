@@ -4,23 +4,25 @@
 function tutorialPosition(target, size, viewport) {
   const margin = 12, gap = 12;
   const clamp = (n, min, max) => Math.max(min, Math.min(n, max));
-  const maxX = Math.max(margin, viewport.width - size.width - margin);
-  const maxY = Math.max(margin, viewport.height - size.height - margin);
-  const x = clamp((target.left + target.right - size.width) / 2, margin, maxX);
-  const y = clamp((target.top + target.bottom - size.height) / 2, margin, maxY);
+  const left = viewport.left || 0, top = viewport.top || 0;
+  const minX = left + margin, minY = top + margin;
+  const maxX = Math.max(minX, left + viewport.width - size.width - margin);
+  const maxY = Math.max(minY, top + viewport.height - size.height - margin);
+  const x = clamp((target.left + target.right - size.width) / 2, minX, maxX);
+  const y = clamp((target.top + target.bottom - size.height) / 2, minY, maxY);
   const choices = [
     {left: target.left - size.width - gap, top: y},
     {left: target.right + gap, top: y},
     {left: x, top: target.bottom + gap},
     {left: x, top: target.top - size.height - gap},
   ];
-  const fits = p => p.left >= margin && p.top >= margin &&
-    p.left + size.width <= viewport.width - margin &&
-    p.top + size.height <= viewport.height - margin;
+  const fits = p => p.left >= minX && p.top >= minY &&
+    p.left + size.width <= left + viewport.width - margin &&
+    p.top + size.height <= top + viewport.height - margin;
   const fitted = choices.find(fits);
   if (fitted) return fitted;
-  const corners = [{left: margin, top: margin}, {left: maxX, top: margin},
-                   {left: margin, top: maxY}, {left: maxX, top: maxY}];
+  const corners = [{left: minX, top: minY}, {left: maxX, top: minY},
+                   {left: minX, top: maxY}, {left: maxX, top: maxY}];
   const overlap = p => Math.max(0, Math.min(p.left + size.width, target.right) - Math.max(p.left, target.left)) *
     Math.max(0, Math.min(p.top + size.height, target.bottom) - Math.max(p.top, target.top));
   return corners.reduce((best, p) => overlap(p) < overlap(best) ? p : best);
@@ -76,6 +78,7 @@ if (typeof document !== "undefined") (() => {
   language.value = "en";
   let index = -1, target = null, saved = null, frame = 0;
   const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+  let observedViewport = null;
 
   function schedule() {
     if (index < 0 || frame) return;
@@ -83,9 +86,17 @@ if (typeof document !== "undefined") (() => {
   }
   function position() {
     if (index < 0) return;
+    const visual = window.visualViewport;
+    const viewport = {left:visual?.offsetLeft || 0, top:visual?.offsetTop || 0,
+      width:visual?.width ?? innerWidth, height:visual?.height ?? innerHeight};
+    // CSS viewport units still describe the layout viewport after pinch zoom.
+    bubble.style.maxWidth = `${Math.max(0, viewport.width - 24)}px`;
+    bubble.style.maxHeight = `${Math.max(0, viewport.height - 24)}px`;
+    bubble.classList.toggle("tutorial-compact", viewport.height < 300);
     const raw = target.getBoundingClientRect();
-    let rect = {left: Math.max(0, raw.left - 5), top: Math.max(0, raw.top - 5),
-                right: Math.min(innerWidth, raw.right + 5), bottom: Math.min(innerHeight, raw.bottom + 5)};
+    let rect = {left: Math.max(viewport.left, raw.left - 5), top: Math.max(viewport.top, raw.top - 5),
+                right: Math.min(viewport.left + viewport.width, raw.right + 5),
+                bottom: Math.min(viewport.top + viewport.height, raw.bottom + 5)};
     const scroll = target.closest(".control-scroll");
     if (scroll && getComputedStyle(scroll).overflowY !== "visible") {
       const clip = scroll.getBoundingClientRect();
@@ -96,8 +107,9 @@ if (typeof document !== "undefined") (() => {
     highlight.hidden = !visible;
     if (visible) Object.assign(highlight.style, {left: `${rect.left}px`, top: `${rect.top}px`,
       width: `${rect.right - rect.left}px`, height: `${rect.bottom - rect.top}px`});
-    else rect = {left: innerWidth, right: innerWidth, top: 0, bottom: 0};
-    const p = tutorialPosition(rect, bubble.getBoundingClientRect(), {width: innerWidth, height: innerHeight});
+    else rect = {left:viewport.left + viewport.width, right:viewport.left + viewport.width,
+      top:viewport.top, bottom:viewport.top};
+    const p = tutorialPosition(rect, bubble.getBoundingClientRect(), viewport);
     Object.assign(bubble.style, {left: `${p.left}px`, top: `${p.top}px`});
   }
   function selectTab(attribute, name) {
@@ -122,6 +134,7 @@ if (typeof document !== "undefined") (() => {
     get("tutorial-title").textContent = title;
     get("tutorial-description").textContent = description;
     get("tutorial-try").textContent = `${zh ? "试一试：" : "Try it: "}${trial}`;
+    bubble.querySelector("[aria-live]").scrollTop = 0;
     get("tutorial-progress").textContent = zh ? `${index + 1} / ${tutorialSteps.length} 步` : `Step ${index + 1} of ${tutorialSteps.length}`;
     get("tutorial-close").setAttribute("aria-label", zh ? "关闭引导" : "Close tutorial");
     get("tutorial-back").textContent = zh ? "上一步" : "Back";
@@ -144,6 +157,9 @@ if (typeof document !== "undefined") (() => {
     index = -1; bubble.hidden = true; highlight.hidden = true;
     start.setAttribute("aria-expanded", "false");
     observer?.disconnect(); cancelAnimationFrame(frame); frame = 0;
+    observedViewport?.removeEventListener("resize", schedule);
+    observedViewport?.removeEventListener("scroll", schedule);
+    observedViewport = null;
     for (const [section, open] of saved.sections) section.open = open;
     selectTab("data-main-tab", saved.main); selectTab("data-view-tab", saved.view);
     document.querySelector(".control-scroll").scrollTop = saved.scroll;
@@ -157,6 +173,9 @@ if (typeof document !== "undefined") (() => {
       view: document.querySelector("[data-view-tab].active")?.dataset.viewTab,
       scroll: document.querySelector(".control-scroll").scrollTop, x: scrollX, y: scrollY};
     start.setAttribute("aria-expanded", "true");
+    observedViewport = window.visualViewport || null;
+    observedViewport?.addEventListener("resize", schedule);
+    observedViewport?.addEventListener("scroll", schedule);
     show(0);
   });
   get("tutorial-close").addEventListener("click", close);
@@ -176,5 +195,4 @@ if (typeof document !== "undefined") (() => {
   document.addEventListener("scroll", schedule, true);
   document.addEventListener("click", schedule);
   window.addEventListener("resize", schedule);
-  window.visualViewport?.addEventListener("resize", schedule);
 })();

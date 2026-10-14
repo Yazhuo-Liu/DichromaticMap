@@ -216,9 +216,11 @@ pointer-events:none}
 .tutorial-bubble{
 position:fixed;
 z-index:21;
+display:flex;
+flex-direction:column;
 width:min(340px,calc(100vw - 24px));
 max-height:calc(100dvh - 24px);
-overflow:auto;
+overflow:hidden;
 padding:16px;
 border:1px solid #9bb8d9;
 border-radius:12px;
@@ -237,10 +239,18 @@ gap:8px}
 .tutorial-top{
 color:#627891;
 font-size:11px;
-flex-wrap:wrap}
+flex-wrap:wrap;
+flex-shrink:0}
 .tutorial-top-actions{
 margin-left:auto;
+max-width:100%;
+flex-wrap:wrap;
+gap:6px;
 white-space:nowrap}
+.tutorial-bubble > [aria-live]{
+min-height:0;
+overflow:auto;
+overscroll-behavior:contain}
 .tutorial-top-actions select{
 min-width:0;
 height:29px;
@@ -281,15 +291,38 @@ background:#f7f9fc;
 color:#233e59;
 font:11px/1.5 ui-monospace,monospace}
 .tutorial-navigation{
-margin-top:14px}
+margin-top:14px;
+flex-shrink:0}
 .tutorial-navigation #tutorial-next{
 background:#276bc2;
 border-color:#276bc2;
 color:#fff}
 .tutorial-bubble .tutorial-hint{
 margin:10px 0 0;
+min-height:0;
+overflow:auto;
 font-size:10px;
 color:#6b7e92}
+.tutorial-bubble.tutorial-compact{
+padding:8px}
+.tutorial-compact .tutorial-top{
+display:block}
+.tutorial-compact .tutorial-top-actions{
+margin-top:4px;
+justify-content:flex-start;
+gap:4px}
+.tutorial-compact #tutorial-close{
+position:absolute;
+right:8px;
+top:8px}
+.tutorial-compact .tutorial-navigation{
+margin-top:8px}
+.tutorial-compact .tutorial-navigation button{
+padding:6px;
+font-size:11px;
+white-space:nowrap}
+.tutorial-compact .tutorial-hint{
+display:none}
 .control-heading h1{
 font-size:17px;
 line-height:1.2;
