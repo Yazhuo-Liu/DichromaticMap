@@ -13,7 +13,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 import numpy as np
 
 from dichromatic_map.appearance import default_layer_symbols
-from dichromatic_map.cells import StrainedCell, count_cell_atoms
+from dichromatic_map.cells import StrainedCell, checked_integer_array, count_cell_atoms
 from dichromatic_map.completion import cell_completion_candidates
 from dichromatic_map.crystal import (
     crystal_vector_coordinates, csl_presets, format_direction_components, get_geometry,
@@ -41,22 +41,61 @@ def _array(value):
     return np.asarray(value, dtype=float)
 
 
+_MAX_SAFE_INTEGER = 2**53 - 1
+
+
+def _safe_integer_values(values):
+    """Check integer identities before a JSON number or Float64 buffer cast."""
+    array = np.asarray(values)
+    if not array.size:
+        return
+    if array.dtype.kind in "iuf":
+        outside = array.max() > _MAX_SAFE_INTEGER or array.min() < -_MAX_SAFE_INTEGER
+    else:
+        outside = any(abs(int(value)) > _MAX_SAFE_INTEGER for value in array.flat)
+    if outside:
+        raise ValueError("Result exceeds the browser's safe integer range; use the Python or desktop interface")
+
+
+def _safe_json_integers(value):
+    if isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_)):
+        _safe_integer_values(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            _safe_json_integers(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _safe_json_integers(item)
+
+
+def _axial_repeat(value):
+    if (isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float))
+            or not np.isfinite(value) or not -4 <= value <= 4 or value != int(value)):
+        raise ValueError("Axial repeat must be an integer between -4 and 4")
+    return int(value)
+
+
 def _cell(cell):
     if cell is None:
         return None
+    atoms = cell.atoms
+    for values in (cell.m1, cell.m2, atoms):
+        _safe_integer_values(values)
     return {
         "m1": cell.m1.tolist(), "m2": cell.m2.tolist(),
         "f1": cell.f1.tolist(), "f2": cell.f2.tolist(),
         "cell": cell.cell.tolist(), "max_strain": cell.max_strain,
-        "atoms": list(cell.atoms), "label": cell.label(),
+        "atoms": list(atoms), "label": cell.label(),
     }
 
 
 def _from_cell(value, lattice, axis):
     if value is None:
         return None
+    for field in ("m1", "m2"):
+        _safe_integer_values(value[field])
     return StrainedCell(
-        np.asarray(value["m1"], dtype=int), np.asarray(value["m2"], dtype=int),
+        checked_integer_array(value["m1"]), checked_integer_array(value["m2"]),
         _array(value["f1"]), _array(value["f2"]), _array(value["cell"]),
         float(value["max_strain"]), lattice, axis,
     )
@@ -105,6 +144,8 @@ def _render_data(request):
                                 center=center, deformation=f[g], lattice=lattice,
                                 axis=axis, translation=t[g])
               for g, sign in enumerate((1, -1))]
+    for grain in grains:
+        _safe_integer_values(grain.half_indices)
     matches = same_layer_coincidence_sites(*grains, 1e-6)
     local = None
     if request.get("local_matching"):
@@ -219,9 +260,15 @@ def _count(request):
         region_states=tuple(request.get("region_states", [True] * 4)),
         layer=int(request["layer"]), translations=_array(request["translations"]),
     )
+    for values in (result.interior, result.boundary, result.half_open,
+                   result.half_open_edges, result.half_open_corners):
+        if values is not None:
+            _safe_integer_values(values)
     return {
         "interior": result.interior.tolist(), "boundary": result.boundary.tolist(),
         "half_open": result.half_open.tolist() if result.half_open is not None else None,
+        "half_open_edges": result.half_open_edges.tolist() if result.half_open_edges is not None else None,
+        "half_open_corners": result.half_open_corners.tolist() if result.half_open_corners is not None else None,
         "areas": result.areas.tolist(),
         "half_open_available": result.half_open_available.tolist(),
     }
@@ -234,6 +281,8 @@ def _complete(request):
         layer=int(request["layer"]), percent=float(request["percent"]),
         max_rotation_deg=float(request["rotation"]),
     )
+    for candidate in candidates:
+        _safe_integer_values(candidate.atoms)
     return [{"description": c.description, "source": c.source,
              "vertices": c.vertices.tolist(), "atoms": c.atoms,
              "areas": c.areas, "error": c.error,
@@ -262,8 +311,10 @@ def _fit_selected(request):
 def _vector(request):
     a, b = request["atoms"]
     geometry = get_geometry(request["lattice"], request["axis"])
-    half = (np.asarray(b["half_indices"]) - np.asarray(a["half_indices"])
-            + int(request["axial_repeat"]) * geometry.axial_repeat_half_indices)
+    for atom in (a, b):
+        _safe_integer_values(atom["half_indices"])
+    half = (checked_integer_array(b["half_indices"]) - checked_integer_array(a["half_indices"])
+            + _axial_repeat(request["axial_repeat"]) * geometry.axial_repeat_half_indices)
     dz = 0.5 * half @ geometry.frame[:, 2]
     displacement = np.r_[np.asarray(b["position"]) - np.asarray(a["position"]), dz]
     grains = (0, 1) if a["grain"] != b["grain"] else (a["grain"],)
@@ -301,14 +352,16 @@ def _state_from_browser(raw):
     state.selected_layer = int(raw.get("selected_layer", -1))
     state.visible_grain_layers = [set(layers) for layers in raw["visible_layers"]]
     state.selected_points = [_array(point) for point in raw["boundary"]]
+    for atom in raw["atoms"]:
+        _safe_integer_values(atom["half_indices"])
     state.selected_atoms = [SelectedAtom(_array(atom["position"]), int(atom["grain"]),
-                                      int(atom["layer"]), np.asarray(atom["half_indices"], dtype=int))
+                                      int(atom["layer"]), checked_integer_array(atom["half_indices"]))
                             for atom in raw["atoms"]]
     state.manual_vertices = [CellVertex(_array(v["position"]), int(v["layer"]),
                                         v["source"], _array(v["endpoints"]))
                              for v in raw["manual"]]
     state.manual_local_cutoff = raw.get("manual_local_cutoff")
-    state.axial_repeat = int(raw.get("axial_repeat", 0))
+    state.axial_repeat = _axial_repeat(raw.get("axial_repeat", 0))
     state.near_enabled = bool(raw.get("near_enabled", False))
     state.near_method = raw.get("near_method", "local")
     state.near_cell = _from_cell(raw.get("near_cell"), raw["lattice"], raw["axis"])
@@ -371,4 +424,6 @@ def web_dispatch(serialized):
     action = request.pop("action")
     if action not in _ACTIONS:
         raise ValueError("Unknown browser action")
-    return json.dumps(_ACTIONS[action](request), allow_nan=False)
+    result = _ACTIONS[action](request)
+    _safe_json_integers(result)
+    return json.dumps(result, allow_nan=False)

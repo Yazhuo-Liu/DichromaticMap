@@ -160,20 +160,20 @@ function viewSize(metrics = refreshCanvasMetrics()) {
   state.width = 12 * state.scale;
   state.height = state.width * drawH / drawW;
 }
-function renderDimensions() {
+function renderDimensions(viewWidth = state.width, viewHeight = state.height, rotation = state.displayRotation) {
   // The lattice engine crops in unrotated coordinates. Cover every corner of
   // the displayed rectangle after rotating it back into those coordinates.
-  const radians = state.displayRotation * Math.PI / 180;
+  const radians = rotation * Math.PI / 180;
   const cosine = Math.abs(Math.cos(radians));
   const sine = Math.abs(Math.sin(radians));
   const dimensions = {
-    width: Math.max(state.width * 1.43, cosine * state.width + sine * state.height + 2),
-    height: Math.max(state.height * 1.43, sine * state.width + cosine * state.height + 2),
+    width: Math.max(viewWidth * 1.43, cosine * viewWidth + sine * viewHeight + 2),
+    height: Math.max(viewHeight * 1.43, sine * viewWidth + cosine * viewHeight + 2),
   };
   // Cover centered angle previews through any rotation when the extra buffer
   // is small. Keep wide or distant views bounded instead of allocating a huge
   // origin-centered circle just for a transient preview.
-  const diagonal = Math.hypot(state.width, state.height) + .5;
+  const diagonal = Math.hypot(viewWidth, viewHeight) + .5;
   const width = Math.max(dimensions.width, diagonal), height = Math.max(dimensions.height, diagonal);
   if (width <= 150 && height <= 150 && width * height <= dimensions.width * dimensions.height * 1.25)
     return {width, height};
@@ -1144,7 +1144,24 @@ async function countManual() {
     const result = await request("count", token.inputs);
     if (!analysisCurrent(token)) return;
     const layer = state.manual[0].layer;
-    const text = `G1: ${result.interior[0][layer]} interior + ${result.boundary[0][layer]} boundary\nG2: ${result.interior[1][layer]} interior + ${result.boundary[1][layer]} boundary\nAreas: ${result.areas.map(a => a.toFixed(4)).join(" / ")} a₀²`;
+    const lines = [];
+    for (const grain of [0,1]) {
+      const inside = result.interior[grain][layer], boundary = result.boundary[grain][layer];
+      if (result.half_open_available?.[grain] && result.half_open) {
+        lines.push(`G${grain+1}: ${result.half_open[grain][layer]} half-open unique representatives`);
+        if (result.half_open_edges && result.half_open_corners)
+          lines.push(`  ${inside} interior + ${result.half_open_edges[grain][layer]} edge + ${result.half_open_corners[grain][layer]} corner`);
+        lines.push(`  ${inside+boundary} closed-outline point instances (${boundary} on boundary); opposite-edge copies are duplicates.`);
+      } else {
+        lines.push(`G${grain+1}: ${inside+boundary} atoms in the closed polygon = ${inside} interior + ${boundary} boundary`);
+        lines.push(result.half_open_available?.[grain] === false
+          ? "  Not a parallelogram; periodic unique-cell count is unavailable."
+          : "  Half-open count unavailable.");
+      }
+    }
+    lines.push(`Areas: ${result.areas.map(a => a.toFixed(4)).join(" / ")} a₀²`);
+    lines.push("Only the picked layer is counted; crystal periodicity is not inferred from shape.");
+    const text = lines.join("\n");
     $("manual-info").dataset.count = text;
     updateSummary(); setStatus("Manual cell counted");
   } catch (error) {
@@ -1448,6 +1465,7 @@ async function importSession(file) {
     const raw = loaded.state, p = raw.parameters;
     const nextMetadata = await request("metadata", {lattice:p.lattice, axis:p.axis});
     if (!analysisCurrent(token)) return;
+    const view = importedView(loaded.view_range, raw.display_rotation_deg);
     state.lattice = p.lattice; state.axis = p.axis; state.angle = p.angle_deg;
     state.a0 = p.lattice_constant; state.mode = raw.interaction_mode;
     state.displayRotation = raw.display_rotation_deg; state.referenceAxes = raw.show_reference_axes;
@@ -1466,9 +1484,8 @@ async function importSession(file) {
     state.nearCell = raw.near_cell; state.nearSolutions = raw.near_cell ? [raw.near_cell] : [];
     state.deformations = raw.deformations; state.translations = raw.translations;
     state.regions = loaded.settings.region_states; state.showCell = loaded.settings.show_common_cell;
-    state.center = [(loaded.view_range[0] + loaded.view_range[1]) / 2,
-                    (loaded.view_range[2] + loaded.view_range[3]) / 2];
-    state.scale = Math.max(.1, Math.min(5, (loaded.view_range[1] - loaded.view_range[0]) / 12));
+    state.center = view.center; state.scale = view.scale;
+    state.width = view.width; state.height = view.height;
     $("vector-annotation").hidden = true;
     $("vector-readout").textContent = "";
     $("manual-info").dataset.count = "";
@@ -1503,6 +1520,31 @@ async function importSession(file) {
     setStatus("Session imported");
   } catch (error) { if (analysisCurrent(token)) fail(error); }
   finally { $("session-file").value = ""; }
+}
+
+function importedView(range, rotation) {
+  const plot = refreshCanvasMetrics().plot;
+  const center = [(range[0]+range[1])/2,(range[2]+range[3])/2];
+  const aspect = plot.width/plot.height;
+  // The rounded midpoint can be asymmetric at large coordinates. Fit its
+  // actual distance to each boundary, rather than only the original span.
+  const required = Math.max(1.2, 2*Math.max(center[0]-range[0],range[1]-center[0]),
+    2*Math.max(center[1]-range[2],range[3]-center[1])*aspect);
+  const measure = width => {
+    const scale = width/12;
+    return {center,scale,width:12*scale,height:12*scale*plot.height/plot.width};
+  };
+  const contains = view => center[0]-view.width/2 <= range[0] && center[0]+view.width/2 >= range[1] &&
+    center[1]-view.height/2 <= range[2] && center[1]+view.height/2 >= range[3];
+  let view = measure(Math.min(60, required*(1+8*Number.EPSILON)));
+  if (!contains(view)) {
+    const slack = 8*Number.EPSILON*Math.max(required,Math.abs(center[0]),Math.abs(center[1])*aspect);
+    view = measure(Math.min(60, view.width+slack));
+  }
+  const dimensions = renderDimensions(view.width, view.height, rotation);
+  if (!contains(view) || dimensions.width > 150 || dimensions.height > 150)
+    throw new Error("The saved view exceeds the browser view range. Open it in the desktop app and save a smaller view.");
+  return view;
 }
 
 $("structure").addEventListener("change", changeGeometry);
@@ -1551,7 +1593,14 @@ $("fit-cell").addEventListener("click", () => {
 $("pick-gb").addEventListener("click", () => setMode("boundary"));
 $("pick-vector").addEventListener("click", () => setMode("vector"));
 $("pick-cell").addEventListener("click", () => setMode("cell"));
-$("axial-repeat").addEventListener("change", () => { state.axialRepeat = Number($("axial-repeat").value); updateVector(); });
+$("axial-repeat").addEventListener("change", () => {
+  const input = $("axial-repeat"), text = input.value.trim(), value = Number(text);
+  if (!text || !Number.isInteger(value) || value < -4 || value > 4) {
+    input.value = String(state.axialRepeat);
+    setStatus("Axial repeat must be an integer between -4 and 4"); return;
+  }
+  state.axialRepeat = value; updateVector();
+});
 document.querySelectorAll("[data-region]").forEach(input => input.addEventListener("change", () => {
   state.regions[Number(input.dataset.region)] = input.checked;
   draw(); updateSummary(); setStatus("GB side visibility updated"); if (state.manual.length === 4) countManual();
