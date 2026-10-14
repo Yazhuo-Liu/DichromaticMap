@@ -4,8 +4,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const test = require("node:test");
 
 const nodes = new Map();
+const documentEvents = new Map();
 function node(id) {
   if (!nodes.has(id)) nodes.set(id, {
     id, handlers: {}, style: {}, value: "1", checked: true, open: true,
@@ -25,7 +27,7 @@ const sandbox = {
     getElementById: node,
     querySelectorAll: () => [],
     querySelector: () => node("dummy"),
-    addEventListener() {},
+    addEventListener(type, callback) { documentEvents.set(type, callback); },
   },
   setTimeout, clearTimeout,
   requestAnimationFrame: () => 1, cancelAnimationFrame() {},
@@ -157,3 +159,64 @@ assert(vertical.triangle[0][1] > vertical.endpoint[1], "rotated tip sits before 
 assert(vertical.triangle[0][1] < vertical.triangle[1][1], "rotated tip points toward P2");
 
 console.log("Mobile interactions, rotated viewport coverage, and vector arrow passed.");
+
+test("application shortcuts leave modified, composing and editable events alone", () => {
+  const keydown = documentEvents.get("keydown");
+  node("completion-dialog").open = false;
+  for (const extra of [{ctrlKey: true}, {metaKey: true}, {altKey: true},
+    {isComposing: true}, {keyCode: 229}, {defaultPrevented: true}]) {
+    app.state.center = [4, -3];
+    app.state.regions = [true, false, false, true];
+    keydown({key: "c", ...extra});
+    assert.deepEqual(app.state.center, [4, -3]);
+    keydown({key: "f", ...extra});
+    assert.deepEqual(app.state.regions, [true, false, false, true]);
+  }
+  for (const editable of [{tagName: "INPUT"}, {tagName: "SELECT"}, {tagName: "TEXTAREA"},
+    {tagName: "DIV", isContentEditable: true}]) {
+    sandbox.document.activeElement = editable;
+    app.state.center = [4, -3];
+    keydown({key: "c", target: editable});
+    assert.deepEqual(app.state.center, [4, -3]);
+  }
+  sandbox.document.activeElement = {tagName: "BODY"};
+  keydown({key: "c", target: {isContentEditable: true}});
+  assert.deepEqual(app.state.center, [4, -3]);
+  keydown({key: "c"});
+  assert.deepEqual(Array.from(app.state.center), [0, 0], "the ordinary single-key shortcut still works");
+  keydown({key: "f"});
+  assert.deepEqual(Array.from(app.state.regions), [true, true, true, true]);
+});
+
+test("wheel zoom follows vertical distance and delta units instead of event count", () => {
+  const wheel = node("map").handlers.wheel;
+  const apply = (deltaY, deltaMode = 0, deltaX = 0) => {
+    let prevented = false;
+    wheel({deltaY, deltaMode, deltaX, preventDefault() { prevented = true; }});
+    return prevented;
+  };
+  app.state.scale = 1;
+  const renders = app.renderCount;
+  assert.equal(apply(0, 0, 100), false);
+  assert.equal(apply(0, 0, -100), false);
+  assert.equal(app.state.scale, 1);
+  assert.equal(app.renderCount, renders);
+  apply(120); const whole = app.state.scale;
+  app.state.scale = 1;
+  for (let count = 0; count < 12; count++) apply(10);
+  assert(Math.abs(app.state.scale - whole) < 1e-12);
+  app.state.scale = 1; apply(1); const small = app.state.scale;
+  app.state.scale = 1; apply(100); const large = app.state.scale;
+  assert(large > small && small > 1);
+  apply(-100);
+  assert(Math.abs(app.state.scale - 1) < 1e-12);
+  app.state.scale = 1; apply(16); const pixels = app.state.scale;
+  app.state.scale = 1; apply(1, 1);
+  assert(Math.abs(app.state.scale - pixels) < 1e-12, "one line is normalized to 16 pixels");
+  const pageHeight = node("map").getBoundingClientRect().height - 66;
+  app.state.scale = 1; apply(1); const onePixel = app.state.scale;
+  app.state.scale = 1; apply(1 / pageHeight, 2);
+  assert(Math.abs(app.state.scale - onePixel) < 1e-12);
+  apply(1e6); assert.equal(app.state.scale, 5);
+  apply(-1e6); assert.equal(app.state.scale, .1);
+});

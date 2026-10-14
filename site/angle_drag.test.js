@@ -154,3 +154,44 @@ test("export follows a new drag started immediately after the previous release",
   assert.equal(h.exports, 1);
   assert(app.currentPattern());
 });
+
+test("held preview stays isotropic when the canvas changes size", () => {
+  const {h, app, source, saved} = setup();
+  h.node("angle-slider").handlers.pointerdown({button: 0, pointerId: 31});
+  input(h, 44);
+  h.flushFrame();
+  const previous = app.previewVisibleData().revision;
+  h.node("map").getBoundingClientRect = () => ({left: 0, top: 0, width: 600, height: 900});
+  h.windowEvents.get("resize")();
+  h.flushFrame();
+  const origin = app.screen([0, 0]), right = app.screen([1, 0]), up = app.screen([0, 1]);
+  assert(Math.abs((right[0] - origin[0]) - (origin[1] - up[1])) < 1e-10,
+    "each scheduled preview frame uses equal pixel scales on the two model axes");
+  assert(app.angleSliderDragging);
+  assert(app.previewVisibleData().revision > previous);
+  h.flush(45);
+  assert.equal(h.messages.filter(message => message.request?.action === "render").length, 0);
+  assert.equal(JSON.stringify(source), saved);
+});
+
+test("only the angle drag owner can finish or cancel its preview", () => {
+  const {h, app} = setup();
+  const slider = h.node("angle-slider");
+  slider.handlers.pointerdown({button: 0, pointerId: 31, isPrimary: true});
+  input(h, 44);
+  h.windowEvents.get("pointerup")({pointerId: 32, isPrimary: true});
+  assert(app.angleSliderDragging, "another pointer type can also be primary");
+  h.windowEvents.get("pointercancel")({pointerId: 32});
+  assert(app.angleSliderDragging);
+  slider.handlers.lostpointercapture({pointerId: 32});
+  assert(app.angleSliderDragging);
+  h.flush(45);
+  assert.equal(h.messages.filter(message => message.request?.action === "render").length, 0);
+  slider.handlers.lostpointercapture({pointerId: 31});
+  assert(!app.angleSliderDragging);
+  h.flush(45);
+  assert.equal(h.messages.filter(message => message.request?.action === "render").length, 1);
+  slider.handlers.pointerdown({button: 0, pointerId: 33});
+  h.windowEvents.get("blur")({type: "blur"});
+  assert(!app.angleSliderDragging, "blur deliberately releases an owner without a pointer event");
+});

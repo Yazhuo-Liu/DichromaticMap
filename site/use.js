@@ -30,6 +30,8 @@ let nearGeneration = 0;
 let analysisGeneration = 0;
 let geometryGeneration = 0;
 const analysisRequests = new Map();
+let vectorReading;
+let vectorPending;
 let renderTimer;
 let nearTimer;
 let drawFrame;
@@ -153,8 +155,8 @@ function fail(error) {
 }
 try { startWorker(); } catch (error) { retireWorker(error); }
 
-function viewSize() {
-  const {width: drawW, height: drawH} = refreshCanvasMetrics().plot;
+function viewSize(metrics = refreshCanvasMetrics()) {
+  const {width: drawW, height: drawH} = metrics.plot;
   state.width = 12 * state.scale;
   state.height = state.width * drawH / drawW;
 }
@@ -471,7 +473,7 @@ function renderRequest() {
       if (angleSliderDragging || generation !== renderGeneration ||
           signature !== JSON.stringify(currentRenderParameters())) return;
       const result = window.DichromaticRenderData.decodeRenderResult(raw);
-      state.angle = result.angle;
+      if (result.angle !== parameters.angle) throw new Error("The engine returned a different physical angle. Recalculate the view.");
       pattern = result;
       anglePreview = undefined;
       renderCoverage = {signature: JSON.stringify({...parameters, angle: result.angle}),
@@ -699,7 +701,9 @@ function drawAtoms(context, clean = false) {
 }
 function draw() {
   if (drawFrame !== undefined) { cancelAnimationFrame(drawFrame); drawFrame = undefined; }
-  refreshCanvasMetrics();
+  // Held angle previews also paint after a resize, while their numerical
+  // request intentionally waits. Keep equal model-axis scales in every frame.
+  viewSize(refreshCanvasMetrics());
   resizeCanvas();
   const r = plotRect();
   drawGrid(ctx, r);
@@ -788,24 +792,60 @@ function drawReferenceAxes(context, r) {
   }
   context.restore();
 }
-function drawLegend() {
-  if (!metadata) return;
-  const parts = [];
-  const filled = {o:"●",d:"◆",t:"▲",s:"■",p:"⬟",h:"⬢",star:"★","+":"+",x:"×",t1:"▼",t2:"▶",t3:"◀"};
-  const outline = {o:"○",d:"◇",t:"△",s:"□",p:"⬠",h:"⬡",star:"☆","+":"+",x:"×",t1:"▽",t2:"▷",t3:"◁"};
-  for (let layer = 0; layer < Math.min(metadata.layers, 6); layer++) {
+function plotLegendEntries() {
+  if (!metadata) return [];
+  const entries = [];
+  const layers = [...new Set([...state.visibleLayers[0], ...state.visibleLayers[1]])]
+    .filter(layer => layer >= 0 && layer < metadata.layers).sort((a, b) => a - b);
+  for (const layer of layers.slice(0, 6)) {
     for (let grain = 0; grain < 2; grain++) {
       if (!state.visibleLayers[grain].has(layer)) continue;
       const name = layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`;
-      const color = state.colors[grain];
-      const symbol = state.symbols[layer];
-      const glyph = grain ? (outline[symbol] || "○") : (filled[symbol] || "●");
-      parts.push(`<span><b class="legend-marker" style="color:${color}">${glyph}</b>G${grain + 1} · ${name}</span>`);
+      entries.push({label: `G${grain + 1} · ${name}`, symbol: state.symbols[layer],
+        stroke: grain ? state.colors[1] : "#2e6799", fill: grain ? null : state.colors[0], lineWidth: 1.25});
     }
   }
-  if (visibleCSL().length) parts.push(`<span><b class="legend-marker" style="color:#e5a50a">◎</b>CSL</span>`);
-  if (visibleLocal().length) parts.push(`<span><b class="legend-marker" style="color:#aa45bb">◎</b>Near pair</span>`);
-  setHTML($("plot-legend"), parts.join(""));
+  if (layers.length > 6) entries.push({label: `+${layers.length - 6} layers`});
+  if (visibleCSL().length) entries.push({label: "CSL", symbol: "o", stroke: "#e5a50a", fill: null, lineWidth: 2.2});
+  if (visibleLocal().length) entries.push({label: "Near pair", symbol: "o", stroke: "#aa45bb", fill: null, lineWidth: 2});
+  return entries;
+}
+function drawLegendMarker(context, entry, x, y) {
+  if (!entry.symbol) return;
+  marker(context, x, y, 6, entry.symbol, entry.stroke, entry.fill, entry.lineWidth);
+}
+function drawLegend() {
+  const entries = plotLegendEntries(), container = $("plot-legend");
+  const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
+  const signature = JSON.stringify([entries, dpr]);
+  if (container.dataset.legendSignature === signature) return;
+  container.dataset.legendSignature = signature;
+  setHTML(container, entries.map((entry, index) => `<span>${entry.symbol ? `<canvas class="legend-marker" data-legend-index="${index}"` +
+    ` data-symbol="${escapeHtml(entry.symbol)}" aria-hidden="true" style="width:18px;height:18px"></canvas>` : ""}` +
+    `${escapeHtml(entry.label)}</span>`).join(""));
+  for (const icon of document.querySelectorAll("#plot-legend canvas")) {
+    icon.width = icon.height = Math.round(18 * dpr);
+    const context = icon.getContext("2d");
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawLegendMarker(context, entries[Number(icon.dataset.legendIndex)], 9, 9);
+  }
+}
+function drawPlotLegend(context, entries = plotLegendEntries()) {
+  if (!entries.length) return;
+  const columns = Math.min(3, entries.length), rows = Math.ceil(entries.length / columns);
+  context.save();
+  context.fillStyle = "#ffffffeb";
+  context.fillRect(48, 48, columns * 96 + 8, rows * 19 + 10);
+  context.strokeStyle = "#cdd8e4";
+  context.strokeRect(48.5, 48.5, columns * 96 + 7, rows * 19 + 9);
+  context.font = "11px Arial"; context.textAlign = "left"; context.textBaseline = "middle";
+  entries.forEach((entry, index) => {
+    const x = 59 + index % columns * 96, y = 63 + Math.floor(index / columns) * 19;
+    drawLegendMarker(context, entry, x, y);
+    context.fillStyle = "#293b59";
+    context.fillText(entry.label, x + (entry.symbol ? 12 : 0), y);
+  });
+  context.restore();
 }
 
 function updateSummary() {
@@ -943,8 +983,10 @@ async function changeGeometry() {
   } catch (error) { if (generation === geometryGeneration) fail(error); }
 }
 function changeAngle(value) {
-  const angle = Number(value);
+  let angle = Number(value);
   if (!Number.isFinite(angle) || angle < 0 || angle > metadata.max_angle) return fail(new Error(`Angle must be 0–${metadata.max_angle}°`));
+  const preset = metadata.presets.find(p => Math.abs(p.angle - angle) <= (metadata.angle_snap_tolerance ?? .006));
+  if (preset) angle = preset.angle;
   prepareAnglePreview();
   geometryGeneration++;
   state.angle = angle; resetSelections();
@@ -959,7 +1001,7 @@ function beginAngleDrag(event) {
   prepareAnglePreview();
   if (anglePreview) anglePreview.signature = JSON.stringify(currentRenderParameters());
   angleSliderDragging = true;
-  angleDragFinished = {};
+  angleDragFinished = {pointerId: event.pointerId};
   angleDragFinished.promise = new Promise(resolve => { angleDragFinished.resolve = resolve; });
   clearTimeout(renderTimer); renderGeneration++; renderPending?.finish();
   postToWorker({type: "cancel", action: "render"});
@@ -971,12 +1013,14 @@ function releaseAngleDrag() {
   angleDragFinished.resolve();
   return true;
 }
-function finishAngleDrag() {
+function finishAngleDrag(event) {
+  if (event?.pointerId !== undefined && event.pointerId !== angleDragFinished?.pointerId) return;
   if (!releaseAngleDrag()) return;
   renderRequest();
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();
 }
 function setMode(mode) {
+  if (mode === "cell" && state.manualFit) return setStatus("Restore the local structure before editing cell vertices.");
   invalidateAnalyses();
   state.mode = state.mode === mode ? "idle" : mode;
   if (state.mode === "boundary") state.boundary = [];
@@ -1063,17 +1107,31 @@ function invalidateAnalyses() {
   analysisGeneration++;
   if ($("completion-dialog").open) $("completion-dialog").close();
 }
+function analysisInputs(kind) {
+  const geometry = {angle:state.angle, lattice:state.lattice, axis:state.axis};
+  if (kind === "near") return {...geometry,
+    percent:Number($("strain-percent").value), index:Number($("search-index").value)};
+  if (kind === "vector") return {...geometry, atoms:state.atoms,
+    axial_repeat:state.axialRepeat, deformations:state.deformations};
+  if (kind === "count") return {...geometry, polygons:manualPolygons(),
+    deformations:state.deformations, translations:state.translations,
+    layer:state.manual[0]?.layer, boundary:state.boundary,
+    use_boundary:$("count-visible").checked, region_states:state.regions};
+  if (kind === "complete" || kind === "fit") return {...geometry, polygons:manualPolygons(),
+    layer:state.manual[0]?.layer, percent:Number($("manual-strain").value),
+    rotation:Number($("manual-rotation").value)};
+  // Import replaces the whole workspace, so protect newer user edits to it.
+  if (kind === "import") return [sessionState(), sessionSettings(), state.center, state.scale];
+  throw new Error(`Unknown analysis: ${kind}`);
+}
 function analysisSignature(kind) {
-  const snapshot = sessionState();
-  // An exact-preset render may normalize the angle during search debounce.
-  // Explicit angle edits invalidate the analysis and near generations.
-  if (kind === "near") delete snapshot.angle;
-  return JSON.stringify([snapshot, sessionSettings()]);
+  return JSON.stringify(analysisInputs(kind));
 }
 function beginAnalysis(kind) {
   const number = (analysisRequests.get(kind) || 0) + 1;
   analysisRequests.set(kind, number);
-  return {kind, number, generation:analysisGeneration, signature:analysisSignature(kind)};
+  const inputs = clone(analysisInputs(kind));
+  return {kind, number, generation:analysisGeneration, inputs, signature:JSON.stringify(inputs)};
 }
 function analysisCurrent(token) {
   return token.generation === analysisGeneration && analysisRequests.get(token.kind) === token.number &&
@@ -1083,13 +1141,7 @@ async function countManual() {
   if (state.manual.length !== 4) return;
   const token = beginAnalysis("count");
   try {
-    const result = await request("count", {
-      polygons: manualPolygons(), angle: state.angle,
-      deformations: state.deformations, translations: state.translations,
-      lattice: state.lattice, axis: state.axis, layer: state.manual[0].layer,
-      boundary: state.boundary, use_boundary: $("count-visible").checked,
-      region_states: state.regions,
-    });
+    const result = await request("count", token.inputs);
     if (!analysisCurrent(token)) return;
     const layer = state.manual[0].layer;
     const text = `G1: ${result.interior[0][layer]} interior + ${result.boundary[0][layer]} boundary\nG2: ${result.interior[1][layer]} interior + ${result.boundary[1][layer]} boundary\nAreas: ${result.areas.map(a => a.toFixed(4)).join(" / ")} a₀²`;
@@ -1132,11 +1184,13 @@ async function selectAt(x, y) {
 async function updateVector() {
   if (state.atoms.length !== 2) return;
   const token = beginAnalysis("vector");
+  const pending = {signature:token.signature, settled:false};
+  pending.promise = new Promise(resolve => {pending.finish = () => {pending.settled=true; resolve();};});
+  vectorPending = pending;
+  vectorReading = undefined;
+  $("vector-annotation").hidden = true;
   try {
-    const result = await request("vector", {
-      atoms: state.atoms, axial_repeat: state.axialRepeat, angle: state.angle,
-      lattice: state.lattice, axis: state.axis, deformations: state.deformations,
-    });
+    const result = await request("vector", token.inputs);
     if (!analysisCurrent(token)) return;
     const text = [`P1→P2 · axial ${state.axialRepeat >= 0 ? "+" : ""}${state.axialRepeat}`];
     const vectors = Object.entries(result.vectors);
@@ -1149,11 +1203,27 @@ async function updateVector() {
       }
     }
     text.push(`Current |Δr|/a₀ = ${result.length.toFixed(4)}`);
-    $("vector-readout").textContent = text.join("\n");
+    vectorReading = {signature:token.signature, text:text.join("\n")};
+    $("vector-readout").textContent = vectorReading.text;
     $("vector-annotation").hidden = false;
     positionVectorAnnotation();
     setStatus("Vector measured");
-  } catch (error) { if (analysisCurrent(token)) fail(error); }
+  } catch (error) {
+    if (analysisCurrent(token)) {pending.error=error; fail(error);}
+  } finally {pending.finish();}
+}
+
+async function waitForCurrentVector() {
+  while (state.atoms.length === 2) {
+    const signature = analysisSignature("vector");
+    if (vectorReading?.signature === signature) return;
+    if (vectorPending?.signature === signature && vectorPending.error) throw vectorPending.error;
+    if (!vectorPending || vectorPending.signature !== signature || vectorPending.settled) updateVector();
+    const pending = vectorPending;
+    await pending.promise;
+    if (pending !== vectorPending || signature !== analysisSignature("vector")) continue;
+    if (pending.error) throw pending.error;
+  }
 }
 
 function fitPoints(points) {
@@ -1173,11 +1243,7 @@ async function completeManual() {
   if (![2, 3].includes(state.manual.length)) return;
   const token = beginAnalysis("complete");
   try {
-    const candidates = await request("complete", {
-      polygons: manualPolygons(), angle: state.angle, lattice: state.lattice, axis: state.axis,
-      layer: state.manual[0].layer, percent: Number($("manual-strain").value),
-      rotation: Number($("manual-rotation").value),
-    });
+    const candidates = await request("complete", token.inputs);
     if (!analysisCurrent(token)) return;
     if (!candidates.length) return setStatus("No compatible completion was found");
     const holder = $("completion-options"); holder.replaceChildren();
@@ -1224,11 +1290,7 @@ async function toggleSelectedStrain() {
   if (state.manual.length !== 4 || !state.manual.some(v => v.source !== "CSL")) return;
   const token = beginAnalysis("fit");
   try {
-    const fit = await request("fit_selected", {
-      polygons: manualPolygons(), angle: state.angle, lattice: state.lattice,
-      axis: state.axis, layer: state.manual[0].layer,
-      percent: Number($("manual-strain").value), rotation: Number($("manual-rotation").value),
-    });
+    const fit = await request("fit_selected", token.inputs);
     if (!analysisCurrent(token)) return;
     invalidateAnalyses(); cancelNearSearch();
     state.manualOriginal = clone(state.manual);
@@ -1278,9 +1340,7 @@ function searchNear() {
       if (generation !== nearGeneration || !analysisCurrent(token)) return;
       setStatus("Searching strained periodic cells locally…");
       $("near-info").textContent = "Searching compatible periodic cells in the browser worker…";
-      const result = await request("near_search", {angle: state.angle,
-        percent: Number($("strain-percent").value), index: Number($("search-index").value),
-        lattice: state.lattice, axis: state.axis});
+      const result = await request("near_search", token.inputs);
       if (generation !== nearGeneration || !analysisCurrent(token) || !state.nearEnabled || state.nearMethod !== "strain") return;
       state.nearSolutions = result;
       $("near-results").replaceChildren();
@@ -1299,7 +1359,13 @@ function downloadBlob(blob, name) {
 }
 async function exportPNG() {
   try {
-  await waitForCurrentRender();
+  for (;;) {
+    await waitForCurrentRender();
+    if (!$("clean-png").checked) await waitForCurrentVector();
+    viewSize();
+    if (currentPattern() && coveredView(renderCoverage) &&
+        ($("clean-png").checked || state.atoms.length !== 2 || vectorReading?.signature === analysisSignature("vector"))) break;
+  }
   // A download can precede the animation frame queued by the latest input.
   draw();
   const clean = $("clean-png").checked;
@@ -1314,17 +1380,7 @@ async function exportPNG() {
     context.fillStyle = "#17212b"; context.textAlign = "center"; context.font = "13px Arial";
     context.fillText($("plot-title").textContent, canvas.clientWidth / 2, 17);
     context.textAlign = "left";
-    const legend = Array.from($("plot-legend").children).map(item => item.textContent.trim());
-    if (legend.length) {
-      const columns = Math.min(3, legend.length), rows = Math.ceil(legend.length / columns);
-      context.fillStyle = "#ffffffeb";
-      context.fillRect(48, 48, columns * 96 + 8, rows * 17 + 10);
-      context.strokeStyle = "#cdd8e4";
-      context.strokeRect(48.5, 48.5, columns * 96 + 7, rows * 17 + 9);
-      context.font = "11px Arial"; context.fillStyle = "#4e5f7c";
-      legend.forEach((label, i) => context.fillText(label, 55 + (i % columns) * 96,
-                                                    65 + Math.floor(i / columns) * 17));
-    }
+    drawPlotLegend(context);
     if (!$("vector-annotation").hidden) {
       const lines = $("vector-readout").textContent.split("\n");
       const lowerEdge = state.referenceAxes && pattern?.reference_axes && metadata?.reference_labels
@@ -1461,6 +1517,7 @@ $("angle-number").addEventListener("change", () => changeAngle($("angle-number")
 $("angle-slider").addEventListener("input", () => changeAngle($("angle-slider").value));
 $("angle-slider").addEventListener("pointerdown", beginAngleDrag);
 $("angle-slider").addEventListener("change", finishAngleDrag);
+$("angle-slider").addEventListener("lostpointercapture", finishAngleDrag);
 window.addEventListener("pointerup", finishAngleDrag);
 window.addEventListener("pointercancel", finishAngleDrag);
 window.addEventListener("blur", finishAngleDrag);
@@ -1689,13 +1746,18 @@ canvas.addEventListener("pointerup", event => finishPointer(event));
 canvas.addEventListener("pointercancel", event => finishPointer(event, true));
 canvas.addEventListener("lostpointercapture", event => finishPointer(event, true));
 canvas.addEventListener("wheel", event => {
+  if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
   event.preventDefault();
-  state.scale = Math.max(.1, Math.min(5, state.scale * (event.deltaY > 0 ? 1.13 : 1 / 1.13)));
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? plotRect().height : 1;
+  const factor = Math.exp(event.deltaY * unit * .002);
+  state.scale = Math.max(.1, Math.min(5, state.scale * factor));
   $("field-slider").value = state.scale;
   viewSize(); updateSummary(); scheduleDraw(); renderRequest();
 }, {passive:false});
 document.addEventListener("keydown", event => {
-  if (["INPUT","SELECT","TEXTAREA"].includes(document.activeElement?.tagName) || $("completion-dialog").open) return;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.keyCode === 229 ||
+      event.defaultPrevented || event.target?.isContentEditable || document.activeElement?.isContentEditable ||
+      ["INPUT","SELECT","TEXTAREA"].includes(document.activeElement?.tagName) || $("completion-dialog").open) return;
   const key = event.key.toLowerCase();
   if (key === "r") setMode("boundary");
   else if (key === "v") setMode("vector");

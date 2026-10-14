@@ -661,8 +661,6 @@ font-size:9px}
 grid-template-columns:repeat(2,max-content);
 gap:0 6px;
 padding:0 4px 3px}
-.plot-legend span:nth-child(n+5){
-display:none}
 .control-scroll{
 padding:0 10px 20px}
 }

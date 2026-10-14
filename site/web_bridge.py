@@ -79,6 +79,7 @@ def _metadata(request):
                              for vector in in_plane_reference_directions(geometry.axis)],
         "max_angle": misorientation_range(geometry.axis, lattice).maximum_deg,
         "default_angle": default_angle_deg(geometry.axis),
+        "angle_snap_tolerance": 0.006,
         "presets": [{"name": p.name, "angle": p.angle_deg, "label": p.label}
                     for p in presets],
     }
@@ -87,9 +88,9 @@ def _metadata(request):
 def _render_data(request):
     lattice, axis = request["lattice"], request["axis"]
     angle = float(request["angle"])
-    preset = matching_csl_preset(angle, axis=axis)
-    if preset is not None:
-        angle = preset.angle_deg
+    # Rendering consumes an already chosen physical angle. Interactive inputs
+    # snap before any request; imported sessions retain their exact saved angle.
+    preset = matching_csl_preset(angle, tolerance_deg=1e-10, axis=axis)
     geometry = get_geometry(lattice, axis)
     if not 0 <= angle <= misorientation_range(axis, lattice).maximum_deg:
         raise ValueError("Misorientation is outside the allowed range")

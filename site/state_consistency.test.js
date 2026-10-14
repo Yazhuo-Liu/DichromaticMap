@@ -6,9 +6,9 @@ const path = require("node:path");
 const renderData = require("./render_data.js");
 
 function harness() {
-  const nodes = new Map(), timers = new Map(), frames = new Map(), windowEvents = new Map(), messages = [], titles = [];
+  const nodes = new Map(), timers = new Map(), frames = new Map(), windowEvents = new Map(), messages = [], titles = [], textDraws = [];
   let sequence = 0, exports = 0;
-  const context = new Proxy({fillText(text, x, y) { if (y === 17) titles.push(text); }},
+  const context = new Proxy({fillText(text, x, y) { textDraws.push(text); if (y === 17) titles.push(text); }},
     {get(target, key) { return target[key] ?? (() => {}); }});
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, {id, value: "1", checked: false, style: {}, dataset: {},
@@ -36,19 +36,20 @@ function harness() {
   };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname,"use.js"),"utf8") + `
-    metadata = {layers:1,max_angle:90,presets:[],reference_labels:[],layer_spacing:1,axial_period:1};
+    metadata = {layers:1,max_angle:90,presets:[{angle:38.94244126898139,name:"Σ9",label:"Σ9"}],reference_labels:[],layer_spacing:1,axial_period:1};
     globalThis.app = {state, request, retryEngine, sessionState, renderRequest, nearestAtom, nearestCommon, screen, exportPNG,
       updateSummary, currentPattern, changeAngle, resetSelections, draw, previewVisibleData, visiblePoints,
       get angleSliderDragging() {return angleSliderDragging;},
       updateVector, countManual, completeManual, toggleSelectedStrain, importSession,
-      searchNear, cancelNearSearch, selectAt,
+      searchNear, cancelNearSearch, selectAt, setMode,
+      setMetadata(value) {metadata=value;},
       get worker() {return worker;},
       get awaitingCount() {return awaiting.size;},
       setPattern(value, coverage = {}) {pattern=value; renderCoverage={signature:JSON.stringify(currentRenderParameters()),
         center:[0,0],width:100,height:100,...coverage}; viewSize();},
     };
   `,sandbox);
-  return {app:sandbox.app, node, messages, titles, sandbox, windowEvents,
+  return {app:sandbox.app, node, messages, titles, textDraws, sandbox, windowEvents,
     get frameCount() {return frames.size;},
     flushFrame() {const pending=[...frames.values()]; frames.clear(); pending.forEach(fn => fn());},
     get exports() {return exports;},
