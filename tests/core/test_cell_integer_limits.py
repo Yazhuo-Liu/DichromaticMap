@@ -5,7 +5,7 @@ import warnings
 import numpy as np
 import pytest
 
-from dichromatic_map.cells import bases, determinant
+from dichromatic_map.cells import bases, checked_integer_array, determinant, reduce_cell
 from dichromatic_map.completion import cell_completion_candidates
 from dichromatic_map.strain import solve_cells_chunk, strain_selected_cell
 
@@ -83,3 +83,34 @@ def test_completion_checks_exact_intermediate_closure_before_storing_int64():
             cell_completion_candidates(
                 np.stack((points, points)), 0, lattice="SC", axis="100", max_rotation_deg=0
             )
+
+
+@pytest.mark.parametrize("common_dtype", [np.float64, np.uint64])
+def test_unsigned_cell_reduction_preserves_exact_shared_column_operations(common_dtype):
+    size = 10**10
+    edges = np.array([[size, size-1], [size+1, size]], dtype=np.uint64)
+    first, second, common = reduce_cell(edges, edges, edges.astype(common_dtype))
+    assert first.dtype == second.dtype == np.dtype(np.int64)
+    assert abs(determinant(first)) == abs(determinant(second)) == 1
+    np.testing.assert_array_equal(first, common)
+    np.testing.assert_array_equal(second, common)
+
+
+def test_cell_reduction_checks_integer_range_before_column_updates():
+    # A valid positive diagonal F (10% strain), with representable original
+    # integer columns. Its reduced second column would exceed int64.
+    large = 8_000_000_000_000_000_000
+    edges = np.array([[large, 1], [-large, 1]], dtype=np.int64)
+    common = np.diag([.9, 1.1]) @ edges
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError, match="integer.*range|range.*integer"):
+            reduce_cell(edges, edges, common)
+
+
+@pytest.mark.parametrize("values", [
+    [True, 1], [[1, 0], [False, 1]], [np.bool_(True), np.int64(1)],
+])
+def test_integer_storage_keeps_raw_boolean_types_until_validation(values):
+    with pytest.raises(ValueError, match="integers"):
+        checked_integer_array(values)

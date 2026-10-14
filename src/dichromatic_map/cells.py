@@ -258,12 +258,28 @@ def checked_integer_array(values):
     intermediate addition/subtraction are checked before NumPy can wrap them.
     This storage limit does not limit exact Python determinant/atom counts.
     """
+    if (isinstance(values, np.ndarray) and values.dtype.kind == "i"
+            and values.dtype.itemsize <= 8):
+        # The dtype already proves integral values within int64. This is the
+        # ordinary search/reduction path; do not allocate an object array.
+        return values.astype(np.int64, copy=True)
     array = np.asarray(values, dtype=object)
     integers = [_exact_integer(value) for value in array.flat]
+    return _store_integer_values(integers, array.shape)
+
+
+def _store_integer_values(integers, shape):
     limits = np.iinfo(np.int64)
     if any(value < limits.min or value > limits.max for value in integers):
         raise ValueError("Lattice integer coordinates exceed the supported int64 range")
-    return np.array(integers, dtype=np.int64).reshape(array.shape)
+    return np.array(integers, dtype=np.int64).reshape(shape)
+
+
+def _subtract_integer_column(matrix, multiple):
+    # Only two entries: calculate exact Python results directly rather than
+    # constructing object ndarrays and rechecking their scalar types.
+    integers = [int(matrix[row, 1]) - multiple * int(matrix[row, 0]) for row in (0, 1)]
+    return _store_integer_values(integers, (2,))
 
 
 def determinant(m):
@@ -298,7 +314,8 @@ class StrainedCell:
 
 def reduce_cell(m1, m2, cell):
     """Gauss-reduce common vectors with identical integer column operations."""
-    m1, m2, cell = m1.copy(), m2.copy(), cell.copy()
+    m1, m2 = checked_integer_array(m1), checked_integer_array(m2)
+    cell = np.asarray(cell, dtype=float).copy()
     for _ in range(64):
         if np.dot(cell[:, 1], cell[:, 1]) < np.dot(cell[:, 0], cell[:, 0]):
             cell = cell[:, ::-1]
@@ -309,11 +326,13 @@ def reduce_cell(m1, m2, cell):
         )
         if q == 0:
             break
+        first = _subtract_integer_column(m1, q)
+        second = _subtract_integer_column(m2, q)
         cell[:, 1] -= q * cell[:, 0]
-        m1[:, 1] -= q * m1[:, 0]
-        m2[:, 1] -= q * m2[:, 0]
+        m1[:, 1], m2[:, 1] = first, second
     if np.linalg.det(cell) < 0:
+        first = _store_integer_values([-int(value) for value in m1[:, 1]], (2,))
+        second = _store_integer_values([-int(value) for value in m2[:, 1]], (2,))
         cell[:, 1] *= -1
-        m1[:, 1] *= -1
-        m2[:, 1] *= -1
+        m1[:, 1], m2[:, 1] = first, second
     return m1, m2, cell
