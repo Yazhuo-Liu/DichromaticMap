@@ -8,7 +8,9 @@ import os
 from threading import RLock
 import numpy as np
 from .crystal import get_geometry, rotation_matrix_2d
-from .cells import StrainedCell, bases, determinant, reduce_cell, validate_cell_vertices
+from .cells import (
+    StrainedCell, bases, checked_integer_array, determinant, reduce_cell, validate_cell_vertices,
+)
 
 DEFAULT_STRAIN_PERCENT = 2.0
 DEFAULT_SEARCH_INDEX = 12
@@ -250,12 +252,14 @@ def strain_selected_cell(
     matrices = []
     for polygon, basis in zip(vertices, grain_bases):
         indices = polygon @ np.linalg.inv(basis).T - phase
-        integer = np.rint(indices).astype(np.int64)
+        integer = checked_integer_array(np.rint(indices))
         if np.max(np.linalg.norm((indices - integer) @ basis.T, axis=1)) > 1e-7:
             raise ValueError(
                 "Vertices must be original atoms in the same selected layer"
             )
-        matrices.append((integer[[1, 3]] - integer[0]).T)
+        matrices.append(checked_integer_array(
+            integer[[1, 3]].astype(object) - integer[0].astype(object)
+        ).T)
     if determinant(matrices[0]) * determinant(matrices[1]) <= 0:
         raise ValueError("The selected cells have incompatible orientation")
 
@@ -718,9 +722,26 @@ def solve_cells_chunk(
     second = np.concatenate([np.arange(row + 1, n) for row in rows])
     m1 = np.stack([integers1[first], integers1[second]], axis=2)
     m2 = np.stack([integers2[first], integers2[second]], axis=2)
-    d1 = m1[:, 0, 0] * m1[:, 1, 1] - m1[:, 0, 1] * m1[:, 1, 0]
-    d2 = m2[:, 0, 0] * m2[:, 1, 1] - m2[:, 0, 1] * m2[:, 1, 0]
-    mask = (np.abs(d1) >= 0.5) & (d1 * d2 > 0)
+    determinants = []
+    for matrix in (m1, m2):
+        # The normal index<=40 path remains vectorized. Public core callers
+        # can supply larger integer vectors; widen platform ints, then use
+        # Python arithmetic when either determinant product could overflow.
+        if matrix.dtype.kind not in "iu" or (
+            matrix.dtype.kind == "u" and np.max(matrix) > np.iinfo(np.int64).max
+        ):
+            matrix = checked_integer_array(matrix)
+        else:
+            matrix = matrix.astype(np.int64, copy=False)
+        exact = matrix
+        if np.min(matrix) < -(2**31 - 1) or np.max(matrix) > 2**31 - 1:
+            exact = matrix.astype(object)
+        determinants.append(exact[:, 0, 0] * exact[:, 1, 1]
+                            - exact[:, 0, 1] * exact[:, 1, 0])
+    d1, d2 = determinants
+    # Compare signs directly: d1*d2 can overflow even when both determinants
+    # individually fit their integer dtype.
+    mask = (d1 != 0) & (((d1 > 0) & (d2 > 0)) | ((d1 < 0) & (d2 < 0)))
     m1, m2 = m1[mask], m2[mask]
     if not len(m1):
         return os.getpid(), []

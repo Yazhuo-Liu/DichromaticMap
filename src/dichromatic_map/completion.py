@@ -13,7 +13,7 @@ from itertools import permutations, product
 
 import numpy as np
 
-from .cells import bases, determinant, validate_cell_vertices
+from .cells import bases, checked_integer_array, determinant, validate_cell_vertices
 from .crystal import get_geometry, rotation_matrix_2d
 from .strain import SelectedCellStrain, strain_selected_cell
 
@@ -38,7 +38,7 @@ def _integer_vertices(vertices, grain_bases, geometry, layer):
         integers = np.rint(coordinates)
         if np.max(np.linalg.norm((coordinates - integers) @ basis.T, axis=1)) > 1e-7:
             raise ValueError("Vertices must be original atoms in the same selected layer")
-        result.append(integers.astype(np.int64))
+        result.append(checked_integer_array(integers))
     return np.array(result), phase
 
 
@@ -73,7 +73,7 @@ def _translation_symmetries(angle, geometry, grain_bases):
             valid = True
             for target, origin in enumerate(source):
                 mapping = np.linalg.solve(grain_bases[target], operation @ grain_bases[origin])
-                integer = np.rint(mapping).astype(np.int64)
+                integer = checked_integer_array(np.rint(mapping))
                 if (not np.allclose(mapping, integer, atol=1e-9, rtol=0)
                         or abs(determinant(integer)) != 1):
                     valid = False
@@ -116,21 +116,23 @@ def cell_completion_candidates(
     count = vertices.shape[1]
     proposed = []
     if count == 3:
-        fourth = indices[:, 0] + indices[:, 2] - indices[:, 1]
+        exact_indices = indices.astype(object)
+        fourth = checked_integer_array(exact_indices[:, 0] + exact_indices[:, 2] - exact_indices[:, 1])
         integer_cells = np.concatenate((indices, fourth[:, None]), axis=1)
         proposed.append(("Parallelogram closure", "closure", integer_cells))
     else:
         edge = vertices[:, 1] - vertices[:, 0]
         for operation, source, description in _translation_symmetries(angle, geometry, grain_bases):
             second_edge = edge[list(source)] @ operation.T
-            steps = np.array([
-                np.rint(np.linalg.solve(basis, vector)).astype(np.int64)
+            steps = checked_integer_array([
+                np.rint(np.linalg.solve(basis, vector))
                 for basis, vector in zip(grain_bases, second_edge)
             ])
-            integer_cells = np.stack(
-                (indices[:, 0], indices[:, 1], indices[:, 1] + steps,
-                 indices[:, 0] + steps), axis=1,
-            )
+            exact_indices, exact_steps = indices.astype(object), steps.astype(object)
+            integer_cells = checked_integer_array(np.stack(
+                (exact_indices[:, 0], exact_indices[:, 1], exact_indices[:, 1] + exact_steps,
+                 exact_indices[:, 0] + exact_steps), axis=1,
+            ))
             proposed.append((description, "symmetry", integer_cells))
 
     results, seen = [], set()
@@ -139,7 +141,10 @@ def cell_completion_candidates(
         if key in seen:
             continue
         seen.add(key)
-        matrices = (integer_cells[:, [1, 3]] - integer_cells[:, :1]).transpose(0, 2, 1)
+        exact_cells = integer_cells.astype(object)
+        matrices = checked_integer_array(
+            exact_cells[:, [1, 3]] - exact_cells[:, :1]
+        ).transpose(0, 2, 1)
         determinants = [determinant(matrix) for matrix in matrices]
         if determinants[0] * determinants[1] <= 0:
             continue
