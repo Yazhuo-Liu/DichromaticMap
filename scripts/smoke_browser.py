@@ -305,6 +305,145 @@ def check_angle_drag(page, output):
     return checks
 
 
+def check_plot_interactions(page, output):
+    """Exercise the actual input owners, resized preview and figure legend."""
+    report = {}
+    viewport = page.viewport_size
+    page.evaluate("""() => {
+      document.activeElement?.blur();
+      state.center = [4, -3]; state.regions = [true, false, false, true];
+    }""")
+    page.keyboard.press("Control+c")
+    page.keyboard.press("Control+f")
+    page.keyboard.press("Escape")
+    report["shortcuts"] = page.evaluate("""() => {
+      if (state.center[0] !== 4 || state.center[1] !== -3 || state.regions.join() !== 'true,false,false,true')
+        throw Error('Browser modifier keys executed application shortcuts');
+      document.dispatchEvent(new KeyboardEvent('keydown', {key:'c',isComposing:true,bubbles:true}));
+      if (state.center[0] !== 4) throw Error('IME composition executed an application shortcut');
+      state.center = [0, 0]; state.regions = [true, true, true, true];
+      return 'modifier and composition events preserved the view';
+    }""")
+
+    point = page.locator("#map").bounding_box()
+    page.mouse.move(point["x"] + 80, point["y"] + 80)
+    before = page.evaluate("state.scale")
+    page.mouse.wheel(100, 0)
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+    assert page.evaluate("state.scale") == before, "Horizontal trackpad motion zoomed the plot"
+    report["wheel"] = page.evaluate("""async () => {
+      const wheel = delta => canvas.dispatchEvent(new WheelEvent('wheel', {deltaY:delta,cancelable:true}));
+      state.scale = 1; wheel(120); const whole = state.scale;
+      state.scale = 1; for (let index=0; index<12; index++) wheel(10);
+      if (Math.abs(whole-state.scale)>1e-12) throw Error('Wheel zoom depends on the number of events');
+      state.scale = 1; wheel(1); const small = state.scale;
+      state.scale = 1; wheel(100); const large = state.scale;
+      if (!(large>small && small>1)) throw Error('Wheel zoom ignores scroll distance');
+      state.scale = 1; viewSize(); renderRequest(); await waitForCurrentRender();
+      return {whole,small,large};
+    }""")
+
+    slider = page.locator("#angle-slider")
+    slider.scroll_into_view_if_needed()
+    thumb = slider.evaluate("""input => {
+      const rect=input.getBoundingClientRect(), fraction=(Number(input.value)-Number(input.min))/(Number(input.max)-Number(input.min));
+      return [rect.left+8+(rect.width-16)*fraction, rect.top+rect.height/2];
+    }""")
+    page.mouse.move(*thumb)
+    page.mouse.down()
+    try:
+        page.wait_for_function("angleSliderDragging")
+        point = page.locator("#map").bounding_box()
+        # Two different pointer types are each primary. A touchscreen release
+        # must not release the mouse pointer which still owns the range input.
+        page.touchscreen.tap(point["x"] + 40, point["y"] + 70)
+        assert page.evaluate("angleSliderDragging"), "An unrelated touch ended the mouse angle drag"
+        page.set_viewport_size({"width":900,"height":650})
+        page.wait_for_function("canvas.getBoundingClientRect().width < 600")
+        report["heldResize"] = page.evaluate("""async () => {
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          const transform=viewTransform(), x=transform.rect.width/state.width, y=transform.rect.height/state.height;
+          if (!angleSliderDragging || Math.abs(x-y)>1e-10 || currentPattern())
+            throw Error('A resized held preview lost its owner, equal axis scales or exact-result guard');
+          return {x,y};
+        }""")
+    finally:
+        page.mouse.up()
+        page.set_viewport_size(viewport)
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+
+    page.locator("#axis").select_option("custom")
+    page.locator("#custom-axis").fill("1 1 3")
+    page.locator("#apply-axis").click()
+    page.wait_for_function("metadata.layers===11 && currentPattern()")
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    page.locator('[data-main-tab="layers"]').click()
+    page.locator("#no-layers").click()
+    page.locator("#layer-checks input").nth(12).check()
+    page.locator("#layer-checks input").nth(13).check()
+    report["highLayer"] = page.evaluate("""() => {
+      const entries=plotLegendEntries(), data=visibleData();
+      if (!data.atoms.every(record=>record.count) || !entries.some(entry=>entry.label==='G1 · G') ||
+          !entries.some(entry=>entry.label==='G2 · G')) throw Error('Visible high layers have no legend');
+      return data.atoms.map(record=>record.count);
+    }""")
+    # Trace real glyph painting in both screen icon contexts and the PNG
+    # context; additionally inspect pixels so a glyph call alone is insufficient.
+    page.evaluate("""() => {
+      window.__legendSmoke={original:CanvasRenderingContext2D.prototype.fillText,screen:[],png:[]};
+      CanvasRenderingContext2D.prototype.fillText=function(text,...args) {
+        if (String(text)==='12') {
+          if (this.canvas.closest('#plot-legend')) __legendSmoke.screen.push(String(text));
+          else if (this.canvas!==canvas) __legendSmoke.png.push(String(text));
+        }
+        return __legendSmoke.original.call(this,text,...args);
+      };
+    }""")
+    try:
+        page.get_by_text("VIEW / PERFORMANCE", exact=True).click()
+        page.locator('[data-view-tab="appearance"]').click()
+        page.locator("#appearance-layers select").nth(6).select_option("number:12")
+        report["numberedLegend"] = page.evaluate("""() => {
+          const entries=plotLegendEntries().filter(entry=>entry.label.endsWith(' · G'));
+          const icons=[...document.querySelectorAll('#plot-legend canvas[data-symbol="number:12"]')];
+          if (entries.length!==2 || entries.some(entry=>entry.symbol!=='number:12') || icons.length!==2 || __legendSmoke.screen.length!==2)
+            throw Error('Screen legend did not paint the visible numbered symbols');
+          const painted=icons.map((icon,index)=>{
+            const data=icon.getContext('2d').getImageData(0,0,icon.width,icon.height).data, ratio=icon.width/18;
+            let count=0;
+            for(let y=Math.ceil(6*ratio);y<12*ratio;y++) for(let x=Math.ceil(6*ratio);x<12*ratio;x++) {
+              const at=(y*icon.width+x)*4;
+              if(index===0 ? data[at]>220&&data[at+1]>220&&data[at+2]>220 : data[at+3]>128) count++;
+            }
+            if(!count) throw Error('Numbered legend contains an empty circle instead of real numeral pixels');
+            return count;
+          });
+          return {labels:entries.map(entry=>entry.label),painted};
+        }""")
+        page.locator("#clean-png").set_checked(False)
+        with page.expect_download() as exported:
+            page.locator("#export-png").click()
+        exported.value.save_as(output / "numbered-legend.png")
+        assert page.evaluate("__legendSmoke.png.length") == 2, "Ordinary PNG did not paint both real numbered legend glyphs"
+    finally:
+        page.evaluate("""() => {
+          CanvasRenderingContext2D.prototype.fillText=__legendSmoke.original;
+          delete window.__legendSmoke;
+        }""")
+
+    page.locator('[data-main-tab="layers"]').click()
+    page.locator("#all-layers").click()
+    try:
+        page.set_viewport_size({"width":390,"height":844})
+        page.locator("#plot-legend-panel").evaluate("element => { element.open=true; }")
+        assert page.get_by_text("+5 layers", exact=True).is_visible(), "Expanded mobile legend hides its omission notice"
+        report["mobileLegend"] = "+5 layers is visible"
+    finally:
+        page.set_viewport_size(viewport)
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    return report
+
+
 def check_app(page, output, fixture):
     page.wait_for_function("typeof pattern !== 'undefined' && pattern && !document.getElementById('tutorial-start').disabled")
     page.evaluate("async () => { if (typeof waitForCurrentRender === 'function') await waitForCurrentRender(); draw(); }")
@@ -388,7 +527,9 @@ def check_app(page, output, fixture):
       return {symbols: tested, points: gpuRenderer.count};
     }""")
     drag = check_angle_drag(page, output)
-    return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu, "angleDrag": drag}
+    interactions = check_plot_interactions(page, output)
+    return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu, "angleDrag": drag,
+            "plotInteractions": interactions}
 
 
 def main():
@@ -404,6 +545,7 @@ def main():
     base, runtime, assets = prepare_runtime(site, args.runtime_cache.resolve(), offline=args.offline)
     fixture = render_fixture(site)
     from playwright.sync_api import sync_playwright
+    from smoke_core_contracts import check_core_contracts
 
     errors, console = [], []
     with serve(site) as origin, sync_playwright() as playwright:
@@ -411,7 +553,7 @@ def main():
         if args.chromium:
             options["executable_path"] = args.chromium
         browser = playwright.chromium.launch(**options)
-        context = browser.new_context(viewport={"width": 1440, "height": 900}, service_workers="block")
+        context = browser.new_context(viewport={"width": 1440, "height": 900}, has_touch=True, service_workers="block")
         context.set_default_timeout(60000)
 
         def cached_asset(route):
@@ -431,6 +573,10 @@ def main():
         try:
             page.goto(origin + "/use.html")
             report = check_app(page, output, fixture)
+            report["coreContracts"] = check_core_contracts(
+                page, base, origin + "/vendor/dichromatic_map.zip",
+                (site / "web_bridge.py").read_text(encoding="utf-8"),
+            )
             # Keep regression helpers in the checkout, outside the deployed
             # artifact, while testing the actual deployed renderer and marker.
             page.add_script_tag(path=str(site.parent / "gpu_renderer.browser.test.js"))
@@ -440,7 +586,7 @@ def main():
             assert not errors, errors
             report["runtime"] = base
             (output / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-            print("Real Chromium/Pyodide startup, Float64 parity, cancellation, session import, PNG, native angle dragging and twelve GPU markers passed.")
+            print("Real Chromium/Pyodide startup, Native/WASM scientific edge cases, cancellation, session import, PNG, pointer interactions and twelve GPU markers passed.")
         except Exception:
             page.screenshot(path=str(output / "failure.png"), full_page=True)
             (output / "failure.txt").write_text(page.locator("#status").inner_text() + "\n" + "\n".join(errors + console), encoding="utf-8")
