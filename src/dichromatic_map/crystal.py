@@ -17,6 +17,9 @@ SUPPORTED_LATTICES = ("FCC", "BCC", "SC")
 
 MAX_LAYERS = 256
 MAX_PROJECTED_COLUMNS = 250_000
+# NumPy's default integer is int32 on WASM. Keep compact ordinary meshes,
+# while scientific reference indices have the same int64 range on both ends.
+_MESH_INDEX_DTYPE = np.dtype(int)
 
 
 class GeometryLimitError(ValueError):
@@ -524,7 +527,8 @@ def projected_columns(
     plans = []
     candidate_count = 0
     coordinate_bound = 0
-    index_limits = np.iinfo(np.dtype(int))
+    index_limits = np.iinfo(np.int64)
+    mesh_limits = np.iinfo(_MESH_INDEX_DTYPE)
     basis_bound = max(sum(abs(int(value)) for value in row)
                       for row in geometry.basis_half_indices)
     offset_bound = int(np.max(np.abs(geometry.layer_offsets_half_indices)))
@@ -549,11 +553,17 @@ def projected_columns(
         if any(value < index_limits.min or value > index_limits.max
                for value in (*minima, *maxima)):
             raise GeometryLimitError(range_error)
+        mesh_dtype = _MESH_INDEX_DTYPE
+        if mesh_limits.max < index_limits.max and any(
+            value < mesh_limits.min or value > mesh_limits.max
+            for value in (*minima, *maxima)
+        ):
+            mesh_dtype = np.dtype(np.int64)
         # Reference half-indices must also fit their integer array, even if
         # the smaller two-dimensional mesh coordinates themselves still fit.
         mesh_bound = max(map(abs, (*minima, *maxima)))
         coordinate_bound = max(coordinate_bound, mesh_bound)
-        if mesh_bound * basis_bound + offset_bound > index_limits.max:
+        if mesh_bound * basis_bound + offset_bound > mesh_limits.max:
             for row, origin in zip(geometry.basis_half_indices, offset):
                 smallest = int(origin) + sum(
                     int(coefficient) * (low_bound if coefficient >= 0 else high_bound)
@@ -565,7 +575,9 @@ def projected_columns(
                 )
                 if smallest < index_limits.min or largest > index_limits.max:
                     raise GeometryLimitError(range_error)
-        plans.append((layer, offset, screen_offset, minima, maxima, nx, ny))
+                if smallest < mesh_limits.min or largest > mesh_limits.max:
+                    mesh_dtype = np.dtype(np.int64)
+        plans.append((layer, offset, screen_offset, minima, maxima, nx, ny, mesh_dtype))
 
     if plans:
         # A finite coordinate can still have a ULP larger than an atom step.
@@ -596,12 +608,12 @@ def projected_columns(
     compensated = affine_needs_compensation(reference_bound, deformation_matrix, translation)
     if compensated:
         reference_basis = rotation @ geometry.planar_basis
-    for layer, offset, screen_offset, minima, maxima, nx, ny in plans:
+    for layer, offset, screen_offset, minima, maxima, nx, ny, mesh_dtype in plans:
         # Fill the final coordinate array directly, preserving meshgrid's
         # row-major order without allocating two intermediate dense meshes.
-        grid = np.empty((ny, nx, 2), dtype=int)
-        grid[:, :, 0] = np.arange(minima[0], maxima[0] + 1)
-        grid[:, :, 1] = np.arange(minima[1], maxima[1] + 1)[:, None]
+        grid = np.empty((ny, nx, 2), dtype=mesh_dtype)
+        grid[:, :, 0] = np.arange(minima[0], maxima[0] + 1, dtype=mesh_dtype)
+        grid[:, :, 1] = np.arange(minima[1], maxima[1] + 1, dtype=mesh_dtype)[:, None]
         coordinates = grid.reshape(-1, 2)
         if compensated:
             # F must act on the same current unstrained reference positions
