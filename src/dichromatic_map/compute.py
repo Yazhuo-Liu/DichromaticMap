@@ -232,7 +232,7 @@ class NearSearch:
         self.parts = {}
         self.total = self.completed = 0
         self.busy = False
-        self.error = None
+        self.error: str | None = None
         self.process_ids = set()
         self._lock = threading.RLock()
         self._result = None
@@ -252,6 +252,14 @@ class NearSearch:
         self._result = None
         for future in list(self.running):
             future.cancel()
+
+    def _fail_locked(self, error):
+        self._cancel_locked()
+        # Keep busy until the UI observes the failure, as with results. An
+        # exception with no message (including CancelledError) is still a
+        # failure and must never finalize/cache a successful empty search.
+        self.busy = True
+        self.error = str(error) or type(error).__name__
 
     def request(self, angle, percent, extent, lattice="FCC", axis="110"):
         geometry = get_geometry(lattice, axis)
@@ -287,7 +295,7 @@ class NearSearch:
                 )
                 future.add_done_callback(self._completed)
             if (
-                self.busy and not self.error and self._result is None
+                self.busy and self.error is None and self._result is None
                 and not self.jobs and not self.running
             ):
                 # Equal-area/strain candidates retain serial search order,
@@ -298,10 +306,7 @@ class NearSearch:
                 cache_cell_search(self._result, *self.args)
                 self.parts.clear()
         except Exception as error:
-            self._cancel_locked()
-            # Keep busy until the UI has observed the error, as with results.
-            self.busy = True
-            self.error = str(error)
+            self._fail_locked(error)
 
     def _completed(self, future):
         with self._lock:
@@ -327,14 +332,12 @@ class NearSearch:
                         self.parts[start] = cells
                         self.completed += 1
                 except Exception as error:
-                    self._cancel_locked()
-                    self.busy = True
-                    self.error = str(error)
+                    self._fail_locked(error)
             self._submit_locked()
 
     def poll(self):
         with self._lock:
-            if self.error:
+            if self.error is not None:
                 self.busy = False
             if self._result is not None:
                 result, self._result = self._result, None

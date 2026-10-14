@@ -1,6 +1,6 @@
 """Background scheduling must progress and invalidate work without UI polls."""
 
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 import os
 import threading
 
@@ -251,6 +251,70 @@ def test_cached_latest_search_discards_running_stale_preparation(monkeypatch):
             release.set()
             search.close()
     assert strain.get_cached_cell_search(1, 2, 12) is None
+
+
+@pytest.mark.parametrize("failure", [ValueError, CancelledError])
+@pytest.mark.parametrize("stage", ["prepare", "solve", "submit", "finalize"])
+def test_empty_message_search_failure_is_not_a_cached_empty_solution(
+    monkeypatch, failure, stage,
+):
+    """A failed request may retry; a successful zero-solution request caches."""
+    futures = []
+    failing = True
+    original_pareto = compute.pareto_cells
+
+    def submit(*_args, **_kwargs):
+        if failing and stage == "submit":
+            raise failure()
+        future = Future()
+        futures.append(future)
+        return future
+
+    def pareto(cells):
+        if failing and stage == "finalize":
+            raise failure()
+        return original_pareto(cells)
+
+    monkeypatch.setattr(compute, "pareto_cells", pareto)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(executor, "submit", submit)
+        search = compute.NearSearch(1, executor)
+        try:
+            search.request(1, 2, 12)
+            if stage == "solve":
+                vectors = np.zeros((1, 2), dtype=int)
+                futures[-1].set_result((vectors, vectors))
+            if stage in ("prepare", "solve"):
+                if failure is CancelledError:
+                    # The caller owns this executor and may cancel its jobs.
+                    assert futures[-1].cancel()
+                else:
+                    futures[-1].set_exception(failure())
+            elif stage == "finalize":
+                vectors = np.empty((0, 2), dtype=int)
+                futures[-1].set_result((vectors, vectors))
+
+            assert search.error == failure.__name__
+            assert search.busy  # Remains pending until the UI consumes failure.
+            assert search.poll() is None
+            assert not search.busy
+            assert strain.get_cached_cell_search(1, 2, 12) is None
+
+            failing = False
+            search.request(1, 2, 12)
+            assert search.error is None
+            vectors = np.empty((0, 2), dtype=int)
+            futures[-1].set_result((vectors, vectors))
+            assert search.poll() == []
+            assert not search.busy
+            assert strain.get_cached_cell_search(1, 2, 12) == []
+
+            submitted = len(futures)
+            search.request(1, 2, 12)
+            assert search.poll() == []
+            assert len(futures) == submitted
+        finally:
+            search.close()
 
 
 def test_layer_packets_preserve_phase_ids_order_and_contiguous_views():

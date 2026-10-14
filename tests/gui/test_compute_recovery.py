@@ -1,6 +1,6 @@
-"""A failed warmed process pool must not prevent subsequent desktop matching."""
+"""Failed background searches and matching pools remain retryable."""
 
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 import os
 
@@ -10,9 +10,56 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
-from dichromatic_map import compute, matching
+from dichromatic_map import compute, matching, strain
 
 pytestmark = pytest.mark.gui
+
+
+@pytest.mark.parametrize("failure", [ValueError, CancelledError])
+def test_near_search_reports_empty_message_failure_and_retries(gui, monkeypatch, failure):
+    window = gui.window(angle_deg=22)
+    futures = []
+    grains = window.state.grains
+
+    def submit(*_args, **_kwargs):
+        future = Future()
+        futures.append(future)
+        return future
+
+    strain.clear_strain_caches()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        monkeypatch.setattr(executor, "submit", submit)
+        search = window.compute.near_search = compute.NearSearch(1, executor)
+        window.state.near_enabled = True
+        window.state.near_method = "strain"
+        try:
+            window._start_near_search()
+            if failure is CancelledError:
+                assert futures[-1].cancel()
+            else:
+                futures[-1].set_exception(failure())
+            window._poll_near_search()
+            assert window.controls.near_info.toPlainText() == (
+                "Near-CSL search failed: " + failure.__name__
+            )
+            assert not search.busy
+            assert not window.near_poll_timer.isActive()
+            assert all(actual is original for actual, original in zip(window.state.grains, grains))
+            assert strain.get_cached_cell_search(*search.args) is None
+
+            window._start_near_search()
+            assert len(futures) == 2  # A failed request did not cache no solutions.
+            vectors = np.empty((0, 2), dtype=int)
+            futures[-1].set_result((vectors, vectors))
+            window._poll_near_search()
+            assert search.error is None
+            assert not window.near_poll_timer.isActive()
+            assert "No compatible cell found" in window.controls.near_info.toPlainText()
+            assert strain.get_cached_cell_search(*search.args) == []
+            gui.settle(window)
+        finally:
+            search.close()
+            strain.clear_strain_caches()
 
 
 @pytest.mark.parametrize("stage", ["local", "exact"])
