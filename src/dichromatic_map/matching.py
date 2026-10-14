@@ -43,22 +43,64 @@ class LocalPairs:
 
     @property
     def distances(self):
-        return np.linalg.norm(self.first - self.second, axis=1)
+        return _point_distances(self.first, self.second)
+
+
+def _point_distances(first, second):
+    """Retain normal-range norms and avoid squared underflow in tiny vectors."""
+    delta = np.asarray(first, dtype=np.float64) - np.asarray(second, dtype=np.float64)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        distances = np.linalg.norm(delta, axis=1)
+    small = np.sqrt(np.finfo(float).tiny)
+    if distances.min(initial=np.inf) < small or not np.isfinite(distances.max(initial=0)):
+        unstable = ((distances < small) & np.any(delta != 0, axis=1)) | ~np.isfinite(distances)
+        if np.any(unstable):
+            distances[unstable] = np.hypot(delta[unstable, 0], delta[unstable, 1])
+    return distances
 
 
 def _spatial_cells(first, second, radius):
-    """Use a common origin and reject nonfinite or overflowing bin addresses."""
+    """Use Float64 bins with rounding slack, without changing the radius.
+
+    Bins are slightly wider than the physical matching radius. Their margin
+    covers rounding in common-origin subtraction and division at bin borders;
+    distance tests still use the caller's original radius. Reject spans whose
+    floating resolution would require a margin larger than one eighth of it.
+    """
+    first = np.asarray(first, dtype=np.float64)
+    second = np.asarray(second, dtype=np.float64)
     if any(points.ndim != 2 or points.shape[1] != 2
            or not np.all(np.isfinite(points)) for points in (first, second)):
         raise ValueError("Matching requires finite two-dimensional point arrays")
     origin = np.minimum(first.min(axis=0), second.min(axis=0))
-    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        first_cells = np.floor((first - origin) / radius)
-        second_cells = np.floor((second - origin) / radius)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore", divide="ignore"):
+        relative_first = first - origin
+        relative_second = second - origin
+        first_scaled = relative_first / radius
+        second_scaled = relative_second / radius
     limit = float(np.iinfo(np.int64).max)
     if any(not np.all(np.isfinite(cells)) or np.any(cells < 0)
-           or np.any(cells >= limit) for cells in (first_cells, second_cells)):
+           or np.any(cells >= limit) for cells in (first_scaled, second_scaled)):
         raise ValueError("Matching coordinate/tolerance range exceeds integer bin limits")
+    extent = max(float(np.max(relative_first)), float(np.max(relative_second)))
+    if extent == 0:
+        factor = 1.0
+    elif radius < np.finfo(float).tiny:
+        # Subnormal coordinates lie on an integer grid of minimum Float64
+        # steps. A two-radius bin also supports this range without squaring or
+        # constructing a doubled subnormal radius in the original units.
+        factor = 2.0
+        largest_bin = max(float(np.max(first_scaled)), float(np.max(second_scaled)))
+        if np.spacing(largest_bin) / 2 > 1 / 16:
+            raise ValueError("Matching span cannot resolve the radius with Float64 precision")
+    else:
+        with np.errstate(under="ignore"):
+            resolution = np.spacing(extent) / radius
+        if resolution > 1 / 128:
+            raise ValueError("Matching span cannot resolve the radius with Float64 precision")
+        factor = 1.0 + 16 * resolution
+    first_cells = np.floor(first_scaled / factor)
+    second_cells = np.floor(second_scaled / factor)
     return first_cells.astype(np.int64), second_cells.astype(np.int64)
 
 
@@ -73,6 +115,12 @@ def _nearest_in_radius(first, second, radius):
     nearest = np.full(len(first), -1, dtype=np.int64)
     if not len(first) or not len(second):
         return nearest
+    first = np.asarray(first, dtype=np.float64)
+    second = np.asarray(second, dtype=np.float64)
+    radius = float(radius)
+    radius_squared = radius * radius
+    min_normal = np.finfo(float).tiny
+    norm_mode = not np.isfinite(radius_squared) or radius_squared < min_normal
     # Work relative to a common origin, avoiding packed-key wraparound on pan.
     first_cells, second_cells = _spatial_cells(first, second, radius)
     # Scalar integer searches are substantially faster than structured-array
@@ -112,6 +160,7 @@ def _nearest_in_radius(first, second, radius):
         best = np.full(stop - start, np.inf)
         best_rank = np.full(stop - start, len(second), dtype=int)
         chosen = np.full(stop - start, -1, dtype=int)
+        stable_norm = None
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 addresses = (
@@ -130,16 +179,34 @@ def _nearest_in_radius(first, second, radius):
                     active_rows = rows[active]
                     targets = order[starts[active] + occupant]
                     delta = first[start + active_rows] - second[targets]
-                    squared = np.einsum("ij,ij->i", delta, delta)
-                    better = (squared <= radius * radius) & (
-                        (squared < best[active_rows])
+                    if norm_mode:
+                        metric = np.hypot(delta[:, 0], delta[:, 1])
+                        threshold = radius
+                    else:
+                        metric = np.einsum("ij,ij->i", delta, delta)
+                        if metric.min(initial=np.inf) < min_normal:
+                            tiny = (metric < min_normal) & np.any(delta != 0, axis=1)
+                            if np.any(tiny):
+                                if stable_norm is None:
+                                    stable_norm = np.zeros(stop - start, dtype=bool)
+                                switch = tiny & ~stable_norm[active_rows]
+                                best[active_rows[switch]] = np.sqrt(best[active_rows[switch]])
+                                stable_norm[active_rows[switch]] = True
+                        threshold = radius_squared
+                        if stable_norm is not None:
+                            use_norm = stable_norm[active_rows]
+                            if np.any(use_norm):
+                                metric[use_norm] = np.hypot(delta[use_norm, 0], delta[use_norm, 1])
+                                threshold = np.where(use_norm, radius, radius_squared)
+                    better = (metric <= threshold) & (
+                        (metric < best[active_rows])
                         | (
-                            (squared == best[active_rows])
+                            (metric == best[active_rows])
                             & (rank[targets] < best_rank[active_rows])
                         )
                     )
                     chosen[active_rows[better]] = targets[better]
-                    best[active_rows[better]] = squared[better]
+                    best[active_rows[better]] = metric[better]
                     best_rank[active_rows[better]] = rank[targets[better]]
         nearest[start:stop] = chosen
     return nearest
@@ -174,7 +241,7 @@ def local_near_pairs(
         j = forward[i]
         mutual = reverse[j] == i
         i, j = i[mutual], j[mutual]
-        keep = np.linalg.norm(first[i] - second[j], axis=1) > exact_tolerance
+        keep = _point_distances(first[i], second[j]) > exact_tolerance
         batches.append(
             LocalPairs(
                 first[i[keep]],
@@ -298,8 +365,8 @@ def same_layer_coincidence_sites(
         max(second_layers, default=-1) + 1,
     )
     for layer in range(count):
-        first = grain_1.positions[first_layers.get(layer, slice(0, 0))]
-        second = grain_2.positions[second_layers.get(layer, slice(0, 0))]
+        first = np.asarray(grain_1.positions[first_layers.get(layer, slice(0, 0))], dtype=np.float64)
+        second = np.asarray(grain_2.positions[second_layers.get(layer, slice(0, 0))], dtype=np.float64)
         if len(first) == 0 or len(second) == 0:
             sites_by_layer.append(np.empty((0, 2)))
             continue
