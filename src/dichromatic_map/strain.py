@@ -544,7 +544,12 @@ def pareto_cells(cells, limit=12):
     unique = {}
     for cell in cells:
         key = (cell.atoms, tuple(np.round(np.r_[cell.f1.ravel(), cell.f2.ravel()], 9)))
-        unique.setdefault(key, cell)
+        existing = unique.get(key)
+        # Deduplication uses the same meaningful-improvement tolerance as the
+        # frontier. Keep the historical first representative for true ties,
+        # but do not discard a later materially lower strain in a round9 bin.
+        if existing is None or cell.max_strain < existing.max_strain - 1e-10:
+            unique[key] = cell
     ordered = sorted(unique.values(), key=lambda c: (sum(c.atoms), c.max_strain))
     result, best = [], np.inf
     for cell in ordered:
