@@ -562,11 +562,27 @@ def projected_columns(
                     raise GeometryLimitError(range_error)
         plans.append((layer, offset, screen_offset, minima, maxima, nx, ny))
 
+    if plans:
+        # A finite coordinate can still have a ULP larger than an atom step.
+        # Check that world-coordinate rounding resolves the integer mesh in
+        # both directions, including strongly anisotropic deformations.
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            resolution = np.abs(np.spacing(np.maximum(np.abs(low), np.abs(high))))
+            mesh_resolution = np.abs(inverse_basis) @ resolution
+        if not np.all(np.isfinite(mesh_resolution)) or np.any(mesh_resolution > 1 / 8):
+            raise GeometryLimitError(
+                "View coordinates cannot resolve individual atoms with Float64 precision. "
+                "Reduce the model translation or coordinate magnitude."
+            )
+
     all_positions = []
     all_layers = []
     all_indices = []
     # Include points on the viewport edge despite floating-point rotation noise.
-    crop_epsilon = 1.0e-10 * max(1.0, float(np.max(np.abs(corners))))
+    # Clip in local coordinates: translating a two-unit crop to 1e12 must not
+    # turn its numerical edge margin into a hundred-unit rectangle. Each axis
+    # uses its own extent so a thin deformed crop is not enlarged by the other.
+    crop_epsilon = 1.0e-10 * half_size
     for layer, offset, screen_offset, minima, maxima, nx, ny in plans:
         # Fill the final coordinate array directly, preserving meshgrid's
         # row-major order without allocating two intermediate dense meshes.
@@ -575,11 +591,12 @@ def projected_columns(
         grid[:, :, 1] = np.arange(minima[1], maxima[1] + 1)[:, None]
         coordinates = grid.reshape(-1, 2)
         positions = coordinates @ screen_basis.T + screen_offset
+        relative = positions - center
         keep = (
-            (positions[:, 0] >= low[0] - crop_epsilon)
-            & (positions[:, 0] <= high[0] + crop_epsilon)
-            & (positions[:, 1] >= low[1] - crop_epsilon)
-            & (positions[:, 1] <= high[1] + crop_epsilon)
+            (relative[:, 0] >= -half_size[0] - crop_epsilon[0])
+            & (relative[:, 0] <= half_size[0] + crop_epsilon[0])
+            & (relative[:, 1] >= -half_size[1] - crop_epsilon[1])
+            & (relative[:, 1] <= half_size[1] + crop_epsilon[1])
         )
         coordinates = coordinates[keep]
         all_positions.append(positions[keep])
