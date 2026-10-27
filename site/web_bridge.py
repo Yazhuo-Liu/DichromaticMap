@@ -35,6 +35,7 @@ from dichromatic_map.strain import (
     selected_cell_strain_readout, strain_selected_cell, tensor_readout,
 )
 from dichromatic_map.exports import build_export_tables
+from dichromatic_map.displacements import normalize_grain_displacements
 
 
 def _array(value):
@@ -139,10 +140,11 @@ def _render_data(request):
     center = tuple(request.get("center", (0, 0)))
     f = _array(request.get("deformations", [np.eye(2), np.eye(2)]))
     t = _array(request.get("translations", [[0, 0], [0, 0]]))
+    displacements = normalize_grain_displacements(request.get("grain_displacements"))
     halo = 2 * float(request.get("local_distance", 0.1)) if request.get("local_matching") else 0.0
     grains = [projected_columns(width + 2 * halo, height + 2 * halo, sign * angle / 2,
                                 center=center, deformation=f[g], lattice=lattice,
-                                axis=axis, translation=t[g])
+                                axis=axis, translation=t[g], displacements=displacements[g])
               for g, sign in enumerate((1, -1))]
     for grain in grains:
         _safe_integer_values(grain.half_indices)
@@ -161,7 +163,7 @@ def _render_data(request):
     metadata = {
         "angle": angle, "preset": preset.name if preset else None,
         "exact_cell": _cell(exact_csl_cell(angle, lattice=lattice, axis=axis))
-                      if np.allclose(f, np.eye(2)) and np.allclose(t, 0) else None,
+                      if not any(displacements) and np.all(f == np.eye(2)) and np.all(t == 0) else None,
         "layers": geometry.layer_count,
         "reference_axes": [in_plane_reference_axes(sign * angle / 2, f[g]).tolist()
                            for g, sign in enumerate((1, -1))],
@@ -195,6 +197,7 @@ def web_render(serialized):
 
 def web_near_start(serialized):
     request = json.loads(serialized)
+    _require_uniform_structure(request)
     args = (float(request["angle"]), float(request["percent"]),
             int(request["index"]), request["lattice"], request["axis"])
     cached = get_cached_cell_search(*args, rows_per_chunk=8)
@@ -259,6 +262,7 @@ def _count(request):
         boundary_points=request.get("boundary") if request.get("use_boundary") else None,
         region_states=tuple(request.get("region_states", [True] * 4)),
         layer=int(request["layer"]), translations=_array(request["translations"]),
+        grain_displacements=normalize_grain_displacements(request.get("grain_displacements")),
     )
     for values in (result.interior, result.boundary, result.half_open,
                    result.half_open_edges, result.half_open_corners):
@@ -274,7 +278,13 @@ def _count(request):
     }
 
 
+def _require_uniform_structure(request):
+    if any(normalize_grain_displacements(request.get("grain_displacements"))) or request.get("custom_base", False):
+        raise ValueError("Reset grain moves and any prior strained base before periodic uniform-strain analysis")
+
+
 def _complete(request):
+    _require_uniform_structure(request)
     candidates = cell_completion_candidates(
         _array(request["polygons"]), float(request["angle"]),
         lattice=request["lattice"], axis=request["axis"],
@@ -291,6 +301,7 @@ def _complete(request):
 
 
 def _fit_selected(request):
+    _require_uniform_structure(request)
     fit = strain_selected_cell(
         _array(request["polygons"]), float(request["angle"]),
         percent=float(request["percent"]), lattice=request["lattice"],
@@ -367,6 +378,7 @@ def _state_from_browser(raw):
     state.near_cell = _from_cell(raw.get("near_cell"), raw["lattice"], raw["axis"])
     state.deformations = _array(raw["deformations"])
     state.translations = _array(raw["translations"])
+    state.grain_displacements = normalize_grain_displacements(raw.get("grain_displacements"))
     if raw.get("manual_original") is not None:
         state.manual_unstrained_vertices = [
             CellVertex(_array(v["position"]), int(v["layer"]), v["source"],

@@ -12,6 +12,10 @@ from math import ceil, floor, gcd, lcm
 import re
 import numpy as np
 from .affine import affine_needs_compensation, affine_points
+from .displacements import (
+    DisplacementLimitError, apply_displacements, displacement_source_rectangles,
+    normalize_displacements,
+)
 
 SUPPORTED_LATTICES = ("FCC", "BCC", "SC")
 
@@ -454,6 +458,7 @@ def projected_columns(
     translation: np.ndarray | None = None,
     *,
     layers=None,
+    displacements=None,
 ) -> ProjectedGrain:
     """Generate only the columns intersecting an a0-scaled screen rectangle.
 
@@ -465,6 +470,9 @@ def projected_columns(
     ``layers`` optionally selects axial phase IDs. Output retains the usual
     ascending layer order, reference IDs and total ``layer_count``; omitted
     phases are never generated. An empty selection returns an empty grain.
+    ``displacements`` is an ordered history of whole-grain or rectangular
+    shifts applied after the affine transform. Source atoms entering the crop
+    are generated as well, preserving reference indices and axial phases.
     """
 
     if not np.isfinite(width) or not np.isfinite(height) or width <= 0 or height <= 0:
@@ -479,6 +487,7 @@ def projected_columns(
     )
     if translation.shape != (2,) or not np.all(np.isfinite(translation)):
         raise ValueError("translation must contain two finite coordinates")
+    displacements = normalize_displacements(displacements)
 
     geometry = get_geometry(lattice, axis)
     if layers is None:
@@ -521,6 +530,13 @@ def projected_columns(
     if not all(np.all(np.isfinite(array)) for array in
                (screen_basis, inverse_basis, low, high, corners)):
         raise GeometryLimitError(range_error)
+    try:
+        source_rectangles = displacement_source_rectangles(low, high, displacements)
+    except DisplacementLimitError as error:
+        raise GeometryLimitError(str(error)) from error
+    source_corners = [np.array([[lower[0], lower[1]], [lower[0], upper[1]],
+                                [upper[0], lower[1]], [upper[0], upper[1]]])
+                      for lower, upper in source_rectangles]
 
     # Budget every selected phase before allocating the first dense mesh. A
     # late limit failure used to discard almost an entire full-size grain.
@@ -532,7 +548,7 @@ def projected_columns(
     basis_bound = max(sum(abs(int(value)) for value in row)
                       for row in geometry.basis_half_indices)
     offset_bound = int(np.max(np.abs(geometry.layer_offsets_half_indices)))
-    for layer in selected_layers:
+    for layer, corners in product(selected_layers, source_corners):
         offset = geometry.layer_offsets_half_indices[layer]
         with np.errstate(over="ignore", invalid="ignore"):
             screen_offset = transform @ (offset @ geometry.frame[:, :2] / 2.0) + translation
@@ -584,7 +600,8 @@ def projected_columns(
         # Check that world-coordinate rounding resolves the integer mesh in
         # both directions, including strongly anisotropic deformations.
         with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-            resolution = np.abs(np.spacing(np.maximum(np.abs(low), np.abs(high))))
+            magnitude = np.max(np.abs(np.concatenate(source_corners + [np.array([low, high])])), axis=0)
+            resolution = np.abs(np.spacing(magnitude))
             mesh_resolution = np.abs(inverse_basis) @ resolution
         if not np.all(np.isfinite(mesh_resolution)) or np.any(mesh_resolution > 1 / 8):
             raise GeometryLimitError(
@@ -627,6 +644,11 @@ def projected_columns(
                 raise GeometryLimitError(range_error) from error
         else:
             positions = coordinates @ screen_basis.T + screen_offset
+        if displacements:
+            try:
+                positions = apply_displacements(positions, displacements)
+            except ValueError as error:
+                raise GeometryLimitError(range_error) from error
         relative = positions - center
         keep = (
             (relative[:, 0] >= -half_size[0] - crop_epsilon[0])
@@ -639,12 +661,21 @@ def projected_columns(
         all_layers.append(np.full(len(coordinates), layer, dtype=np.int16))
         all_indices.append(coordinates @ geometry.basis_half_indices.T + offset)
 
-    return ProjectedGrain(
+    grain = ProjectedGrain(
         np.concatenate(all_positions, axis=0) if all_positions else np.empty((0, 2)),
         np.concatenate(all_layers, axis=0) if all_layers else np.empty(0, dtype=np.int16),
         np.concatenate(all_indices, axis=0) if all_indices else np.empty((0, 3), dtype=int),
         geometry.layer_count,
     )
+    if len(source_rectangles) <= 1 or not len(grain.positions):
+        return grain
+    # Inverse source rectangles share edges. Deduplicate identities (rather
+    # than positions: distinct translated atoms may legitimately coincide).
+    identity = np.column_stack((grain.layers, grain.half_indices))
+    _, first_indices = np.unique(identity, axis=0, return_index=True)
+    keep = np.sort(first_indices)
+    return ProjectedGrain(grain.positions[keep], grain.layers[keep],
+                          grain.half_indices[keep], grain.layer_count)
 
 
 def csl_angle_deg(m: int, n: int, axis: str = "110") -> float:

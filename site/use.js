@@ -15,6 +15,7 @@ const state = {
   regions: [true, true, true, true], referenceAxes: true,
   nearEnabled: false, nearMethod: "local", nearSolutions: [], nearCell: null,
   deformations: identity(), translations: [[0, 0], [0, 0]],
+  grainDisplacements: [[], []], translationCorners: [],
   manual: [], manualLocalCutoff: null, manualFit: null, manualOriginal: null,
   showCell: false, cleanPNG: false,
 };
@@ -247,6 +248,7 @@ function currentRenderParameters() {
   return {
     lattice: state.lattice, axis: state.axis, angle: state.angle,
     deformations: state.deformations, translations: state.translations,
+    grain_displacements: state.grainDisplacements,
     local_matching: state.nearEnabled && state.nearMethod === "local",
     local_distance: Number($("local-distance").value),
   };
@@ -275,6 +277,9 @@ function prepareAnglePreview() {
   anglePreview = undefined;
   if (!pattern || !renderCoverage) return;
   const parameters = JSON.parse(renderCoverage.signature);
+  // A piecewise move cannot be undone by the uniform preview transform.
+  // Wait for exact new geometry when an angle change clears manual moves.
+  if (parameters.grain_displacements?.some(operations => operations.length)) return;
   if (parameters.lattice !== state.lattice || parameters.axis !== state.axis) return;
   const inverse = parameters.deformations.map(f => {
     const det = f[0][0] * f[1][1] - f[0][1] * f[1][0];
@@ -588,12 +593,13 @@ function cellCorners(cell) {
     [origin[0] + c[0][0] + c[0][1], origin[1] + c[1][0] + c[1][1]],
     [origin[0] + c[0][1], origin[1] + c[1][1]]];
 }
-function drawPolygon(context, points, color, dash = []) {
+function drawPolygon(context, points, color, dash = [], fill = null) {
   if (points.length < 2) return;
   context.save(); context.strokeStyle = color; context.lineWidth = 2;
   context.setLineDash(dash); context.beginPath();
   points.forEach((point, i) => { const [x, y] = screen(point); if (!i) context.moveTo(x, y); else context.lineTo(x, y); });
   if (points.length === 4) context.closePath();
+  if (fill) { context.fillStyle = fill; context.fill(); }
   context.stroke(); context.restore();
 }
 function drawVector(context) {
@@ -728,6 +734,12 @@ function draw() {
     });
   }
   if (state.boundary.length) drawBoundary(ctx);
+  if (state.translationCorners.length === 2) {
+    const [xmin, xmax, ymin, ymax] = translationBounds();
+    drawPolygon(ctx, [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], "#b7791f", [5, 3], "#fbbf241f");
+  } else if (state.translationCorners.length === 1) {
+    marker(ctx, ...screen(state.translationCorners[0]), 6, "+", "#b7791f", null, 2);
+  }
   if (state.atoms.length) {
     drawVector(ctx);
     state.atoms.forEach((v, i) => { const [x, y] = screen(v.position); ctx.fillStyle = "#83419a"; ctx.fillText(`P${i + 1}`, x + 6, y - 7); });
@@ -849,6 +861,7 @@ function drawPlotLegend(context, entries = plotLegendEntries()) {
 }
 
 function updateSummary() {
+  updateTranslationControls();
   if (!metadata) return;
   for (const [id, mode] of [["pick-gb","boundary"],["pick-vector","vector"],["pick-cell","cell"]]) {
     $(id).classList.toggle("selected", state.mode === mode);
@@ -868,6 +881,7 @@ function updateSummary() {
   $("undo-cell").disabled = !!state.manualFit || !state.manual.length;
   $("clear-cell").disabled = !!state.manualFit || !state.manual.length;
   $("run-search").classList.toggle("hidden", !state.nearEnabled || state.nearMethod !== "strain");
+  $("run-search").disabled = uniformStrainBlocked();
   $("local-distance").disabled = !state.nearEnabled || state.nearMethod !== "local";
   $("strain-percent").disabled = !state.nearEnabled || state.nearMethod !== "strain";
   $("search-index").disabled = !state.nearEnabled || state.nearMethod !== "strain";
@@ -880,9 +894,9 @@ function updateSummary() {
     $("near-info").textContent = `Local same-layer mutual nearest pairs\nVisible pairs: ${visible.localMarkers.count}\nMaximum visible separation: ${visible.localMarkers.count ? visible.maxLocalSeparation.toFixed(5) : "—"} a₀\nOriginal atom positions retained.`;
   }
   $("fit-cell").disabled = !(state.nearCell || (currentPattern() ? pattern?.exact_cell : null));
-  $("complete-cell").disabled = !(state.manual.length === 2 || state.manual.length === 3);
+  $("complete-cell").disabled = uniformStrainBlocked() || !(state.manual.length === 2 || state.manual.length === 3);
   $("fit-manual").disabled = !state.manual.length;
-  $("apply-strain").disabled = state.manual.length !== 4 ||
+  $("apply-strain").disabled = uniformStrainBlocked() || state.manual.length !== 4 ||
     (!state.nearEnabled || state.nearMethod !== "local") && !state.manualFit ||
     !state.manual.some(v => v.source !== "CSL") && !state.manualFit;
   $("apply-strain").textContent = state.manualFit ? "Restore original local structure" : "Apply bulk strain to selected cell";
@@ -965,6 +979,7 @@ function resetSelections() {
   state.manualLocalCutoff = null; state.manualFit = null; state.manualOriginal = null;
   state.nearCell = null; state.nearSolutions = [];
   state.deformations = identity(); state.translations = [[0, 0], [0, 0]];
+  state.grainDisplacements = [[], []]; state.translationCorners = [];
   state.mode = "idle"; $("manual-info").dataset.count = "";
   $("vector-annotation").hidden = true; $("strain-info").classList.add("hidden");
 }
@@ -1026,11 +1041,88 @@ function setMode(mode) {
   if (state.mode === "boundary") state.boundary = [];
   if (state.mode === "vector") { state.atoms = []; $("vector-annotation").hidden = true; }
   if (state.mode === "cell") { state.manual = []; $("manual-info").dataset.count = ""; }
-  for (const [id, value] of [["pick-gb","boundary"],["pick-vector","vector"],["pick-cell","cell"]]) {
+  if (state.mode === "translate") state.translationCorners = [];
+  for (const [id, value] of [["pick-gb","boundary"],["pick-vector","vector"],["pick-cell","cell"],["pick-translation","translate"]]) {
     $(id).classList.toggle("selected", state.mode === value);
   }
   draw(); updateSummary();
-  setStatus(({idle:"Ready · choose an interaction tool",boundary:"Pick B1, then B2 on visible atoms",vector:"Pick P1, then P2 on visible atoms",cell:"Pick four same-layer CSL or near-pair markers"})[state.mode]);
+  setStatus(({idle:"Ready · choose an interaction tool",boundary:"Pick B1, then B2 on visible atoms",vector:"Pick P1, then P2 on visible atoms",cell:"Pick four same-layer CSL or near-pair markers",translate:"Pick two opposite rectangle corners; all axial layers will move"})[state.mode]);
+}
+function hasGrainDisplacements() {
+  return state.grainDisplacements.some(operations => operations.length);
+}
+function uniformStrainBlocked() {
+  if (hasGrainDisplacements()) return true;
+  if (state.manualFit || state.nearCell) return false;
+  return state.deformations.some(f => f.some((row, i) => row.some((value, j) => Math.abs(value - (i === j ? 1 : 0)) > 1e-12))) ||
+    state.translations.some(delta => delta.some(value => Math.abs(value) > 1e-12));
+}
+function translationBounds() {
+  if (state.translationCorners.length !== 2) return null;
+  const [a, b] = state.translationCorners;
+  return [Math.min(a[0], b[0]), Math.max(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[1], b[1])];
+}
+function updateTranslationControls() {
+  const grain = Number($("translation-grain").value) === 1 ? 1 : 0;
+  const counts = state.grainDisplacements.map(operations => operations.length);
+  $("undo-translation").textContent = `Undo G${grain + 1} move`;
+  $("undo-translation").disabled = !counts[grain];
+  $("reset-translations").disabled = !hasGrainDisplacements();
+  $("translate-whole").disabled = counts[grain] >= 64 || angleSliderDragging;
+  $("translate-region").disabled = !translationBounds() || counts[grain] >= 64 || angleSliderDragging;
+  $("pick-translation").classList.toggle("selected", state.mode === "translate");
+  const bounds = translationBounds();
+  const lines = [`G1 moves: ${counts[0]} · G2 moves: ${counts[1]}`];
+  if (bounds) lines.push(`Rectangle: x ${bounds[0].toFixed(4)}…${bounds[1].toFixed(4)}, y ${bounds[2].toFixed(4)}…${bounds[3].toFixed(4)} a₀`);
+  else if (state.mode === "translate") lines.push(state.translationCorners.length ? "Pick the opposite corner." : "Pick the first corner.");
+  if (hasGrainDisplacements()) lines.push("Reset moves to use uniform-strain fitting or periodic cell search.");
+  else if (uniformStrainBlocked()) lines.push("A prior strained/translated base remains. Change the angle or lattice to reset it before periodic strain analysis.");
+  $("translation-info").textContent = lines.join("\n");
+}
+function invalidateMovedGeometry() {
+  invalidateAnalyses(); cancelNearSearch(); geometryGeneration++;
+  anglePreview = undefined;
+  state.atoms = []; state.manual = [];
+  state.manualLocalCutoff = null; state.manualFit = null; state.manualOriginal = null;
+  state.nearCell = null; state.nearSolutions = [];
+  state.translationCorners = []; state.mode = "idle";
+  // Manual moves compose after the current uniform F/t. Preserve that
+  // physical baseline even after discarding its old fitted-cell metadata.
+  if (state.nearMethod === "strain") {
+    state.nearMethod = "local"; $("near-method").value = "local";
+  }
+  $("manual-info").dataset.count = "";
+  $("vector-annotation").hidden = true;
+  $("vector-readout").textContent = "";
+  $("strain-info").classList.add("hidden");
+  $("near-results").replaceChildren(); $("near-info").textContent = "";
+  updateSummary(); renderRequest();
+}
+function translateGrain(local = false) {
+  if (angleSliderDragging) return setStatus("Release the angle slider before moving atoms.");
+  const grain = Number($("translation-grain").value);
+  const delta = [$("translation-dx").value, $("translation-dy").value].map(value => value.trim() === "" ? NaN : Number(value));
+  if (![0, 1].includes(grain) || !delta.every(value => Number.isFinite(value) && Math.abs(value) <= 1e8))
+    return setStatus("Choose G1 or G2 and finite Δx / Δy values between −1e8 and 1e8 a₀.");
+  if (delta.every(value => value === 0)) return setStatus("Enter a nonzero translation.");
+  if (state.grainDisplacements[grain].length >= 64) return setStatus("A grain can have at most 64 moves. Undo or reset moves first.");
+  const bounds = local ? translationBounds() : null;
+  if (local && (!bounds || !(bounds[0] < bounds[1] && bounds[2] < bounds[3]) || !bounds.every(value => Number.isFinite(value) && Math.abs(value) <= 1e8)))
+    return setStatus("Select a rectangle with nonzero width and height within ±1e8 a₀.");
+  state.grainDisplacements[grain].push({delta, bounds});
+  invalidateMovedGeometry();
+  setStatus(`G${grain + 1} ${local ? "rectangle" : "whole grain"} moved by (${delta.join(", ")}) a₀ across all axial layers`);
+}
+function undoGrainTranslation() {
+  const grain = Number($("translation-grain").value) === 1 ? 1 : 0;
+  if (!state.grainDisplacements[grain].length) return;
+  state.grainDisplacements[grain].pop(); invalidateMovedGeometry();
+  setStatus(`Undid the last G${grain + 1} move`);
+}
+function resetGrainTranslations() {
+  if (!hasGrainDisplacements()) return;
+  state.grainDisplacements = [[], []]; invalidateMovedGeometry();
+  setStatus("Both grains restored to their positions before manual moves");
 }
 function nearestAtom(x, y) {
   if (!currentPattern()) return null;
@@ -1108,7 +1200,8 @@ function invalidateAnalyses() {
   if ($("completion-dialog").open) $("completion-dialog").close();
 }
 function analysisInputs(kind) {
-  const geometry = {angle:state.angle, lattice:state.lattice, axis:state.axis};
+  const geometry = {angle:state.angle, lattice:state.lattice, axis:state.axis,
+    grain_displacements:state.grainDisplacements, custom_base:uniformStrainBlocked()};
   if (kind === "near") return {...geometry,
     percent:Number($("strain-percent").value), index:Number($("search-index").value)};
   if (kind === "vector") return {...geometry, atoms:state.atoms,
@@ -1148,14 +1241,14 @@ async function countManual() {
     for (const grain of [0,1]) {
       const inside = result.interior[grain][layer], boundary = result.boundary[grain][layer];
       if (result.half_open_available?.[grain] && result.half_open) {
-        lines.push(`G${grain+1}: ${result.half_open[grain][layer]} half-open unique representatives`);
+        lines.push(`G${grain+1}: ${result.half_open[grain][layer]} half-open atom count`);
         if (result.half_open_edges && result.half_open_corners)
           lines.push(`  ${inside} interior + ${result.half_open_edges[grain][layer]} edge + ${result.half_open_corners[grain][layer]} corner`);
-        lines.push(`  ${inside+boundary} closed-outline point instances (${boundary} on boundary); opposite-edge copies are duplicates.`);
+        lines.push(`  ${inside+boundary} closed-outline atom instances (${boundary} on boundary).`);
       } else {
         lines.push(`G${grain+1}: ${inside+boundary} atoms in the closed polygon = ${inside} interior + ${boundary} boundary`);
         lines.push(result.half_open_available?.[grain] === false
-          ? "  Not a parallelogram; periodic unique-cell count is unavailable."
+          ? "  Not a parallelogram; half-open parallelogram count is unavailable."
           : "  Half-open count unavailable.");
       }
     }
@@ -1172,6 +1265,22 @@ async function countManual() {
   }
 }
 async function selectAt(x, y) {
+  if (state.mode === "translate") {
+    if (!currentPattern()) return setStatus("Wait for the current atom positions before selecting a rectangle.");
+    const r = plotRect();
+    if (x < r.left || x > r.left + r.width || y < r.top || y > r.top + r.height) return;
+    state.translationCorners.push(modelFromScreen(x, y));
+    if (state.translationCorners.length === 2) {
+      const bounds = translationBounds();
+      if (bounds[1] - bounds[0] < 1e-8 || bounds[3] - bounds[2] < 1e-8) {
+        state.translationCorners.pop(); return setStatus("Choose an opposite corner with nonzero width and height.");
+      }
+      state.mode = "idle";
+    }
+    draw(); updateSummary();
+    setStatus(state.translationCorners.length === 2 ? "Rectangle selected. Set Δx / Δy and choose Move rectangle." : "Pick the opposite rectangle corner");
+    return;
+  }
   if (state.mode === "cell" && state.manual.length >= 4) {
     state.mode = "idle"; updateSummary(); return;
   }
@@ -1257,6 +1366,7 @@ function fitPoints(points) {
   viewSize(); renderRequest(); updateSummary();
 }
 async function completeManual() {
+  if (uniformStrainBlocked()) return setStatus("Reset grain moves and any prior strained base before completing a periodic cell.");
   if (![2, 3].includes(state.manual.length)) return;
   const token = beginAnalysis("complete");
   try {
@@ -1293,6 +1403,7 @@ async function completeManual() {
   } catch (error) { if (analysisCurrent(token)) fail(error); }
 }
 async function toggleSelectedStrain() {
+  if (uniformStrainBlocked()) return setStatus("Reset grain moves and any prior strained base before applying uniform strain.");
   if (state.manualFit) {
     invalidateAnalyses();
     state.manual = state.manualOriginal;
@@ -1326,6 +1437,7 @@ async function toggleSelectedStrain() {
   } catch (error) { if (analysisCurrent(token)) fail(error); }
 }
 function applyNearCell(index) {
+  if (uniformStrainBlocked()) return setStatus("Reset grain moves and any prior strained base before applying a periodic strained cell.");
   const cell = state.nearSolutions[index];
   if (!cell) return;
   invalidateAnalyses();
@@ -1342,6 +1454,7 @@ function cancelNearSearch() {
 }
 function searchNear() {
   cancelNearSearch();
+  if (uniformStrainBlocked()) return setStatus("Reset grain moves and any prior strained base before searching periodic strained cells. Local matching remains available.");
   if (!state.nearEnabled || state.nearMethod !== "strain") return;
   invalidateAnalyses();
   const generation = nearGeneration;
@@ -1491,7 +1604,7 @@ function sessionState() {
     manual_local_cutoff: state.manualLocalCutoff, axial_repeat: state.axialRepeat,
     near_enabled: state.nearEnabled, near_method: state.nearMethod,
     near_cell: state.nearCell, deformations: state.deformations,
-    translations: state.translations, manual_fit: state.manualFit,
+    translations: state.translations, grain_displacements: state.grainDisplacements, manual_fit: state.manualFit,
     manual_original: state.manualOriginal,
   };
 }
@@ -1552,6 +1665,7 @@ async function importSession(file) {
     state.nearEnabled = raw.near_enabled; state.nearMethod = raw.near_method;
     state.nearCell = raw.near_cell; state.nearSolutions = raw.near_cell ? [raw.near_cell] : [];
     state.deformations = raw.deformations; state.translations = raw.translations;
+    state.grainDisplacements = clone(raw.grain_displacements || [[], []]); state.translationCorners = [];
     state.regions = loaded.settings.region_states; state.showCell = loaded.settings.show_common_cell;
     state.center = view.center; state.scale = view.scale;
     state.width = view.width; state.height = view.height;
@@ -1724,24 +1838,31 @@ $("reset-appearance").addEventListener("click", () => {
   rebuildLayers(); draw();
 });
 $("near-method").addEventListener("change", () => {
+  if (uniformStrainBlocked() && $("near-method").value === "strain") {
+    $("near-method").value = state.nearMethod;
+    return setStatus("Reset grain moves and any prior strained base before selecting uniform strain. Local matching remains available.");
+  }
+  const preserveBase = uniformStrainBlocked();
   cancelNearSearch();
   state.boundary = []; state.atoms = []; state.manual = [];
   $("vector-annotation").hidden = true;
   state.nearMethod = $("near-method").value;
   state.nearCell = null; state.nearSolutions = [];
-  state.deformations = identity(); state.translations = [[0,0],[0,0]];
+  if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; }
   updateSummary(); renderRequest();
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();
 });
 $("near-toggle").addEventListener("click", () => {
+  if (uniformStrainBlocked() && state.nearMethod === "strain") return setStatus("Choose local matching while grain moves are present.");
+  const preserveBase = uniformStrainBlocked();
   cancelNearSearch();
   state.nearEnabled = !state.nearEnabled;
   if (!state.nearEnabled) {
     state.boundary = []; state.atoms = []; state.manual = [];
     $("vector-annotation").hidden = true;
     state.nearCell = null; state.nearSolutions = [];
-    state.deformations = identity(); state.translations = [[0,0],[0,0]];
-    $("near-info").textContent = "Off. Original unstrained lattices restored.";
+    if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; }
+    $("near-info").textContent = uniformStrainBlocked() ? "Local matching off. Current atom positions retained." : "Off. Original unstrained lattices restored.";
   } else if (state.nearMethod === "local") {
     $("near-info").textContent = "Local same-layer mutual nearest pairs. Original atom positions retained.";
   }
@@ -1768,6 +1889,12 @@ $("count-visible").addEventListener("change", countManual);
 $("apply-strain").addEventListener("click", toggleSelectedStrain);
 $("export-png").addEventListener("click", exportPNG);
 $("export-svg").addEventListener("click", exportSVG);
+$("translation-grain").addEventListener("change", updateTranslationControls);
+$("translate-whole").addEventListener("click", () => translateGrain(false));
+$("pick-translation").addEventListener("click", () => setMode("translate"));
+$("translate-region").addEventListener("click", () => translateGrain(true));
+$("undo-translation").addEventListener("click", undoGrainTranslation);
+$("reset-translations").addEventListener("click", resetGrainTranslations);
 $("retry-engine").addEventListener("click", retryEngine);
 $("save-session").addEventListener("click", saveSession);
 $("import-session").addEventListener("click", () => $("session-file").click());

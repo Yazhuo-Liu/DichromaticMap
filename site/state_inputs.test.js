@@ -83,13 +83,14 @@ test("axial repeat rejects fractional, empty, nonfinite and out-of-range input",
   }
 });
 
-test("count readouts distinguish unique representatives, closed copies and unavailable half-open counts", async () => {
+test("count readouts distinguish geometric half-open counts, closed instances and unavailable counts", async () => {
   const h=harness(),a=h.app;a.setPattern(fixture());
   a.state.manual=[[0,0],[1,0],[1,1],[0,1]].map(position=>({position,layer:0,source:"CSL",endpoints:[position,position]}));
   const counted=a.countManual();h.reply(h.last("count"),{interior:[[8],[8]],boundary:[[4],[4]],
     half_open:[[9],[9]],half_open_edges:[[0],[0]],half_open_corners:[[1],[1]],half_open_available:[true,true],areas:[6.364,6.364]});
   await counted;const text=h.node("manual-info").dataset.count;
-  assert.match(text,/9.*unique|unique.*9/i);assert.match(text,/12.*closed|closed.*12/i);
+  assert.match(text,/9.*half-open|half-open.*9/i);assert.match(text,/12.*closed|closed.*12/i);
+  assert.doesNotMatch(text, /opposite-edge copies are duplicates|unique representatives/i);
   assert.match(text,/0.*edge/i);assert.match(text,/1.*corner/i);
   const irregular=a.countManual();h.reply(h.last("count"),{interior:[[1],[2]],boundary:[[3],[4]],
     half_open:[[2],[0]],half_open_edges:[[0],[0]],half_open_corners:[[1],[0]],half_open_available:[true,false],areas:[1,2]});

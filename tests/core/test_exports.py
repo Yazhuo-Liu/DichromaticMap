@@ -115,6 +115,29 @@ def test_nonparallelogram_half_open_counts_are_blank_not_zero():
     assert int(result[1]["closed"]) > 0
 
 
+def test_local_displacement_exports_actual_counts_and_ordered_moves():
+    current = state()
+    polygon = np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=float)
+    current.manual_vertices = cell_vertices(np.stack((polygon, polygon)))
+    # Move the sole interior atom beyond the polygon, retaining its identity.
+    current.grain_displacements = [[
+        {"delta": [5, 0], "bounds": [.75, 1.25, .75, 1.25]},
+        {"delta": [0, 0], "bounds": None},
+    ], []]
+    tables = build_export_tables(current, {})
+    counts = rows(tables, "counts.csv")
+    assert [int(row["closed"]) for row in counts] == [8, 9]
+    assert [int(row["interior"]) for row in counts] == [0, 1]
+    values = rows(tables, "strain.csv")
+    assert strain_value(values, "displacement_1", "delta_x", unit="a0") == 5
+    assert strain_value(values, "displacement_1", "delta_x", unit="angstrom") == 12.5
+    assert strain_value(values, "displacement_1", "xmin", unit="a0") == .75
+    assert strain_value(values, "displacement_1", "regional") == 1
+    assert strain_value(values, "displacement_2", "regional") == 0
+    np.testing.assert_array_equal(matrix(values, "E", frame="reference_analysis_xy"), np.zeros((2, 2)))
+    assert not any(row["quantity"].startswith("canonical_cell") for row in values)
+
+
 def test_incomplete_selections_export_headers_and_truthful_unstrained_tensors():
     current = state()
     current.selected_atoms = [SelectedAtom(np.zeros(2), 0, 0, np.zeros(3, dtype=int))]

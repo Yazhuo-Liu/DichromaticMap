@@ -19,7 +19,7 @@ vector measurements, atom counting, uniform-strain common cells, PNG/SVG export 
 GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 [Crystal and orientation](#gui-orientation) · [Layers](#gui-layers) ·
 [Navigation](#gui-view) · [Colors, symbols and sizes](#gui-appearance) · [GB reference](#gui-boundary) · [Vectors](#gui-vector) ·
-[Near-CSL](#gui-near-csl) · [Manual cells](#gui-manual-cell) ·
+[Near-CSL](#gui-near-csl) · [Manual cells](#gui-manual-cell) · [Translation](#gui-translation) ·
 [Selected-cell strain](#gui-selected-strain) · [Export](#gui-export) · [Sessions and tables](#gui-session) ·
 [Troubleshooting](#gui-troubleshooting).
 
@@ -153,6 +153,7 @@ and export button.
 | `ORIENTATION` | Choose FCC/BCC/SC, a viewing axis, a CSL preset or a custom angle; rotate the display |
 | `LAYERS` | Show individual G1/G2 axial layers and the automatic common cell |
 | `GB / VECTOR` | Pick a GB reference line, clip either grain to its sides, or measure a vector |
+| `TRANSLATION` | Move G1 or G2 as a whole, or move only its atoms in a selected rectangle |
 | `VIEW / PERFORMANCE` | Use `VIEW` for navigation and reference axes, `PERFORMANCE` for `CPU workers`, and `APPEARANCE` for grain colors, layer symbols and sizes |
 | `NEAR-CSL` | Enable local near-pair matching or search for a strained periodic cell |
 | `MANUAL COMMON CELL` | Select four common sites, count atoms, and optionally apply selected-cell strain |
@@ -549,6 +550,43 @@ reference angle or physical strain invalidates it. Changing the local threshold
 preserves selected atom pairs and counts, even when a smaller threshold hides
 their near-pair markers. Leaving local matching clears cells containing local pairs.
 The apply/restore workflow below preserves its own paired selection.
+
+<a id="gui-translation"></a>
+
+## Translating a grain or a local region
+
+The desktop viewer and web app both provide a `TRANSLATION` section.
+Choose **G1** or **G2** and enter **Δx / a₀** and **Δy / a₀**. These are physical
+analysis coordinates, before `Display rotation`; rotating the view does not
+rotate the displacement you entered.
+
+- Apply to the whole grain to move every atom of the chosen grain.
+- For a local move, start rectangle selection and click two opposite corners
+  in the plot. The highlighted rectangle follows the analysis x/y axes; it
+  appears rotated when the display is rotated. Apply the move to the rectangle
+  to translate only that grain's atoms inside or on its boundary.
+- Undo removes the chosen grain's last move. Reset clears the move histories
+  of both grains. Any pre-existing uniform deformation remains applied.
+
+All axial layers participate, including hidden layers. Local membership is
+evaluated at the time of each move, using positions after earlier moves.
+Changing the rectangle afterward does not change an already applied move.
+Subsequent whole-grain moves carry previously displaced atoms along with them.
+Panning or zooming regenerates the same displaced structure, including atoms
+that moved into the view from outside it.
+
+Moves update coincidence matching, vector measurements, cell counts and
+PNG/SVG exports. Existing atom/cell selections and fitted-cell results are
+cleared when the physical structure changes; the GB reference line and side
+visibility settings stay fixed. Local near-pair matching remains
+available; automatic periodic-cell and strain-fitting operations require
+resetting the moves. If a prior uniform deformation remains after reset,
+change the reference angle or lattice to restore the original base before
+fitting again. A local displacement is not a uniform strain or atomic
+relaxation. Changing the lattice, tilt axis or reference angle clears the moves.
+`Save session…` records their order and regions; an unfinished rectangle
+selection is not saved. In `strain.csv`, `displacement_1`, `displacement_2`, …
+record each grain's shifts and, for local moves, the rectangle bounds.
 
 <a id="gui-selected-strain"></a>
 

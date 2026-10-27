@@ -10,6 +10,7 @@ import numpy as np
 
 from .cells import StrainedCell, count_cell_atoms
 from .crystal import crystal_vector_coordinates, rotation_matrix_2d
+from .displacements import normalize_grain_displacements
 from .matching import exact_csl_cell
 from .state import PatternState
 from .strain import canonical_cell_basis, strain_tensors
@@ -77,6 +78,7 @@ def _count_rows(state, settings, a0):
         boundary_points=boundary,
         region_states=region_states if filtered else (True,) * 4,
         layer=layer, translations=state.translations,
+        grain_displacements=state.grain_displacements,
     )
     rows = []
     for grain in (0, 1):
@@ -149,6 +151,7 @@ def _vector_rows(state, a0):
 def _strain_rows(state, a0):
     rows = []
     rotations = []
+    histories = normalize_grain_displacements(state.grain_displacements)
     # Use the same 3D tensor conversion as strain readouts, but always use
     # current F rather than a possibly stale fitted/search-result cell.
     cell = SimpleNamespace(
@@ -193,6 +196,19 @@ def _strain_rows(state, a0):
                 (name, "translation", axis, value, "a0", "analysis_xy"),
                 (name, "translation", axis, value * a0, "angstrom", "analysis_xy"),
             ))
+        for index, operation in enumerate(histories[grain], start=1):
+            # Numbered quantities preserve the order in the existing long CSV
+            # format. Region bounds are evaluated immediately before that move.
+            quantity = f"displacement_{index}"
+            rows.append((name, quantity, "regional", int(operation["bounds"] is not None),
+                         "1", "analysis_xy"))
+            for axis, value in zip("xy", operation["delta"]):
+                for unit, scale in (("a0", 1), ("angstrom", a0)):
+                    rows.append((name, quantity, f"delta_{axis}", value * scale, unit, "analysis_xy"))
+            if operation["bounds"] is not None:
+                rows.extend((name, quantity, component, value, "a0", "analysis_xy")
+                            for component, value in zip(("xmin", "xmax", "ymin", "ymax"),
+                                                        operation["bounds"]))
     rows.extend((
         ("both", "reference_misorientation", "", state.angle_deg,
          "degree", "reference_grains"),
@@ -205,12 +221,14 @@ def _strain_rows(state, a0):
     # Supplement the unchanged physical tensors with a reproducible basis for
     # a currently applied common cell, or the undeformed exact CSL cell.
     current_cell = state.near_cell
+    has_local_shifts = any(operation["bounds"] is not None
+                           for history in histories for operation in history)
     if not isinstance(current_cell, StrainedCell):
         current_cell = None
-    if current_cell is None and np.array_equal(state.deformations, (np.eye(2), np.eye(2))):
+    if current_cell is None and not has_local_shifts and np.array_equal(state.deformations, (np.eye(2), np.eye(2))):
         current_cell = exact_csl_cell(state.angle_deg, lattice=state.geometry.lattice,
                                       axis=state.geometry.axis)
-    if (current_cell is not None
+    if (current_cell is not None and not has_local_shifts
             and current_cell.lattice == state.geometry.lattice
             and current_cell.axis == state.geometry.axis
             and np.array_equal(state.deformations, (current_cell.f1, current_cell.f2))):
@@ -240,7 +258,8 @@ results, not rounded display labels. A blank value means not applicable.
 session.json is the authoritative saved state used by Import session.
 CSV files are numerical snapshots; changing them does not change restoration.
 The state records lattice, tilt axis, lattice constant, reference angle,
-deformations, translations, selections, and display/analysis settings.
+deformations, affine translations, ordered per-grain manual displacements,
+selections, and display/analysis settings.
 a0 denotes the saved lattice constant in angstrom (angstrom = 1e-10 m).
 All x/y analysis coordinates exclude the display-only rotation. Layers are
 zero-based axial phase indices, not chemical species.
@@ -267,7 +286,7 @@ vectors.csv
 Every row describes the same actual P1-to-P2 3D displacement. P2 includes the
 signed axial_repeat image, added to its half-indices before the phase-height
 difference is computed. The in-plane displacement uses actual atom positions,
-including both grains' F and translations; reference indices are not used to
+including both grains' F, affine translations and manual displacements; reference indices are not used to
 subtract cross-grain x/y positions. analysis_xyz and display_xyz give x,y,z/a0;
 the latter rotates x/y only by the display angle. current_polar_cubic_uvw gives
 components/a0 in orthonormal cubic axes carried by that grain's polar rotation.
@@ -288,6 +307,12 @@ analysis frame. The 3D E tensor is transformed to each original grain's cubic
 in-plane model. principal_stretch is ordered largest first; principal engineering
 strain is stretch minus one, not an eigenvalue of E. Translations follow
 x_current = F x_reference + t, in analysis coordinates.
+Manual displacement_1, displacement_2, ... rows record subsequent moves in
+order, independently for each grain. delta_x/delta_y give the rigid shift;
+regional=0 moves the whole grain, while regional=1 moves only atoms within the
+closed xmin,xmax,ymin,ymax rectangle immediately before that operation. All
+axial layers are included. F and E describe the underlying uniform affine
+deformation, not a strain estimate across a local displacement discontinuity.
 reference_misorientation is the saved reference theta. polar_misorientation =
 theta + polar_rotation(G1) - polar_rotation(G2) is signed and not symmetry-folded.
 Display rotation is separate and has no effect on strain or counts.
@@ -297,6 +322,7 @@ F/R; a translation alone also leaves strain zero.
 
 canonical_cell_indices and canonical_cell_vectors describe the current applied
 common translation cell, or the undeformed exact CSL cell when available.
+They are omitted when local displacements break global lattice periodicity.
 Indices are the columns of m1 (G1) and m2 (G2) in each reference planar lattice.
 G1 fixes an exact column-Hermite convention: m1=[[a,b],[0,c]], a,c>0, 0<=b<a.
 The same integer unimodular column operation is applied to G2. Components 11,
@@ -326,6 +352,7 @@ def build_export_tables(state: PatternState, settings: dict) -> dict[str, str]:
         if np.linalg.det(deformation) <= 0 or np.linalg.svd(deformation, compute_uv=False).min() <= 1e-12:
             raise ValueError("Deformations must be nonsingular and orientation-preserving")
     _finite_array(state.translations, (2, 2), "Translations")
+    normalize_grain_displacements(state.grain_displacements)
     return {
         "counts.csv": _csv_text(COUNT_COLUMNS, _count_rows(state, settings, a0)),
         "vectors.csv": _csv_text(VECTOR_COLUMNS, _vector_rows(state, a0)),

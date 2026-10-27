@@ -35,6 +35,8 @@ G1/G2 atom counts, and a cross-grain vector after selected-cell bulk strain.
   matching.
 - Vector measurements in both grain coordinate frames, including axial
   periodic images.
+- Whole-grain and rectangular-region translations of G1 or G2, with undo and
+  session persistence in both the desktop viewer and web app.
 - Manual common cells with symmetry completion after the first edge,
   parallelogram completion after three vertices, separate G1/G2 atom counts
   and optional uniform strain fitting.

@@ -20,11 +20,12 @@ from .affine import affine_points
 from .appearance import validate_appearance, validate_layer_size_scales
 from .cells import StrainedCell, bases, determinant, validate_cell_vertices
 from .crystal import rotation_matrix_2d
+from .displacements import apply_displacements, normalize_displacements
 from .state import CellVertex, PatternParameters, PatternState, SelectedAtom
 from .strain import SelectedCellStrain
 
 FORMAT = "dichromatic-map-session"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 MAX_JSON_BYTES = 1_000_000
 MAX_MEMBER_BYTES = 8_000_000
 MAX_ARCHIVE_BYTES = 32_000_000
@@ -39,8 +40,10 @@ _STATE_FIELDS = {
     "manual_local_cutoff", "axial_repeat", "near_enabled", "near_method", "near_cell",
     "deformations", "translations", "manual_strain_fit", "manual_unstrained_vertices",
     "manual_unstrained_cutoff", "grain_colors", "layer_symbols", "layer_size_scales",
+    "grain_displacements",
 }
-_STATE_FIELDS_V2 = _STATE_FIELDS - {"layer_size_scales"}
+_STATE_FIELDS_V4 = _STATE_FIELDS - {"grain_displacements"}
+_STATE_FIELDS_V2 = _STATE_FIELDS_V4 - {"layer_size_scales"}
 _STATE_FIELDS_V1 = _STATE_FIELDS_V2 - {"grain_colors", "layer_symbols"}
 
 
@@ -117,6 +120,21 @@ def _deformations(value):
 
 def _optional_cutoff(value):
     return None if value is None else _number(value, "local cutoff", 0.0001, 0.5)
+
+
+def _read_displacements(value):
+    histories = _list(value, 2, "grain displacements")
+    if len(histories) != 2:
+        raise ValueError("Two grain displacement histories are required")
+    result = []
+    for history in histories:
+        for operation in _list(history, 64, "grain displacement history"):
+            _fields(operation, ("delta", "bounds"), "displacement")
+            _array(operation["delta"], (2,), "displacement delta")
+            if operation["bounds"] is not None:
+                _array(operation["bounds"], (4,), "displacement bounds")
+        result.append(normalize_displacements(history))
+    return result
 
 
 def _cell_payload(cell):
@@ -244,9 +262,10 @@ def _read_settings(value):
 def _snapshot_from_payload(payload):
     _fields(payload, ("format", "schema_version", "state", "settings", "view_range"), "session")
     version = payload["schema_version"]
-    if payload["format"] != FORMAT or type(version) is not int or version not in (1, 2, 3, SCHEMA_VERSION):
+    if payload["format"] != FORMAT or type(version) is not int or version not in (1, 2, 3, 4, SCHEMA_VERSION):
         raise ValueError("Unsupported DichromaticMap session format or schema version")
-    state_fields = {1: _STATE_FIELDS_V1, 2: _STATE_FIELDS_V2, 3: _STATE_FIELDS, 4: _STATE_FIELDS}[version]
+    state_fields = {1: _STATE_FIELDS_V1, 2: _STATE_FIELDS_V2,
+                    3: _STATE_FIELDS_V4, 4: _STATE_FIELDS_V4, 5: _STATE_FIELDS}[version]
     raw = _fields(payload["state"], state_fields, "state")
     parameters = dict(_fields(raw["parameters"], PatternParameters.__dataclass_fields__, "parameters"))
     for field in ("lattice_constant", "width", "height", "marker_size"):
@@ -288,6 +307,8 @@ def _snapshot_from_payload(payload):
     state.visible_layers = set.intersection(*state.visible_grain_layers)
     state.deformations = tuple(_deformations(raw["deformations"]))
     state.translations = _array(raw["translations"], (2, 2), "translations")
+    if version >= 5:
+        state.grain_displacements = _read_displacements(raw["grain_displacements"])
     state.selected_points = [_array(point, (2,), "GB point") for point in
                              _list(raw["selected_points"], 2, "GB points")]
     for item in _list(raw["selected_atoms"], 2, "selected atoms"):
@@ -302,6 +323,7 @@ def _snapshot_from_payload(payload):
         reference = (rotation_matrix_2d((1 - 2 * grain) * state.angle_deg / 2)
                      @ (indices @ state.geometry.frame[:, :2] / 2))
         physical = affine_points(reference, state.deformations[grain], state.translations[grain])
+        physical = apply_displacements(physical.reshape(1, 2), state.grain_displacements[grain])[0]
         _same(position, physical, "atom position")
         state.selected_atoms.append(SelectedAtom(position, grain, layer, indices))
     state.manual_vertices = _read_vertices(raw["manual_vertices"], state, "manual vertices", version)
@@ -319,6 +341,8 @@ def _snapshot_from_payload(payload):
         _read_vertices(raw["manual_unstrained_vertices"], state, "original manual vertices", version))
     state.manual_unstrained_cutoff = _optional_cutoff(raw["manual_unstrained_cutoff"])
     state.manual_strain_fit = _read_fit(raw["manual_strain_fit"], state)
+    if any(state.grain_displacements) and (state.near_cell is not None or state.manual_strain_fit is not None):
+        raise ValueError("Manual translations require clearing the applied common-cell result")
     settings = _read_settings(payload["settings"])
     view_range = tuple(_array(payload["view_range"], (4,), "view range"))
     if view_range[1] - view_range[0] < 1e-8 or view_range[3] - view_range[2] < 1e-8:
@@ -334,7 +358,8 @@ def _state_payload(state):
     parameters = replace(state.parameters, lattice=state.geometry.lattice,
                          axis=state.geometry.axis, angle_deg=float(state.angle_deg))
     return {
-        "parameters": asdict(parameters), "interaction_mode": state.interaction_mode,
+        "parameters": asdict(parameters),
+        "interaction_mode": "idle" if state.interaction_mode == "translate" else state.interaction_mode,
         "grain_colors": colors, "layer_symbols": symbols,
         "layer_size_scales": size_scales,
         "display_rotation_deg": float(state.display_rotation_deg),
@@ -349,6 +374,7 @@ def _state_payload(state):
         "near_enabled": bool(state.near_enabled), "near_method": state.near_method,
         "near_cell": _cell_payload(state.near_cell),
         "deformations": np.asarray(state.deformations).tolist(), "translations": state.translations.tolist(),
+        "grain_displacements": _read_displacements(state.grain_displacements),
         "manual_strain_fit": _fit_payload(state.manual_strain_fit),
         "manual_unstrained_vertices": _vertex_payload(state.manual_unstrained_vertices),
         "manual_unstrained_cutoff": state.manual_unstrained_cutoff,

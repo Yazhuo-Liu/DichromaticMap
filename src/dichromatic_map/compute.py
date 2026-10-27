@@ -117,13 +117,15 @@ def generate_grain_worker(
     lattice: str = "FCC",
     axis: str = "110",
     translation: np.ndarray | None = None,
+    displacements=None,
 ) -> tuple[int, ProjectedGrain]:
     """Process-pool entry point for one projected grain."""
 
     return (
         os.getpid(),
         projected_columns(
-            width, height, rotation_deg, center, deformation, lattice, axis, translation
+            width, height, rotation_deg, center, deformation, lattice, axis, translation,
+            displacements=displacements,
         ),
     )
 

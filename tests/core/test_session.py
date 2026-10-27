@@ -153,6 +153,59 @@ def test_roundtrip_applied_manual_strain_keeps_restore_original_data(tmp_path):
     np.testing.assert_allclose([repeated.cell.f1, repeated.cell.f2], after.deformations, atol=1e-12)
 
 
+def test_manual_displacement_history_and_moved_atom_roundtrip(tmp_path):
+    from dichromatic_map.displacements import apply_displacements
+
+    before = populated_state()
+    first = before.selected_atoms[0]
+    x, y = first.position
+    before.grain_displacements = [[
+        {"delta": [0.25, -0.75], "bounds": [x - .1, x + .1, y - .1, y + .1]},
+        {"delta": [3.5, 2.25], "bounds": None},
+    ], []]
+    moved = apply_displacements(first.position[None], before.grain_displacements[0])[0]
+    before.selected_atoms[0] = SelectedAtom(moved, 0, first.layer, first.half_indices)
+    before.interaction_mode = "translate"  # unfinished rectangle selection is transient
+    path = tmp_path / "displaced.dmap"
+    session.save_session(path, before, SETTINGS, VIEW)
+    after = session.load_session(path).state
+    assert after.grain_displacements == before.grain_displacements
+    assert after.interaction_mode == "idle"
+    np.testing.assert_allclose(after.selected_atoms[0].position, first.position + [3.75, 1.5])
+    np.testing.assert_array_equal(after.selected_atoms[0].half_indices, first.half_indices)
+    after.grain_displacements[0][0]["delta"][0] = 99
+    assert before.grain_displacements[0][0]["delta"][0] == .25
+    # The selected atom's coordinates are verified against the entire history.
+    rewrite_metadata(path, lambda payload: payload["state"]["selected_atoms"][0].update(
+        position=first.position.tolist()))
+    with pytest.raises(ValueError, match="atom position"):
+        session.load_session(path)
+
+
+@pytest.mark.parametrize("histories", [
+    [], [[], [], []], [[{"delta": [True, 0], "bounds": None}], []],
+    [[{"delta": ["1", 0], "bounds": None}], []],
+    [[{"delta": [1, 0], "bounds": [1, -1, 0, 2]}], []],
+    [[{"delta": [1, 0], "bounds": [0, 1, 0, 0]}], []],
+    [[{"delta": [float("inf"), 0], "bounds": None}], []],
+    [[{"delta": [1, 0], "bounds": None, "ignored": True}], []],
+    [[{"delta": [1, 0], "bounds": None}] * 65, []],
+])
+def test_invalid_displacement_history_rejected(tmp_path, histories):
+    path = tmp_path / "bad-displacement.dmap"
+    session.save_session(path, PatternState(PatternParameters()), SETTINGS, VIEW)
+    rewrite_metadata(path, lambda payload: payload["state"].update(grain_displacements=histories))
+    with pytest.raises(ValueError):
+        session.load_session(path)
+
+
+def test_displacements_cannot_retain_stale_applied_cell_metadata(tmp_path):
+    state = manual_strain_state()
+    state.grain_displacements = [[{"delta": [0, 0], "bounds": None}], []]
+    with pytest.raises(ValueError, match="clearing the applied common-cell"):
+        session.save_session(tmp_path / "stale.dmap", state, SETTINGS, VIEW)
+
+
 def test_save_uses_current_geometry_and_exact_angle_not_launch_parameters(tmp_path):
     state = PatternState(PatternParameters())
     state.geometry = crystal.get_geometry("BCC", "100")
@@ -305,15 +358,20 @@ def test_failed_save_preserves_existing_file_and_removes_temporary(tmp_path, mon
     assert list(tmp_path.iterdir()) == [path]
 
 
-def test_schema_3_still_restores_existing_vertices_and_appearance(tmp_path):
+@pytest.mark.parametrize("version", [3, 4])
+def test_legacy_schema_restores_existing_vertices_and_appearance(tmp_path, version):
     path = tmp_path / "version3.dmap"
     before = populated_state()
     session.save_session(path, before, SETTINGS, VIEW)
-    rewrite_metadata(path, lambda payload: payload.update(schema_version=3))
+    def downgrade(payload):
+        payload["schema_version"] = version
+        payload["state"].pop("grain_displacements")
+    rewrite_metadata(path, downgrade)
     after = session.load_session(path).state
     assert after.layer_size_scales == before.layer_size_scales
     assert after.grain_colors == before.grain_colors
     assert after.manual_vertices[0].source == "local"
+    assert after.grain_displacements == [[], []]
     np.testing.assert_array_equal(after.manual_vertices[0].grain_positions,
                                   before.manual_vertices[0].grain_positions)
 
@@ -339,7 +397,10 @@ def test_generated_vertex_provenance_roundtrip_requires_schema_4(tmp_path, count
         [v.grain_positions for v in after.manual_vertices],
         [v.grain_positions for v in state.manual_vertices],
     )
-    rewrite_metadata(path, lambda payload: payload.update(schema_version=3))
+    def downgrade(payload):
+        payload["schema_version"] = 3
+        payload["state"].pop("grain_displacements")
+    rewrite_metadata(path, downgrade)
     with pytest.raises(ValueError, match="vertex source"):
         session.load_session(path)
 
@@ -375,6 +436,7 @@ def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(t
         payload["state"].pop("grain_colors")
         payload["state"].pop("layer_symbols")
         payload["state"].pop("layer_size_scales")
+        payload["state"].pop("grain_displacements")
 
     rewrite_metadata(path, downgrade)
     after = session.load_session(path).state
@@ -408,6 +470,7 @@ def test_schema_2_retains_colors_symbols_and_physical_state_with_default_sizes(t
     def downgrade(payload):
         payload["schema_version"] = 2
         payload["state"].pop("layer_size_scales")
+        payload["state"].pop("grain_displacements")
 
     rewrite_metadata(path, downgrade)
     after = session.load_session(path).state

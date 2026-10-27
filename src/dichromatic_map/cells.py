@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 from .crystal import get_geometry, projected_columns, GeometryLimitError
+from .displacements import normalize_grain_displacements
 
 SIDE_TOLERANCE = 1.0e-9
 
@@ -92,6 +93,7 @@ def count_cell_atoms(
     region_states=(True, True, True, True),
     layer=-1,
     translations=None,
+    grain_displacements=None,
 ):
     """Count the entire selected cell, independently of viewport and rendering.
 
@@ -122,6 +124,7 @@ def count_cell_atoms(
     )
     if translations.shape != (2, 2) or not np.all(np.isfinite(translations)):
         raise ValueError("Provide two finite grain translations")
+    grain_displacements = normalize_grain_displacements(grain_displacements)
     edge_counts = np.zeros_like(inside_counts)
     half_counts = np.zeros_like(inside_counts)
     half_edge_counts = np.zeros_like(inside_counts)
@@ -145,6 +148,7 @@ def count_cell_atoms(
                 axis,
                 translations[grain_index],
                 layers=(layer,) if layer >= 0 else None,
+                displacements=grain_displacements[grain_index],
             )
         except GeometryLimitError as error:
             raise GeometryLimitError(

@@ -36,6 +36,7 @@ from ..crystal import (
     format_direction_components,
 )
 from ..cells import validate_cell_vertices, selected_region_mask
+from ..displacements import MAX_DISPLACEMENT_OPERATIONS, normalize_grain_displacements
 from ..matching import exact_csl_cell, LocalPairs, COINCIDENCE_TOLERANCE_FACTOR
 from ..state import (
     PatternParameters,
@@ -284,6 +285,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.controls = ControlDock(self)
         self.session = SessionController(self)
         self._pending_display_rotation = None
+        self._translation_corners = []
         available_cpus = max(1, os.cpu_count() or 1)
         automatic_workers = min(4, available_cpus)
         self.compute.worker_count = int(worker_count or automatic_workers)
@@ -405,6 +407,135 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.state.show_reference_axes = bool(visible)
         self.plot._update_reference_axes()
 
+    def _has_displacements(self):
+        return any(self.state.grain_displacements)
+
+    def _custom_position_base(self):
+        return self.state.near_cell is None and (
+            any(not np.array_equal(f, np.eye(2)) for f in self.state.deformations)
+            or np.any(self.state.translations != 0)
+        )
+
+    def _displacement_signature(self):
+        return tuple(tuple((tuple(op["delta"]),
+                            None if op["bounds"] is None else tuple(op["bounds"]))
+                           for op in operations)
+                     for operations in self.state.grain_displacements)
+
+    def _sync_translation_controls(self, message=None):
+        if not hasattr(self.controls, "translation_status"):
+            return
+        controls = self.controls
+        grain = controls.translation_grain_combo.currentData()
+        histories = self.state.grain_displacements
+        available = len(histories[grain]) < MAX_DISPLACEMENT_OPERATIONS
+        controls.translation_whole_button.setEnabled(available)
+        controls.translation_region_button.setEnabled(available and len(self._translation_corners) == 2)
+        controls.translation_undo_button.setEnabled(bool(histories[grain]))
+        controls.translation_reset_button.setEnabled(any(histories))
+        counts = f"G1: {len(histories[0])} moves · G2: {len(histories[1])} moves"
+        if message is None and len(self._translation_corners) == 2:
+            low, high = np.minimum(*self._translation_corners), np.maximum(*self._translation_corners)
+            message = f"Rectangle x=[{low[0]:.4g}, {high[0]:.4g}], y=[{low[1]:.4g}, {high[1]:.4g}] a₀."
+        controls.translation_status.setText(counts + ("\n" + message if message else ""))
+
+    def _clear_translation_selection(self):
+        self._translation_corners = []
+        self.plot._draw_translation_region()
+        self._sync_translation_controls()
+
+    def _on_translation_grain_changed(self, *_args):
+        self._clear_translation_selection()
+        if self.state.interaction_mode == "translate":
+            self._set_mode("idle")
+
+    def _start_translation_selection(self, *_args):
+        self._flush_display_rotation()
+        self._clear_translation_selection()
+        self._set_mode("translate")
+        self._sync_translation_controls("Click two opposite rectangle corners; all axial layers will move.")
+
+    def _pick_translation_corner(self, position):
+        if len(self._translation_corners) == 1:
+            if np.any(np.abs(position - self._translation_corners[0]) < 1e-8):
+                self._sync_translation_controls("Choose an opposite corner with nonzero width and height.")
+                return
+        self._translation_corners.append(np.asarray(position, dtype=float).copy())
+        self.plot._draw_translation_region()
+        if len(self._translation_corners) == 2:
+            self._set_mode("idle")
+        self._sync_translation_controls(
+            "First corner selected; click the opposite corner." if len(self._translation_corners) == 1 else None
+        )
+
+    def _apply_translation(self, local=False):
+        try:
+            self.plot._await_current_scene()
+            if local and len(self._translation_corners) != 2:
+                raise ValueError("Select two opposite rectangle corners first.")
+            delta = [self.controls.translation_dx_spin.value(), self.controls.translation_dy_spin.value()]
+            if not any(delta):
+                raise ValueError("Enter a nonzero Δx or Δy before moving atoms.")
+            bounds = None
+            if local:
+                low, high = np.minimum(*self._translation_corners), np.maximum(*self._translation_corners)
+                bounds = [float(low[0]), float(high[0]), float(low[1]), float(high[1])]
+            grain = self.controls.translation_grain_combo.currentData()
+            histories = normalize_grain_displacements(self.state.grain_displacements)
+            histories[grain].append({"delta": delta, "bounds": bounds})
+            histories = normalize_grain_displacements(histories)
+            self._replace_displacements(histories, f"Moved {'rectangle in' if local else 'whole'} G{grain + 1}; all axial layers affected.")
+        except (ValueError, RuntimeError, TimeoutError) as error:
+            self._sync_translation_controls(str(error))
+
+    def _undo_translation(self, *_args):
+        histories = normalize_grain_displacements(self.state.grain_displacements)
+        grain = self.controls.translation_grain_combo.currentData()
+        if histories[grain]:
+            histories[grain].pop()
+            self._replace_displacements(histories, f"Undid last move in G{grain + 1}.")
+
+    def _reset_translations(self, *_args):
+        if self._has_displacements():
+            self._replace_displacements([[], []], "All manual moves reset; existing bulk deformation is retained.")
+
+    def _replace_displacements(self, histories, message):
+        self.near_debounce_timer.stop()
+        self.near_poll_timer.stop()
+        if self.compute.near_search is not None:
+            self.compute.near_search.cancel()
+        self._cancel_parallel_work()
+        self.state.grain_displacements = histories
+        # F and uniform translations are the physical base of these moves;
+        # remove stale fit claims without changing that base structure.
+        self.state.near_cell = None
+        self.state.near_solutions = []
+        self.state.manual_strain_fit = None
+        self.state.manual_unstrained_vertices = None
+        self.state.manual_unstrained_cutoff = None
+        self.state.near_method = "local"
+        with QtCore.QSignalBlocker(self.controls.near_method_combo):
+            self.controls.near_method_combo.setCurrentIndex(self.controls.near_method_combo.findData("local"))
+        with QtCore.QSignalBlocker(self.controls.near_combo):
+            self.controls.near_combo.clear()
+        boundary = [point.copy() for point in self.state.selected_points]
+        self._clear_lattice_selections()
+        # The GB is a fixed spatial clipping reference, not a material region
+        # that follows a moved grain. Retain its position and side filters.
+        self.state.selected_points = boundary
+        for index, label in enumerate(self.plot.boundary_labels[:len(boundary)]):
+            label.setText(f"B{index + 1} · fixed reference")
+            label.show()
+        self.plot._draw_boundary()
+        self._sync_context_controls()
+        self._sync_near_controls()
+        self._sync_translation_controls(message)
+        self.controls.near_info.setPlainText("Manual positions updated. Local matching uses the moved atoms; strain fitting requires resetting moves and any retained bulk deformation.")
+        self.state.buffer_bounds = None
+        self._start_parallel_regeneration(True)
+        self._update_title()
+        self._update_status(message)
+
     def _on_display_rotation(self, angle):
         self._pending_display_rotation = float(angle)
         with (
@@ -446,6 +577,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot._draw_boundary()
         self.plot._draw_vector()
         self.plot._draw_manual_cell()
+        self.plot._draw_translation_region()
         self._update_title()
         if not self.plot._buffer_contains_view():
             self.view_refresh_timer.start()
@@ -520,8 +652,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     else "Local matching · no bulk strain"
                 ),
             )
+        custom = self._has_displacements() or self._custom_position_base()
         ready = (
-            self.local_active
+            not custom
+            and self.local_active
             and len(self.state.manual_vertices) == 4
             and any(vertex.source != "CSL" for vertex in self.state.manual_vertices)
         )
@@ -531,7 +665,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "Complete parallelogram…" if len(self.state.manual_vertices) == 3
             else "Complete by symmetry…"
         )
-        self.controls.manual_strain_button.setEnabled(active or ready)
+        self.controls.manual_strain_button.setEnabled(not custom and (active or ready))
         self.controls.manual_strain_limit.setEnabled((ready or completable) and not active)
         self.controls.manual_rotation_limit.setEnabled((ready or completable) and not active)
         self.controls.manual_strain_button.setText(
@@ -545,12 +679,19 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.controls.manual_undo_button,
         ):
             button.setEnabled(not active)
-        if not active and len(self.state.manual_vertices) < 4:
+        if custom:
+            self.controls.manual_strain_note.setText(
+                "Strain fitting and symmetry completion are unavailable for manually moved atoms. "
+                "Reset moves first; change angle/lattice to reset retained bulk deformation."
+            )
+        elif not active and len(self.state.manual_vertices) < 4:
             self.controls.manual_strain_note.setText(
                 "Select a local near-CSL cell first. Both grains share the deformation; strain and small rotations have separate limits."
             )
 
     def _toggle_manual_strain(self, *_args):
+        if self._has_displacements() or self._custom_position_base():
+            return
         if self.state.manual_strain_fit is not None:
             vertices = self.state.manual_unstrained_vertices
             cutoff = self.state.manual_unstrained_cutoff
@@ -686,6 +827,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         return (
             self.state.manual_strain_fit is None
             and self.state.near_cell is None
+            and not self._has_displacements()
+            and not self._custom_position_base()
             and len(self.state.manual_vertices) in (2, 3)
         )
 
@@ -916,6 +1059,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             states,
             layer,
             self.state.translations.copy(),
+            normalize_grain_displacements(self.state.grain_displacements),
         )
         if (
             self.compute.manual_count_future is not None
@@ -972,6 +1116,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _show_manual_counts(self):
         counts = self.state.manual_counts
         layer = self.state.manual_vertices[0].layer
+        custom = self._has_displacements() or self._custom_position_base()
         lines = [
             (
                 "Selected-cell bulk strain; common translations verified."
@@ -997,10 +1142,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 edge = counts.half_open_edges[grain, layer]
                 corner = counts.half_open_corners[grain, layer]
                 lines.append(
-                    f"  {self._cell_layer_label(layer)}: {total} atoms = "
+                    ("  Half-open geometric count · " if custom else "  ")
+                    + f"{self._cell_layer_label(layer)}: {total} atoms = "
                     f"{interior} inside + {edge} edge + {corner} corner"
                 )
                 lines.append(
+                    f"  Closed polygon: {interior+boundary} atoms ({boundary} on the boundary); "
+                    "no periodic equivalence is assumed."
+                    if custom else
                     f"  Closed outline would show {interior+boundary} point instances "
                     f"({boundary} on the boundary); opposite-edge copies are duplicates."
                 )
@@ -1010,7 +1159,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     f"in the closed polygon = {interior} inside + {boundary} boundary"
                 )
                 lines.append(
-                    "  The selected quadrilateral is not a parallelogram, so no "
+                    "  No half-open parallelogram count is defined for this quadrilateral."
+                    if custom else "  The selected quadrilateral is not a parallelogram, so no "
                     "periodic unique-cell count is defined."
                 )
         lines.append("G1/G2 counted separately; overlapping atoms are not merged.")
@@ -1117,6 +1267,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             tuple(self.state.deformations[0].ravel()),
             tuple(self.state.deformations[1].ravel()),
             tuple(self.state.translations.ravel()),
+            self._displacement_signature(),
         )
 
     def _update_geometry_labels(self):
@@ -1184,6 +1335,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if self.compute.near_search is not None:
             self.compute.near_search.cancel()
         self._clear_lattice_selections()
+        self.state.grain_displacements = [[], []]
+        self._sync_translation_controls("Manual moves cleared by the lattice/axis change.")
         self.state.geometry = geometry
         self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, geometry.layer_count)
         self.state.layer_size_scales = resize_layer_size_scales(self.state.layer_size_scales, geometry.layer_count)
@@ -1197,7 +1350,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.state.angle_deg = default_angle_deg(axis)
         self.state.pending_angle = self.state.angle_deg
         self.state.angle_update_active = False
-        self._clear_near_cell()
+        self._clear_near_cell(reset_custom=True)
         with QtCore.QSignalBlocker(self.controls.preset_combo):
             self.controls.preset_combo.clear()
             self.controls.preset_combo.addItem("Custom angle", None)
@@ -1236,9 +1389,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._update_status(
             f"Changed to {lattice} {self.state.geometry.axis_label}; previous selections cleared."
         )
+        self._sync_translation_controls("Manual moves cleared by the lattice/axis change.")
 
     @property
     def common_cell(self):
+        if self._has_displacements() or self._custom_position_base():
+            return None
         return (
             self.state.near_cell
             if self.state.near_cell is not None
@@ -1249,13 +1405,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
         )
 
-    def _clear_near_cell(self):
+    def _clear_near_cell(self, *, reset_custom=False):
+        preserve_base = not reset_custom and (self._has_displacements() or self._custom_position_base())
         if self.state.near_cell is not None:
             self._clear_lattice_selections()
         self.state.near_cell = None
         self.state.near_solutions = []
-        self.state.deformations = (np.eye(2), np.eye(2))
-        self.state.translations = np.zeros((2, 2))
+        if not preserve_base:
+            self.state.deformations = (np.eye(2), np.eye(2))
+            self.state.translations = np.zeros((2, 2))
         self.state.manual_strain_fit = None
         self.state.manual_unstrained_vertices = None
         self.state.manual_unstrained_cutoff = None
@@ -1286,8 +1444,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.plot.local_link_item.setData([], [])
 
     def _sync_near_controls(self):
+        custom = self._has_displacements() or self._custom_position_base()
+        index = self.controls.near_method_combo.findData("strain")
+        self.controls.near_method_combo.model().item(index).setEnabled(not custom)
         strain_method = self.state.near_method == "strain"
-        strained = self.state.near_enabled and strain_method
+        strained = self.state.near_enabled and strain_method and not custom
         for control in (
             self.controls.strain_spin,
             self.controls.search_index_spin,
@@ -1306,6 +1467,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._sync_manual_strain_controls()
 
     def _on_near_method_changed(self, *_args):
+        if self.controls.near_method_combo.currentData() == "strain" and (self._has_displacements() or self._custom_position_base()):
+            with QtCore.QSignalBlocker(self.controls.near_method_combo):
+                self.controls.near_method_combo.setCurrentIndex(self.controls.near_method_combo.findData("local"))
+            return
         self.state.near_method = self.controls.near_method_combo.currentData()
         self._sync_near_controls()
         if self.state.near_enabled:
@@ -1335,7 +1500,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._cancel_parallel_work()
             self._start_parallel_regeneration(True)
             self.controls.near_info.setPlainText(
-                "Off. Original unstrained lattices restored."
+                "Off. Manual positions and their bulk deformation are retained."
+                if self._has_displacements() or self._custom_position_base()
+                else "Off. Original unstrained lattices restored."
             )
         self._update_title()
 
@@ -1380,6 +1547,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if self.local_active:
             self._start_local_matching()
             return
+        if self._has_displacements() or self._custom_position_base():
+            return
         if self.compute.near_search is None:
             self.compute.near_search = NearSearch(
                 self.compute.worker_count, executor=self.compute.thread_executor()
@@ -1399,6 +1568,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.compute.near_search is None
             or not self.state.near_enabled
             or self.state.near_method != "strain"
+            or self._has_displacements()
+            or self._custom_position_base()
         ):
             self.near_poll_timer.stop()
             return
@@ -1431,6 +1602,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _select_near_cell(self, index):
         if (
             not self.state.near_enabled
+            or self._has_displacements()
+            or self._custom_position_base()
             or self.local_active
             or not 0 <= index < len(self.state.near_solutions)
         ):
@@ -1590,6 +1763,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 lattice=self.state.geometry.lattice,
                 axis=self.state.geometry.axis,
                 translation=self.state.translations[0],
+                displacements=self.state.grain_displacements[0],
             ),
             projected_columns(
                 width,
@@ -1600,6 +1774,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 lattice=self.state.geometry.lattice,
                 axis=self.state.geometry.axis,
                 translation=self.state.translations[1],
+                displacements=self.state.grain_displacements[1],
             ),
         ]
         self.state.buffer_bounds = bounds
@@ -1624,6 +1799,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 self.state.deformations[index].copy(),
                 self.state.geometry.lattice, self.state.geometry.axis,
                 self.state.translations[index].copy(),
+                normalize_grain_displacements(self.state.grain_displacements)[index],
             )
             for index, sign in enumerate((1.0, -1.0))
         ]
@@ -2031,7 +2207,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 f" · STRAINED near-CSL · {100*self.state.near_cell.max_strain:.3f}%"
             )
         elif self.local_active:
-            suffix += f" · LOCAL near-CSL · d ≤ {self.controls.local_distance_spin.value():.4f} a₀ · unstrained"
+            suffix += f" · LOCAL near-CSL · d ≤ {self.controls.local_distance_spin.value():.4f} a₀"
+            if not self._has_displacements() and not self._custom_position_base():
+                suffix += " · unstrained"
+        if self._has_displacements():
+            suffix += " · MANUAL ATOM MOVES"
         if self.state.display_rotation_deg:
             suffix += f" · display rotation {self.state.display_rotation_deg:.1f}°"
         angle_label = "reference θ" if self.state.manual_strain_fit is not None else "θ"
@@ -2057,6 +2237,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         self._sync_angle_controls(self.state.pending_angle)
         if abs(self.state.pending_angle - self.state.angle_deg) > 1.0e-12:
+            cleared_moves = self._has_displacements() or self._custom_position_base()
+            if cleared_moves:
+                self.state.grain_displacements = [[], []]
+                self._clear_translation_selection()
+                self._clear_near_cell(reset_custom=True)
+                self._sync_translation_controls("Manual moves cleared by the angle change.")
             if self.state.near_enabled:
                 if self.compute.near_search is not None:
                     self.compute.near_search.cancel()
@@ -2065,6 +2251,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._cancel_parallel_work()
             if not self.state.angle_update_active:
                 self._clear_lattice_selections()
+            if cleared_moves:
+                self._sync_translation_controls("Manual moves cleared by the angle change.")
             self.state.angle_update_active = True
         # Throttle previews rather than debouncing them: while the handle is
         # moving, the newest orientation is rendered at most once per frame.
@@ -2145,11 +2333,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
 
     def _set_mode(self, mode: str) -> None:
+        if mode != "translate" and len(self._translation_corners) == 1:
+            self._clear_translation_selection()
         self.state.interaction_mode = mode
         gb_blocker = QtCore.QSignalBlocker(self.controls.pick_gb_button)
         vector_blocker = QtCore.QSignalBlocker(self.controls.vector_button)
         self.controls.pick_gb_button.setChecked(mode == "boundary")
         self.controls.vector_button.setChecked(mode == "vector")
+        with QtCore.QSignalBlocker(self.controls.translation_select_button):
+            self.controls.translation_select_button.setChecked(mode == "translate")
         with QtCore.QSignalBlocker(self.controls.manual_pick_button):
             self.controls.manual_pick_button.setChecked(mode == "cell")
         del gb_blocker, vector_blocker
@@ -2182,6 +2374,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._set_mode("vector")
 
     def _clear_lattice_selections(self) -> None:
+        self._clear_translation_selection()
         self._clear_manual_cell()
         self.state.selected_points.clear()
         self.state.selected_atoms.clear()
@@ -2208,6 +2401,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             )
             return
         position = self.plot._from_view(position)
+        if self.state.interaction_mode == "translate":
+            self._pick_translation_corner(position)
+            return
         if self.state.interaction_mode == "cell":
             self._pick_manual_vertex(position)
             return
@@ -2460,6 +2656,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     if not self.state.selected_atoms
                     else "P1 selected · click P2"
                 )
+            elif self.state.interaction_mode == "translate":
+                message = f"Translate region · click corner {len(self._translation_corners) + 1}/2"
             else:
                 message = "Ready · choose an interaction tool"
         visible_status_layers = sorted(self.state.visible_layers)

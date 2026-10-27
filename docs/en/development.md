@@ -176,6 +176,38 @@ The allocation guard counts candidate mesh entries across all layers, before cro
 it allows at most 250,000 candidates per grain. Enumeration scales with the inverse-projected
 planar area and layer count, rather than a surrounding three-dimensional crystal volume.
 
+### Ordered whole-grain and regional translations
+
+`displacements.py` validates per-grain histories stored in
+`PatternState.grain_displacements`. Each operation contains `delta=[dx,dy]`
+and either `bounds=null` (whole grain) or `[xmin,xmax,ymin,ymax]` (closed rectangle).
+The physical position is first computed as `F R x_reference + t`, then each
+operation is evaluated in sequence on the current analysis coordinates / a₀.
+Reference half-indices and axial phases remain unchanged. Limits are 64 moves
+per grain and absolute input coordinates at most 10⁸ a₀.
+Forward selection and inverse enumeration share an eight-ULP boundary margin
+(at a coordinate scale of at least one), so roundoff in independently
+reconstructed atom positions cannot change membership at a rectangle edge.
+
+Projection inverts the move history to find source rectangles for the desired
+crop. For a local move, these are the unchanged portion outside the selection
+and the shifted-back crop intersected with the selection. Separate rectangles
+avoid allocating the space between a distant source and destination; the
+inverse history is limited to 512 rectangles. Enumeration uses the existing
+candidate budget, deduplicates by reference identity, applies the full history
+and crops the final positions. Distinct atoms that land on the same coordinate
+remain distinct. `count_cell_atoms` uses this same enumeration independently
+of viewport buffers. Cache signatures include both histories.
+
+The UI records rectangles in analysis coordinates, inverse-rotating click
+positions when the display is rotated. Moves clear stale atom/cell selections
+and fitted-cell metadata while retaining the affine base. Manual shifts
+disable periodic-cell overlays, symmetry completion and strain fitting;
+same-layer exact matching and local near matching use the displaced positions.
+Transient selection rectangles are omitted from atoms-only exports and sessions.
+Numerical CSVs record the operation order and bounds; uniform strain tensors
+describe the affine base, not the discontinuity at a local move boundary.
+
 ## 4. Exact displayed sites and exact common cells
 
 Both algorithms are in [matching.py](../../src/dichromatic_map/matching.py), but answer
@@ -648,7 +680,7 @@ preference is part of the session schema. SVG always contains atoms only.
 
 ## Session persistence and numerical export
 
-`session.py` stores a `.dmap` ZIP archive with schema version 4. `session.json`
+`session.py` stores a `.dmap` ZIP archive with schema version 5. `session.json`
 contains explicit physical and display inputs, not a dump of `PatternState`:
 current lattice/axis/angle replace potentially stale launch parameters, arrays
 become ordinary JSON lists, and selected atom indices retain their grain and
@@ -661,7 +693,10 @@ retained, while its other search candidates are omitted. Schema 2 added
 `layer_size_scales`. Schema 1 and 2 files still load with size scales of `1.0`;
 schema 1 also uses the default colors and unique layer symbols. Schema 4 adds
 the `symmetry` and `closure` vertex source values; schemas 1–3 still load with
-their original source values. Saving writes schema 4. Unsupported future
+their original source values. Schema 5 adds `grain_displacements`; schemas 1–4
+load with empty histories. Selected atom coordinates are verified after replaying
+the history. Unapplied rectangle selection is transient and saves as idle.
+Saving writes schema 5. Unsupported future
 versions and unexpected fields are rejected.
 Saved local-pair distance values are independent of the new-session default of
 0.1 a₀ and load without modification.

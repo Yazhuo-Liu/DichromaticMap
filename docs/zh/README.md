@@ -17,7 +17,7 @@ DichromaticMap 包含数值计算 Python 库和交互式查看器，用于 SC/FC
 
 使用指南：[认识界面](#gui-overview) · [第一次操作](#gui-quick-start) · [晶体与角度](#gui-orientation) ·
 [显示层](#gui-layers) · [视野](#gui-view) · [颜色、符号与大小](#gui-appearance) · [晶界](#gui-boundary) · [向量](#gui-vector) ·
-[Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [会话与数值表](#gui-session) · [常见问题](#gui-troubleshooting)。
+[Near-CSL](#gui-near-csl) · [手动胞与计数](#gui-manual-cell) · [整体与局部平移](#gui-translation) · [所选胞应变](#gui-selected-strain) · [导出](#gui-export) · [会话与数值表](#gui-session) · [常见问题](#gui-troubleshooting)。
 
 ## 在线操作引导
 
@@ -127,6 +127,7 @@ QT_QPA_PLATFORM=offscreen python -m dichromatic_map --workers 1 --save pattern.p
 | 图标题、坐标轴和图例 | 查看晶格、晶轴、角度、当前 Near-CSL 状态，以及颜色和层符号 |
 | `ORIENTATION` / `LAYERS` 页签 | 切换晶体取向设置与逐层显示设置，默认打开 `ORIENTATION` |
 | `GB / VECTOR` | 选择 GB 参考线、测量向量；相关选项随选点操作出现 |
+| `TRANSLATION` | 整体平移 G1/G2，或只移动矩形区域内所选晶粒的原子 |
 | `VIEW / PERFORMANCE` | `VIEW` 调整视野和参考轴显示，`PERFORMANCE` 设置 `CPU workers`，`APPEARANCE` 设置晶粒颜色、层符号和大小 |
 | `NEAR-CSL` | 局部近邻配对，或自动均匀应变共同胞搜索 |
 | `MANUAL COMMON CELL` | 选四点、计数，以及对局部配对胞施加应变 |
@@ -472,6 +473,31 @@ GB 两侧显示开关还会进一步筛选这些原子和共同点。手动胞�
 修改局部距离阈值会保留已选原子对和计数；即使调小阈值使其近邻标记消失，已选顶点仍保留。
 退出局部方法后，包含局部近邻配对顶点的胞会清除。
 下述应用/恢复流程会保存自身的配对顶点。
+
+<a id="gui-translation"></a>
+
+## 整体平移与局部区域平移
+
+网页版和桌面 App 都提供 `TRANSLATION` 面板。先选择 **G1** 或 **G2**，再输入
+**Δx / a₀** 和 **Δy / a₀**。位移使用显示旋转前的分析坐标；改变 `Display rotation`
+只旋转视图，不改变所输入位移的物理方向。
+
+- 整体平移：对所选晶粒的全部原子应用位移。
+- 局部平移：启动矩形选择，在图中依次点击两个对角点，再对选区应用位移。
+  只移动矩形内部及边界上属于所选晶粒的原子。矩形沿分析坐标的 x/y 轴，旋转视图后它也随之旋转。
+- 撤销：移除当前所选晶粒的最后一次平移。重置：清除两个晶粒的手动平移记录；此前已施加的均匀变形保留。
+
+平移作用于全部轴向层，包括暂时隐藏的层。每次局部操作按当时的实际位置确定原子归属，
+修改后续选区不会改变已应用的操作。局部移动后再整体移动，该晶粒此前移过的原子也会一起移动。
+平移、缩放视野时仍会生成相同结构，也能正确显示从视野外移入的原子。
+
+重合点、向量测量、原子计数以及 PNG/SVG 导出都使用移动后的真实坐标。
+移动会清除旧的原子/晶胞选点和拟合胞结果，避免沿用失效数据；晶界参考线及两侧显示设置保留，局部近邻配对仍可使用。
+自动周期胞和应变拟合需要先清除手动平移。如果重置后仍保留此前的均匀变形，需要改变参考角度或晶格以恢复原始结构，才能重新拟合。
+局部平移不代表均匀应变，也不会执行原子弛豫。
+改变晶格、晶轴或参考错取向角会清除平移记录。保存会话会记录位移顺序及矩形范围，
+尚未应用的矩形选择不保存。`strain.csv` 中的 `displacement_1`、`displacement_2` 等条目
+分别记录各晶粒的平移量，局部操作还包含选区边界。
 
 <a id="gui-selected-strain"></a>
 

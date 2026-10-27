@@ -130,6 +130,10 @@ class SessionController:
             tuple(state.grain_colors), tuple(state.layer_symbols), tuple(state.layer_size_scales),
             state.axial_repeat, state.show_reference_axes, state.near_enabled, state.near_method,
             self.owner._region_states(),
+            # Manual moves are user inputs. The committed angle in the full
+            # geometry signature may still catch up with an already queued
+            # slider value while import prepares, without any new user edit.
+            self.owner._displacement_signature(),
             tuple(sorted(self.settings().items())),
         )
 
@@ -152,6 +156,7 @@ class SessionController:
                 center=(low + high) / 2, deformation=state.deformations[grain],
                 lattice=state.geometry.lattice, axis=state.geometry.axis,
                 translation=state.translations[grain],
+                displacements=state.grain_displacements[grain],
             )
             for grain, sign in enumerate((1, -1))
         ]
@@ -185,6 +190,9 @@ class SessionController:
         state.manual_count_key = None
         state.manual_counts = None
         owner.state = state
+        if owner._has_displacements() or owner._custom_position_base():
+            state.near_method = "local"
+        owner._clear_translation_selection()
         widgets = [
             controls.structure_combo, controls.axis_combo, controls.layer_combo,
             controls.rotation_spin, controls.rotation_slider, controls.reference_axes_check,
@@ -254,7 +262,8 @@ class SessionController:
         plot._draw_boundary()
         plot._draw_vector()
         plot._draw_manual_cell()
-        owner._set_mode(state.interaction_mode)
+        owner._set_mode("idle" if state.interaction_mode == "translate" else state.interaction_mode)
+        owner._sync_translation_controls()
         state.grains, state.buffer_bounds = prepared
         state.grain_signature = owner._geometry_signature()
         state.render_error = None

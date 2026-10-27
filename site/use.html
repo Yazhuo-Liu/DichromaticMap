@@ -82,6 +82,15 @@
 
         <details class="section"><summary>MANUAL COMMON CELL</summary><div class="section-body"><button id="pick-cell" type="button">Pick 4 CSL vertices&nbsp; M</button><p class="hint">Pick four markers of one layer around the cell. For local pairs, each grain keeps its own atom vertices.</p><div class="button-row"><button id="undo-cell" type="button">Undo vertex</button><button id="clear-cell" type="button">Clear</button><button id="fit-manual" type="button">Fit</button></div><button id="complete-cell" type="button">Complete by symmetry…</button><label class="stacked"><input id="count-visible" type="checkbox"> Apply GB side visibility to counts</label><pre id="manual-info" class="readout">No manual cell. Pick one layer; each grain is counted inside its own four actual atom vertices.</pre><button id="apply-strain" type="button">Apply bulk strain to selected cell</button><label class="stacked">Selected-cell strain limit<input id="manual-strain" type="number" min="0.01" max="10" step="0.1" value="2"> %</label><label class="stacked">Rotation limit / grain<input id="manual-rotation" type="number" min="0" max="5" step="0.1" value="1"> °</label><pre id="strain-info" class="readout hidden"></pre></div></details>
 
+        <details class="section" id="translation-panel"><summary>TRANSLATION</summary><div class="section-body">
+          <label class="stacked">Move grain<select id="translation-grain"><option value="0">G1</option><option value="1">G2</option></select></label>
+          <div class="translation-delta"><label>Δx / a₀<input id="translation-dx" type="number" min="-100000000" max="100000000" step="0.1" value="0.1"></label><label>Δy / a₀<input id="translation-dy" type="number" min="-100000000" max="100000000" step="0.1" value="0"></label></div>
+          <button id="translate-whole" type="button">Move whole grain</button>
+          <div class="button-row"><button id="pick-translation" type="button">Select rectangle</button><button id="translate-region" type="button" disabled>Move rectangle</button></div>
+          <div class="button-row"><button id="undo-translation" type="button" disabled>Undo G1 move</button><button id="reset-translations" type="button" disabled>Reset both grains</button></div>
+          <p class="hint">Moves atoms in every axial layer, including hidden layers. Δx and Δy use physical model axes. Select two opposite rectangle corners; the box follows those axes when the view is rotated. Changing angle or lattice clears moves.</p>
+          <pre id="translation-info" class="readout">No grain moves.</pre>
+        </div></details>
         <div class="status-card" role="status" aria-live="polite" id="status">Loading local Python engine…</div>
         <div id="export-controls"><label class="export-option"><input id="clean-png" type="checkbox"> Clean PNG (atoms only)</label>
         <label class="export-option"><input id="clean-background" type="checkbox" checked aria-describedby="export-background-hint"> White background (atoms only)</label>

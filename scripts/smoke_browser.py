@@ -636,6 +636,110 @@ def check_clean_exports(page, output):
     return reports
 
 
+def check_translations(page, output):
+    """Drive whole-grain and rectangle moves through actual browser controls."""
+    page.evaluate("""async () => {
+      state.lattice='FCC'; state.axis='111'; resetSelections(); await loadMetadata(true);
+      state.scale=.6; state.center=[0,0]; state.displayRotation=23;
+      state.visibleLayers=[new Set([0]),new Set([0,1,2])];
+      state.boundary=[[-1,0],[1,0]]; state.regions=[true,false,false,true];
+      rebuildLayers(); updateSummary(); renderRequest(); await waitForCurrentRender(); draw();
+      globalThis.translationSmoke={before:pattern.grains.map(rows=>Array.from(rows)),
+        boundary:JSON.stringify(state.boundary),regions:JSON.stringify(state.regions)};
+    }""")
+    page.locator("#translation-panel > summary").click()
+    page.locator("#translation-grain").select_option("0")
+    page.locator("#translation-dx").fill("0.3")
+    page.locator("#translation-dy").fill("0.15")
+    page.locator("#translate-whole").click()
+    whole = page.evaluate("""async () => {
+      await waitForCurrentRender();
+      const probe=translationSmoke, rows=pattern.grains.map(data=>Array.from(data));
+      const key=row=>row.slice(2).join(','), moved=new Map(rows[0].map(row=>[key(row),row]));
+      const layers=new Set(); let checked=0;
+      for (const before of probe.before[0]) {
+        if (Math.abs(before[0])>2 || Math.abs(before[1])>2) continue;
+        const after=moved.get(key(before));
+        if (!after || Math.abs(after[0]-before[0]-.3)>1e-10 || Math.abs(after[1]-before[1]-.15)>1e-10)
+          throw Error('Whole-grain move failed to update physical atom coordinates');
+        layers.add(before[2]); checked++;
+      }
+      if (layers.size!==metadata.layers) throw Error('Whole move omitted hidden axial layers');
+      if (JSON.stringify(rows[1])!==JSON.stringify(probe.before[1])) throw Error('G1 move changed G2');
+      if (JSON.stringify(state.boundary)!==probe.boundary || JSON.stringify(state.regions)!==probe.regions)
+        throw Error('Moving atoms changed the fixed GB reference or clipping');
+      probe.whole=rows; return {checked,layers:layers.size};
+    }""")
+
+    def select_rectangle():
+        page.locator("#pick-translation").click()
+        points = page.evaluate("""() => [[-1.1,.3],[1.1,2.3]].map(point => {
+          const [x,y]=screen(point), r=canvas.getBoundingClientRect(); return [r.left+x,r.top+y];
+        })""")
+        for x, y in points:
+            page.mouse.click(x, y)
+        page.wait_for_function("state.translationCorners.length===2 && state.mode==='idle'")
+
+    select_rectangle()
+    page.locator("#translation-dx").fill("0.4")
+    page.locator("#translation-dy").fill("-0.2")
+    page.screenshot(path=str(output / "translation-selection.png"))
+    page.locator("#translate-region").click()
+    local = page.evaluate("""async () => {
+      await waitForCurrentRender(); draw();
+      const probe=translationSmoke, rows=pattern.grains.map(data=>Array.from(data));
+      const op=state.grainDisplacements[0][1], [xmin,xmax,ymin,ymax]=op.bounds;
+      const moved=new Map(rows[0].map(row=>[row.slice(2).join(','),row]));
+      let inside=0,outside=0; const layers=new Set();
+      for (const before of probe.whole[0]) {
+        if (Math.abs(before[0])>3 || Math.abs(before[1])>3) continue;
+        const selected=before[0]>=xmin && before[0]<=xmax && before[1]>=ymin && before[1]<=ymax;
+        const after=moved.get(before.slice(2).join(','));
+        if (!after || Math.abs(after[0]-before[0]-(selected ? .4 : 0))>1e-10 ||
+            Math.abs(after[1]-before[1]-(selected ? -.2 : 0))>1e-10)
+          throw Error('Rectangle move changed the wrong physical atom or used display axes');
+        if (selected) { inside++; layers.add(before[2]); } else outside++;
+      }
+      if (!inside || !outside || layers.size!==metadata.layers) throw Error('Rectangle did not exercise selected, unselected and hidden-layer atoms');
+      if (JSON.stringify(rows[1])!==JSON.stringify(probe.whole[1])) throw Error('Local G1 move changed G2');
+      if (JSON.stringify(state.boundary)!==probe.boundary || JSON.stringify(state.regions)!==probe.regions)
+        throw Error('Rectangle move changed the GB reference');
+      if (!uniformStrainBlocked() || !document.getElementById('apply-strain').disabled)
+        throw Error('Manual displacement still allows uniform-strain fitting');
+      probe.local=rows; probe.ops=JSON.stringify(state.grainDisplacements);
+      return {inside,outside,layers:layers.size,bounds:op.bounds};
+    }""")
+    with page.expect_download() as saved:
+        page.locator("#save-session").click()
+    session = output / "translated.dmap"
+    saved.value.save_as(session)
+    with ZipFile(session) as archive:
+        snapshot = json.loads(archive.read("session.json"))
+        assert len(snapshot["state"]["grain_displacements"][0]) == 2
+    page.locator("#undo-translation").click()
+    page.evaluate("""async () => {
+      await waitForCurrentRender();
+      if (JSON.stringify(pattern.grains.map(rows=>Array.from(rows)))!==JSON.stringify(translationSmoke.whole))
+        throw Error('Undo failed to restore the preceding physical pattern');
+    }""")
+    page.locator("#reset-translations").click()
+    page.evaluate("""async () => {
+      await waitForCurrentRender();
+      if (hasGrainDisplacements()) throw Error('Reset left manual moves behind');
+      if (JSON.stringify(state.boundary)!==translationSmoke.boundary) throw Error('Reset removed the GB reference');
+    }""")
+    page.locator("#session-file").set_input_files(session)
+    page.wait_for_function("currentPattern() && JSON.stringify(state.grainDisplacements)===translationSmoke.ops")
+    page.evaluate("""() => {
+      if (JSON.stringify(pattern.grains.map(rows=>Array.from(rows)))!==JSON.stringify(translationSmoke.local))
+        throw Error('Saved manual moves did not reproduce the physical pattern');
+      draw();
+    }""")
+    select_rectangle()
+    page.screenshot(path=str(output / "translation.png"))
+    return {"whole":whole, "local":local, "undo":"restored", "session":"restored"}
+
+
 def check_app(page, output, fixture):
     page.wait_for_function("typeof pattern !== 'undefined' && pattern && !document.getElementById('tutorial-start').disabled")
     page.evaluate("async () => { if (typeof waitForCurrentRender === 'function') await waitForCurrentRender(); draw(); }")
@@ -721,8 +825,9 @@ def check_app(page, output, fixture):
     drag = check_angle_drag(page, output)
     interactions = check_plot_interactions(page, output)
     exports = check_clean_exports(page, output)
+    translations = check_translations(page, output)
     return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu, "angleDrag": drag,
-            "plotInteractions": interactions, "cleanExports": exports}
+            "plotInteractions": interactions, "cleanExports": exports, "translations": translations}
 
 
 def main():

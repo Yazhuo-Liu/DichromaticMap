@@ -549,6 +549,21 @@ margin-bottom:5px}
 display:block;
 font-size:12px;
 margin:10px 0}
+.translation-delta{
+display:flex;
+gap:10px;
+margin:8px 0}
+.translation-delta label{
+flex:1;
+min-width:0;
+font-size:12px}
+.translation-delta input{
+display:block;
+width:100%;
+margin-top:4px}
+#translation-panel .button-row,#translate-whole{
+width:100%;
+margin-bottom:7px}
 .export-row{
 margin-bottom:8px}
 #export-controls > #save-session{

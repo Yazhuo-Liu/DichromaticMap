@@ -141,3 +141,6 @@ class PatternState:
         self.near_cell = None
         self.deformations = (np.eye(2), np.eye(2))
         self.translations = np.zeros((2, 2))
+        # Ordered manual shifts after the affine deformation/translation.
+        # Each grain has its own whole-grain or rectangular-region history.
+        self.grain_displacements = [[], []]

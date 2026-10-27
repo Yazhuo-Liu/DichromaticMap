@@ -95,6 +95,19 @@ class PatternPlot:
         self.vector_item = pg.PlotCurveItem(pen=pg.mkPen(VECTOR_COLOR, width=2.5))
         self.plot_item.addItem(self.boundary_item)
         self.plot_item.addItem(self.vector_item)
+        self.translation_region_item = pg.PlotCurveItem(
+            pen=pg.mkPen("#0d9488", width=2, style=QtCore.Qt.PenStyle.DashLine)
+        )
+        self.translation_corner_item = self._ring_item("#0d9488", 11)
+        self.translation_region_fill = QtWidgets.QGraphicsPolygonItem()
+        self.translation_region_fill.setPen(pg.mkPen(None))
+        self.translation_region_fill.setBrush(pg.mkBrush(250, 204, 21, 38))
+        self.translation_region_fill.setZValue(0.5)
+        self.plot_item.addItem(self.translation_region_fill, ignoreBounds=True)
+        self.translation_region_fill.hide()
+        for item in (self.translation_region_item, self.translation_corner_item):
+            item.setZValue(4)
+            self.plot_item.addItem(item)
         self.near_cell_item = pg.PlotCurveItem(
             pen=pg.mkPen(NEAR_COLOR, width=2.4, style=QtCore.Qt.PenStyle.DashLine)
         )
@@ -433,6 +446,23 @@ class PatternPlot:
         corners = self._from_view(np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]))
         low, high = corners.min(axis=0), corners.max(axis=0)
         return low[0], high[0], low[1], high[1]
+
+    def _draw_translation_region(self):
+        corners = self.owner._translation_corners
+        self._set_scatter(self.translation_corner_item, np.asarray(corners).reshape(-1, 2))
+        if len(corners) != 2:
+            self.translation_region_item.setData([], [])
+            self.translation_region_fill.hide()
+            return
+        low, high = np.minimum(*corners), np.maximum(*corners)
+        outline = self._to_view(np.array([
+            low, [high[0], low[1]], high, [low[0], high[1]], low,
+        ]))
+        self.translation_region_item.setData(outline[:, 0], outline[:, 1])
+        self.translation_region_fill.setPolygon(QtGui.QPolygonF([
+            QtCore.QPointF(float(x), float(y)) for x, y in outline[:-1]
+        ]))
+        self.translation_region_fill.show()
 
     def _draw_manual_cell(self):
         self.owner._sync_manual_strain_controls()
