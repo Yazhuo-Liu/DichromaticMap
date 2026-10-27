@@ -7,8 +7,11 @@ analysis. All scene geometry is derived from the owner's current session data.
 from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
+import xml.etree.ElementTree as ET
 import numpy as np
 from ._qt import QtCore, QtGui, QtWidgets, pg
+from PySide6 import QtSvg
+from pyqtgraph.graphicsItems.ScatterPlotItem import Symbols
 from . import (
     COINCIDENCE_COLOR,
     BOUNDARY_COLOR,
@@ -821,12 +824,14 @@ class PatternPlot:
             ]
         )
 
-    def save(self, output_path: Path, *, clean: bool = False) -> None:
+    def save(
+        self, output_path: Path, *, clean: bool = False, transparent: bool = False
+    ) -> None:
         """Export the complete plot, or only the visible grain atoms."""
         self._await_current_scene()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if clean:
-            self._save_atoms(output_path)
+            self._save_atoms(output_path, transparent=transparent)
             return
         exporter = pyqtgraph.exporters.ImageExporter(self.plot_item)
         exporter.parameters()["width"] = 1800
@@ -899,13 +904,21 @@ class PatternPlot:
                 raise TimeoutError("Timed out waiting for the current plot to finish rendering")
         owner._refresh_view_display()
 
-    def _save_atoms(self, output_path: Path) -> None:
+    def _visible_atom_items(self):
+        atoms = {item for grain in self.grain_layer_items for item in grain}
+        # Qt preserves insertion order between siblings with the same z value.
+        return sorted(
+            (item for item in self.view_box.childGroup.childItems()
+             if item in atoms and item.isVisible()),
+            key=lambda item: item.zValue(),
+        )
+
+    def _save_atoms(self, output_path: Path, *, transparent: bool) -> None:
         # Render copies in a separate scene. Hiding annotations in the live
         # scene could trigger layout/range changes, and ImageExporter renders
         # neighboring scene items even when its target is only the ViewBox.
-        view = pg.GraphicsView(
-            useOpenGL=False, background=self.plot_widget.backgroundBrush()
-        )
+        background = QtGui.QColor(255, 255, 255, 0 if transparent else 255)
+        view = pg.GraphicsView(useOpenGL=False, background=background)
         try:
             root = pg.GraphicsWidget()
             view.setCentralItem(root)
@@ -919,12 +932,9 @@ class PatternPlot:
             box.invertY(self.view_box.state["yInverted"])
             box.setRange(self.view_box.viewRect(), padding=0)
 
-            atoms = {item for grain in self.grain_layer_items for item in grain}
             # Follow the original insertion/stacking order, including layers
             # with overlapping symbols from different grains.
-            for original in self.view_box.childGroup.childItems():
-                if original not in atoms or not original.isVisible():
-                    continue
+            for original in self._visible_atom_items():
                 x, y = original.getData()
                 visible = original.data["visible"]
                 item = pg.ScatterPlotItem(
@@ -941,8 +951,88 @@ class PatternPlot:
             # boundingRect includes an extra half-pixel for its border.
             exporter = pyqtgraph.exporters.ImageExporter(root)
             exporter.parameters()["width"] = 1800
+            exporter.parameters()["background"] = background
             if exporter.export(str(output_path)) is False:
                 raise OSError(f"Could not save PNG to {output_path}")
         finally:
             view.close()
             view.deleteLater()
+
+    def save_svg(self, output_path: Path, *, transparent: bool = False) -> None:
+        """Export visible atoms as editable paths with the current viewport."""
+        self._await_current_scene()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        bounds = self.view_box.rect()
+        width = 1800
+        height = max(1, int(width * bounds.height() / bounds.width()))
+        scale = width / bounds.width()
+        # ImageExporter rounds the PNG height down to whole pixels, then
+        # QGraphicsScene.render fits positions with KeepAspectRatio. Its
+        # pixel-sized markers still use the width-based resolutionScale.
+        # Match both scales so fractional viewport sizes cannot shift atoms.
+        position_scale = min(scale, height / bounds.height())
+        viewport = QtCore.QRectF(0, 0, width, height)
+        buffer = QtCore.QBuffer()
+        buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
+        generator = QtSvg.QSvgGenerator()
+        generator.setOutputDevice(buffer)
+        generator.setSize(QtCore.QSize(width, height))
+        generator.setViewBox(viewport)
+        generator.setTitle("DichromaticMap atoms")
+        painter = QtGui.QPainter()
+        if not painter.begin(generator):
+            raise OSError(f"Could not render SVG to {output_path}")
+        try:
+            painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+            if not transparent:
+                painter.fillRect(viewport, QtGui.QColor("#ffffff"))
+            for item in self._visible_atom_items():
+                symbol = item.opts["symbol"]
+                path = Symbols[symbol] if isinstance(symbol, str) else symbol
+                size = item.opts["size"] * scale
+                pen = QtGui.QPen(item.opts["pen"])
+                # Paths are written in output coordinates, so their strokes
+                # scale naturally when the SVG is resized in another editor.
+                pen.setCosmetic(False)
+                painter.setPen(pen)
+                painter.setBrush(item.opts["brush"])
+                painter.setOpacity(item.opacity())
+                margin = size + pen.widthF()
+                visible_bounds = viewport.adjusted(-margin, -margin, margin, margin)
+                for point in item.data[item.data["visible"]]:
+                    position = self.view_box.mapFromItem(
+                        item, QtCore.QPointF(float(point["x"]), float(point["y"]))
+                    )
+                    x = (position.x() - bounds.left()) * position_scale
+                    y = (position.y() - bounds.top()) * position_scale
+                    if not visible_bounds.contains(x, y):
+                        continue
+                    transform = QtGui.QTransform()
+                    transform.translate(x, y)
+                    transform.scale(size, size)
+                    painter.drawPath(transform.map(path))
+        finally:
+            painter.end()
+        # Qt's SVG paint engine ignores painter clipping; add a real SVG clip
+        # so symbols crossing the viewport edge also crop correctly in editors.
+        document = ET.fromstring(bytes(buffer.data()))
+        namespace = "http://www.w3.org/2000/svg"
+        ET.register_namespace("", namespace)
+        tag = lambda name: f"{{{namespace}}}{name}"
+        document.set("width", str(width))
+        document.set("height", str(height))
+        document.set("version", "1.1")
+        document.attrib.pop("baseProfile", None)
+        for element in document.iter():
+            element.attrib.pop("vector-effect", None)
+        definitions = document.find(tag("defs"))
+        if definitions is None:
+            definitions = ET.SubElement(document, tag("defs"))
+        clip = ET.SubElement(definitions, tag("clipPath"), {"id": "atom-viewport"})
+        ET.SubElement(clip, tag("rect"), {"width": str(width), "height": str(height)})
+        group = ET.SubElement(document, tag("g"), {"clip-path": "url(#atom-viewport)"})
+        for child in list(document):
+            if child.tag == tag("g") and child is not group:
+                document.remove(child)
+                group.append(child)
+        ET.ElementTree(document).write(output_path, encoding="utf-8", xml_declaration=True)

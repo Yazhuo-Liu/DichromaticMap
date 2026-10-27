@@ -83,7 +83,8 @@ python scripts/smoke_browser.py
 ```
 
 The smoke check exercises startup, transferred Float64 coordinates and physical
-indices, search cancellation, session import, PNG export and the twelve common
+indices, search cancellation, session import, white/transparent PNG and vector
+SVG exports (including pixel comparisons), and the twelve common
 GPU marker shapes, including Canvas/GPU mask comparisons at device pixel ratios
 1 and 2. It downloads the Pyodide version pinned by the Worker into
 `.cache/pyodide` once and verifies package checksums from its runtime manifest.

@@ -38,8 +38,8 @@ G1/G2 atom counts, and a cross-grain vector after selected-cell bulk strain.
 - Manual common cells with symmetry completion after the first edge,
   parallelogram completion after three vertices, separate G1/G2 atom counts
   and optional uniform strain fitting.
-- Automatic homogeneous-strain common-cell search and PNG export, with an
-  atoms-only option.
+- Automatic homogeneous-strain common-cell search, annotated PNG export, and
+  atoms-only PNG/SVG export with white or transparent backgrounds.
 - Save and restore sessions, with count, vector and strain CSV tables in one file.
 - NumPy-based numerical functions usable independently of the viewer.
 
@@ -166,9 +166,13 @@ same-layer exact coincidences.
    reference axes when enabled, and annotations; the controls are excluded.
    For just the visible G1/G2 atom symbols, first check **Clean PNG (atoms only)**
    above the button. This keeps the current view and atom styles while omitting
-   annotations, axes, grid and border. The live view stays unchanged.
+   annotations, axes, grid and border. **White background (atoms only)** uses
+   pure white when checked; uncheck it for a transparent PNG, including the
+   interiors of hollow markers. **Export SVG…** saves the visible atoms as
+   editable vector shapes with the same background choice. The live view stays
+   unchanged. These options are available in both the desktop and online apps.
 
-9. **Save or restore a session.** Click **Save session…** beside **Export PNG…**
+9. **Save or restore a session.** Click **Save session…** below the export buttons
    to save one `.dmap` file containing the current structure, selections, applied
    strain/translations, display settings including colors, symbols and sizes, and numerical
    CSV tables. In **ORIENTATION**, use **Import session…** to restore it in the current window.
@@ -245,7 +249,7 @@ It runs the existing NumPy numerical core in a browser Web Worker through
 Pyodide; the browser downloads Python and NumPy when the workspace opens, then
 computes locally. No calculation server is used. It supports projected
 grains, exact CSL, local near pairs, periodic-cell strain search, vector and
-manual-cell measurements, selected-cell strain, PNG export, and `.dmap`
+manual-cell measurements, selected-cell strain, PNG/SVG export, and `.dmap`
 session import/export. The desktop app remains the reference interface.
 
 To build the public documentation and preview the site locally, install the site extra and run:

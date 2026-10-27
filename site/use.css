@@ -429,7 +429,7 @@ display:flex;
 gap:7px;
 align-items:center;
 margin:6px 0}
-.button-row button,.section-body>button,#import-session{
+.button-row button,.section-body>button,#import-session,#save-session{
 flex:1;
 border:1px solid #cad8e8;
 background:#fff;
@@ -438,7 +438,7 @@ min-height:34px;
 color:#263650;
 font-size:12px;
 padding:5px 8px}
-.button-row button:hover,.section-body>button:hover,#import-session:hover{
+.button-row button:hover,.section-body>button:hover,#import-session:hover,#save-session:hover{
 background:#eaf2ff}
 .section{
 margin:10px 0}
@@ -550,6 +550,9 @@ display:block;
 font-size:12px;
 margin:10px 0}
 .export-row{
+margin-bottom:8px}
+#export-controls > #save-session{
+width:100%;
 margin-bottom:8px}
 #import-session{
 width:100%;

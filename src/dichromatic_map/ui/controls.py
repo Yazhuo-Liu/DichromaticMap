@@ -789,16 +789,27 @@ class ControlDock:
             "Hide annotations, reference axes, legend, grid, axes and analysis overlays in the PNG."
         )
         layout.addWidget(self.clean_export_check)
+        self.export_background_check = QtWidgets.QCheckBox("White background (atoms only)")
+        self.export_background_check.setChecked(True)
+        self.export_background_check.setToolTip(
+            "Use a pure white background for clean PNG and SVG exports. "
+            "Uncheck for transparent background; only the visible atoms are exported."
+        )
+        layout.addWidget(self.export_background_check)
         export_row = QtWidgets.QHBoxLayout()
         self.export_button = QtWidgets.QPushButton("Export PNG…")
         self.export_button.setToolTip("Export plot as PNG")
         self.export_button.clicked.connect(self.owner._choose_export_path)
+        self.export_svg_button = QtWidgets.QPushButton("Export SVG…")
+        self.export_svg_button.setToolTip("Export only visible atoms as editable vector paths")
+        self.export_svg_button.clicked.connect(self.owner._choose_svg_export_path)
         self.save_session_button = QtWidgets.QPushButton("Save session…")
         self.save_session_button.setToolTip("Save a .dmap file with restorable state and count, vector and strain CSV tables.")
         self.save_session_button.clicked.connect(self.owner._choose_session_save_path)
         export_row.addWidget(self.export_button)
-        export_row.addWidget(self.save_session_button)
+        export_row.addWidget(self.export_svg_button)
         layout.addLayout(export_row)
+        layout.addWidget(self.save_session_button)
         layout.addStretch(1)
         self.owner._sync_near_controls()
         self.owner._sync_angle_controls()

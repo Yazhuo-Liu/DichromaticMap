@@ -612,20 +612,39 @@ matching or count results, schedule numerical work, or clear selections, strain
 or translations. `Reset appearance` restores these style preferences, including
 all size scales to `1.0`.
 
-## PNG rendering
+## PNG and SVG rendering
 
 `PatternPlot.save(path)` exports the normal annotated `PlotItem` at a width of
 1800 pixels. `save(path, clean=True)` builds an unshown `GraphicsView` and
 `ViewBox` containing copies of the currently visible G1/G2 scatter data and
-styles. It copies the live view range, pixel dimensions and background, retaining
+styles. It copies the live view range and pixel dimensions, retaining
 rotation, visibility filters, colors, symbols and sizes. The export scene has no
 title, axes, grid, border or annotation items, so reference axes, legends, readouts,
-CSL/local-pair overlays, cells, GB lines and vectors are absent.
+CSL/local-pair overlays, cells, GB lines and vectors are absent. Clean PNG uses
+an explicit pure-white background by default; `transparent=True` selects a
+zero-alpha background in both the temporary view and the image exporter.
+
+`PatternPlot.save_svg(path, transparent=False)` writes only visible atom paths
+through Qt's SVG paint engine, including the paths used by numbered symbols.
+It maps the current atom positions and marker sizes into the exported viewport
+and adds an SVG clip path for symbols crossing its edges. The file contains
+vector geometry rather than embedded scatter pixmaps. Its optional white
+background follows the same choice as clean PNG.
+Atom positions use the same aspect-preserving scale as PNG after rounding the
+output height to whole pixels; pixel-sized markers retain the exporter's
+width-based resolution scale. Keeping these scales distinct avoids position
+drift at fractional viewport sizes.
+
+In the browser, transparent clean PNG starts with an unfilled Canvas. SVG
+records the existing Canvas marker geometry as circles and paths, with vector
+text for numbered markers. Both exports use the current visible-atom data and
+wait for the exact render result; SVG clips atoms to the same plot rectangle.
 
 The separate scene leaves live item visibility, view geometry and physical state
 untouched, and its temporary resources are released even if export fails. The
-`Clean PNG (atoms only)` checkbox is an export preference, initially unchecked;
-it is not part of the session schema.
+`Clean PNG (atoms only)` checkbox is initially unchecked and the shared
+`White background (atoms only)` checkbox is initially checked. Neither export
+preference is part of the session schema. SVG always contains atoms only.
 
 ## Session persistence and numerical export
 

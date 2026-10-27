@@ -84,7 +84,10 @@
 
         <div class="status-card" role="status" aria-live="polite" id="status">Loading local Python engine…</div>
         <div id="export-controls"><label class="export-option"><input id="clean-png" type="checkbox"> Clean PNG (atoms only)</label>
-        <div class="button-row export-row"><button id="export-png" type="button">Export PNG…</button><button id="save-session" type="button">Save session…</button></div></div>
+        <label class="export-option"><input id="clean-background" type="checkbox" checked aria-describedby="export-background-hint"> White background (atoms only)</label>
+        <p id="export-background-hint" class="hint">Uncheck for a transparent background in Clean PNG and SVG. SVG always exports only atoms.</p>
+        <div class="button-row export-row"><button id="export-png" type="button">Export PNG…</button><button id="export-svg" type="button">Export SVG…</button></div>
+        <button id="save-session" type="button">Save session…</button></div>
       </div>
     </aside>
   </div>

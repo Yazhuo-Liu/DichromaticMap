@@ -1374,6 +1374,70 @@ function downloadBlob(blob, name) {
   document.body.append(anchor); anchor.click(); anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
+function svgMarker(x, y, radius, symbol, stroke, fill, lineWidth = 1.25) {
+  // Record the same marker() commands used by Canvas. Keep each marker in
+  // its own context so numbered glyphs cannot leak text or fill styles.
+  const number = value => String(Number(value.toFixed(6)));
+  const parts = [], elements = [];
+  let circle, pathFill;
+  const context = {
+    beginPath() { parts.length = 0; circle = undefined; pathFill = "none"; },
+    moveTo(px, py) { parts.push(`M${number(px)} ${number(py)}`); },
+    lineTo(px, py) { parts.push(`L${number(px)} ${number(py)}`); },
+    closePath() { parts.push("Z"); },
+    // Atom circles always use a complete arc, including numbered circles.
+    arc(cx, cy, r) { circle = `circle cx="${number(cx)}" cy="${number(cy)}" r="${number(r)}"`; },
+    fill() { pathFill = this.fillStyle; },
+    stroke() {
+      const shape = circle || `path d="${parts.join(" ")}"`;
+      elements.push(`<${shape} fill="${escapeHtml(pathFill)}" stroke="${escapeHtml(this.strokeStyle)}" stroke-width="${number(this.lineWidth)}"/>`);
+    },
+    save() {}, restore() {},
+    fillText(text, px, py) {
+      elements.push(`<text x="${number(px)}" y="${number(py)}" text-anchor="middle" dominant-baseline="central" style="font:${escapeHtml(this.font)}" fill="${escapeHtml(this.fillStyle)}">${escapeHtml(text)}</text>`);
+    },
+  };
+  marker(context, x, y, radius, symbol, stroke, fill, lineWidth);
+  return elements.join("");
+}
+function atomsSVG(background = true) {
+  const {width, height} = canvasMetrics || refreshCanvasMetrics();
+  const r = plotRect(), visible = currentPattern() ? visibleData() : null;
+  if (!visible) throw new Error("Wait for the current atom pattern before exporting.");
+  const elements = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    `<defs><clipPath id="plot-clip"><rect x="${r.left}" y="${r.top}" width="${r.width}" height="${r.height}"/></clipPath></defs>`,
+  ];
+  if (background) elements.push('<rect width="100%" height="100%" fill="#ffffff"/>');
+  elements.push('<g clip-path="url(#plot-clip)">');
+  for (let grain = 0; grain < 2; grain++) {
+    const atoms = visible.atoms[grain];
+    elements.push(`<g data-grain="${grain + 1}">`);
+    for (let index = 0; index < atoms.count; index++) {
+      const layer = atoms.rows.flat[atoms.indices[index] * 6 + 2];
+      const radius = Math.max(2, Math.min(8, 4.5 * (state.sizes[layer] || 1) / Math.sqrt(state.scale)));
+      elements.push(svgMarker(atoms.x[index], atoms.y[index], radius, state.symbols[layer],
+        grain === 0 ? "#2e6799" : state.colors[1], grain === 0 ? state.colors[0] : null));
+    }
+    elements.push("</g>");
+  }
+  elements.push("</g></svg>");
+  return elements.join("\n");
+}
+async function exportSVG() {
+  try {
+    for (;;) {
+      await waitForCurrentRender();
+      viewSize();
+      if (currentPattern() && coveredView(renderCoverage)) break;
+    }
+    // Flush pending display changes exactly as PNG export does.
+    draw();
+    const svg = atomsSVG($("clean-background").checked);
+    downloadBlob(new Blob([svg], {type: "image/svg+xml;charset=utf-8"}), "dichromatic-atoms.svg");
+  } catch (error) { fail(error); }
+}
 async function exportPNG() {
   try {
   for (;;) {
@@ -1390,7 +1454,9 @@ async function exportPNG() {
   const context = copy.getContext("2d");
   context.setTransform(canvas.width / canvas.clientWidth, 0, 0, canvas.height / canvas.clientHeight, 0, 0);
   if (clean) {
-    context.fillStyle = "white"; context.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    if ($("clean-background").checked) {
+      context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    }
     drawAtoms(context, true);
   } else {
     context.drawImage(canvas, 0, 0, canvas.clientWidth, canvas.clientHeight);
@@ -1408,7 +1474,10 @@ async function exportPNG() {
       lines.forEach((line, i) => context.fillText(line, x, y + i * 15));
     }
   }
-  copy.toBlob(blob => { if (blob) downloadBlob(blob, clean ? "dichromatic-atoms.png" : "dichromatic-pattern.png"); });
+  copy.toBlob(blob => {
+    if (blob) downloadBlob(blob, clean ? "dichromatic-atoms.png" : "dichromatic-pattern.png");
+    else fail(new Error("PNG export failed. Try a smaller view."));
+  });
   } catch (error) { fail(error); }
 }
 function sessionState() {
@@ -1698,6 +1767,7 @@ $("completion-cancel").addEventListener("click", () => $("completion-dialog").cl
 $("count-visible").addEventListener("change", countManual);
 $("apply-strain").addEventListener("click", toggleSelectedStrain);
 $("export-png").addEventListener("click", exportPNG);
+$("export-svg").addEventListener("click", exportSVG);
 $("retry-engine").addEventListener("click", retryEngine);
 $("save-session").addEventListener("click", saveSession);
 $("import-session").addEventListener("click", () => $("session-file").click());

@@ -7,6 +7,7 @@ assets to the browser. --offline rejects missing assets instead of downloading.
 from contextlib import contextmanager
 from functools import partial
 import argparse
+import base64
 import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -444,6 +445,197 @@ def check_plot_interactions(page, output):
     return report
 
 
+def check_clean_exports(page, output):
+    """Decode actual downloads and compare vector exports to the PNG pixels."""
+    page.locator('[data-main-tab="orientation"]').click()
+    page.locator("#axis").select_option("112")
+    page.wait_for_function("state.axis === '112' && metadata.layers === 6 && currentPattern()")
+    page.locator("#field-slider").evaluate("""input => {
+      input.value='0.5'; input.dispatchEvent(new Event('input', {bubbles:true}));
+    }""")
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    page.locator("#clean-png").set_checked(True)
+    cases = [
+        {"name": "hollow-transparent", "background": False, "hollow": True,
+         "symbols": ["o", "d", "t", "s", "p", "h"], "layers": [[], [0]]},
+        {"name": "hollow-white", "background": True, "hollow": True,
+         "symbols": ["o", "d", "t", "s", "p", "h"], "layers": [[], [0]]},
+        {"name": "shapes-transparent", "background": False,
+         "symbols": ["o", "d", "t", "s", "p", "h"], "layers": [list(range(6)), list(range(6))]},
+        {"name": "shapes-white", "background": True,
+         "symbols": ["star", "+", "x", "t1", "t2", "t3"], "layers": [list(range(6)), list(range(6))]},
+        {"name": "numbered-filtered", "background": False, "filtered": True,
+         "symbols": ["number:12", "d", "t", "s", "p", "h"], "layers": [[0, 2, 4], [1, 3, 5]]},
+    ]
+    reports = []
+    for case in cases:
+        expected = page.evaluate("""async options => {
+          state.displayRotation = 23; state.center = [.125, -.25];
+          state.colors = ['#54a84f', '#c52c79']; state.symbols = options.symbols;
+          state.sizes = [1.25, .75, 1.6, .6, 1, 1.4];
+          state.visibleLayers = options.layers.map(layers => new Set(layers));
+          state.boundary = [[0, -3], [0, 3]];
+          state.regions = options.filtered ? [true, false, false, true] : [true, true, true, true];
+          state.referenceAxes = true;
+          renderRequest(); await waitForCurrentRender(); draw();
+          const data = visibleData(), rect = plotRect();
+          let hollow = null;
+          if (options.hollow) {
+            const atoms = data.atoms[1];
+            for (let index = 0; index < atoms.count; index++) {
+              const x = atoms.x[index], y = atoms.y[index];
+              if (x < rect.left + 15 || x > rect.left + rect.width - 15 ||
+                  y < rect.top + 15 || y > rect.top + rect.height - 15) continue;
+              let isolated = true;
+              for (let other = 0; other < atoms.count; other++)
+                if (other !== index && Math.hypot(x - atoms.x[other], y - atoms.y[other]) < 22) isolated = false;
+              if (isolated) { hollow = [x, y]; break; }
+            }
+            if (!hollow) throw Error('No isolated hollow atom available for export validation');
+          }
+          const numbers = [];
+          for (const atoms of data.atoms) for (let index = 0; index < atoms.count; index++) {
+            const layer = atoms.rows.flat[atoms.indices[index] * 6 + 2], symbol = state.symbols[layer];
+            if (symbol.startsWith('number:')) numbers.push(symbol.slice(7));
+          }
+          return {counts:data.atoms.map(atoms => atoms.count), numbers, hollow,
+            cssWidth:canvas.clientWidth, cssHeight:canvas.clientHeight, rect};
+        }""", case)
+        page.locator("#clean-background").set_checked(case["background"])
+        with page.expect_download() as exported:
+            page.locator("#export-png").click()
+        png = output / f"{case['name']}.png"
+        exported.value.save_as(png)
+        with page.expect_download() as exported:
+            page.locator("#export-svg").click()
+        svg = output / f"{case['name']}.svg"
+        exported.value.save_as(svg)
+        report = page.evaluate("""async ({png, svg, background, expected}) => {
+          const svgDocument = new DOMParser().parseFromString(svg, 'image/svg+xml');
+          if (svgDocument.querySelector('parsererror,image,foreignObject,script'))
+            throw Error('SVG is invalid or contains a raster image/non-vector content');
+          const root = svgDocument.documentElement;
+          if (root.localName !== 'svg' || !root.hasAttribute('viewBox')) throw Error('Missing scalable SVG viewBox');
+          const allowed = new Set(['svg','defs','clipPath','rect','g','circle','path','text']);
+          for (const node of root.querySelectorAll('*'))
+            if (!allowed.has(node.localName)) throw Error('Unexpected SVG content: ' + node.localName);
+          const backgroundRects = [...root.children].filter(node => node.localName === 'rect');
+          if (backgroundRects.length !== Number(background) || backgroundRects.some(node => node.getAttribute('fill') !== '#ffffff'))
+            throw Error('SVG background does not follow the pure-white/transparent choice');
+          const counts = [1,2].map(grain => {
+            const group = root.querySelector(`g[data-grain="${grain}"]`);
+            if (!group) throw Error('SVG is missing an atom grain');
+            return [...group.children].filter(node => ['circle','path'].includes(node.localName)).length;
+          });
+          if (JSON.stringify(counts) !== JSON.stringify(expected.counts)) throw Error('SVG changed atom visibility');
+          const numbers = [...root.querySelectorAll('text')].map(node => node.textContent).sort();
+          if (JSON.stringify(numbers) !== JSON.stringify(expected.numbers.sort())) throw Error('SVG contains annotations or lost numbered atom glyphs');
+
+          const load = async url => { const img = new Image(); img.src = url; await img.decode(); return img; };
+          const pngImage = await load(png), width = pngImage.naturalWidth, height = pngImage.naturalHeight;
+          const raster = document.createElement('canvas');
+          raster.width = width; raster.height = height;
+          const context = raster.getContext('2d', {willReadFrequently:true});
+          context.drawImage(pngImage, 0, 0);
+          const pixels = context.getImageData(0, 0, width, height).data;
+          const url = URL.createObjectURL(new Blob([svg], {type:'image/svg+xml'}));
+          let svgPixels;
+          try {
+            const svgImage = await load(url);
+            context.clearRect(0, 0, width, height); context.drawImage(svgImage, 0, 0, width, height);
+            svgPixels = context.getImageData(0, 0, width, height).data;
+          } finally { URL.revokeObjectURL(url); }
+          const sx = width / expected.cssWidth, sy = height / expected.cssHeight;
+          const isBackground = (data, index) => background
+            ? data[index] === 255 && data[index+1] === 255 && data[index+2] === 255 && data[index+3] === 255
+            : data[index+3] === 0;
+          let active = 0, differing = 0, absolute = 0, smoothedDiffering = 0, smoothedAbsolute = 0;
+          for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+            const at = (y * width + x) * 4, r = expected.rect;
+            // The whole outer margin must contain no grid, axes, legend,
+            // boundary handles, reference inset or other annotations.
+            if (x < (r.left-2)*sx || x > (r.left+r.width+2)*sx ||
+                y < (r.top-2)*sy || y > (r.top+r.height+2)*sy)
+              if (!isBackground(pixels, at) || !isBackground(svgPixels, at))
+                throw Error(`Clean export painted its margin at ${x},${y}`);
+            if (background && (pixels[at+3] !== 255 || svgPixels[at+3] !== 255))
+              throw Error('White export contains transparent pixels');
+            if (isBackground(pixels, at) && isBackground(svgPixels, at)) continue;
+            active++;
+            // Compare premultiplied channels: RGB under alpha zero is not
+            // visible and can legally differ between the image encoders.
+            let maximum = Math.abs(pixels[at+3] - svgPixels[at+3]);
+            absolute += maximum;
+            for (let channel = 0; channel < 3; channel++) {
+              const difference = Math.abs(pixels[at+channel] * pixels[at+3] / 255 - svgPixels[at+channel] * svgPixels[at+3] / 255);
+              maximum = Math.max(maximum, difference); absolute += difference;
+            }
+            if (maximum > 40) differing++;
+            // Chromium antialiases SVG circles differently from Canvas arcs.
+            // Average a 3x3 neighborhood to compare the geometry and color,
+            // without treating subpixel stroke coverage as a displaced atom.
+            // A real one-pixel displacement still fails this comparison.
+            let smoothedMaximum = 0;
+            for (let channel=0; channel<4; channel++) {
+              let difference = 0;
+              for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+                const near = ((y+dy)*width+x+dx)*4;
+                difference += channel === 3 ? pixels[near+3] - svgPixels[near+3]
+                  : (pixels[near+channel]*pixels[near+3] - svgPixels[near+channel]*svgPixels[near+3])/255;
+              }
+              difference = Math.abs(difference / 9);
+              smoothedMaximum = Math.max(smoothedMaximum, difference); smoothedAbsolute += difference;
+            }
+            if (smoothedMaximum > 24) smoothedDiffering++;
+          }
+          if (active < 50) throw Error('Clean export contains no visible atom pixels');
+          if (expected.hollow) {
+            const x = Math.round(expected.hollow[0]*sx), y = Math.round(expected.hollow[1]*sy);
+            for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+              const at = ((y+dy)*width+x+dx)*4;
+              if (!isBackground(pixels, at) || !isBackground(svgPixels, at))
+                throw Error('Hollow atom center does not preserve the selected background');
+            }
+          }
+          const fraction = differing / active, mean = absolute / (4 * active);
+          const smoothedFraction = smoothedDiffering / active, smoothedMean = smoothedAbsolute / (4 * active);
+          if (smoothedFraction > .1 || smoothedMean > 7.5)
+            throw Error(`PNG/SVG rendering differs after antialias averaging: ${(smoothedFraction*100).toFixed(2)}% of atom pixels, mean error ${smoothedMean.toFixed(2)}`);
+          return {width,height,atoms:counts,background:background?'white':'transparent',
+            numberedGlyphs:numbers.length,activePixels:active,differingFraction:fraction,meanChannelError:mean,
+            smoothedDifferingFraction:smoothedFraction,smoothedMeanChannelError:smoothedMean};
+        }""", {"png": "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode("ascii"),
+                "svg": svg.read_text(encoding="utf-8"), "background": case["background"], "expected": expected})
+        reports.append({"name": case["name"], **report})
+
+    # The atoms-only background setting must not remove the ordinary plot's
+    # grid, annotations or existing opaque background.
+    page.locator("#clean-png").set_checked(False)
+    page.locator("#clean-background").set_checked(False)
+    with page.expect_download() as exported:
+        page.locator("#export-png").click()
+    png = output / "ordinary-after-transparent.png"
+    exported.value.save_as(png)
+    corner = page.evaluate("""async url => {
+      const img = new Image(); img.src = url; await img.decode();
+      const canvas = document.createElement('canvas'); canvas.width=img.width; canvas.height=img.height;
+      const context = canvas.getContext('2d'); context.drawImage(img,0,0);
+      return Array.from(context.getImageData(0,0,1,1).data);
+    }""", "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode("ascii"))
+    assert corner == [247, 249, 251, 255], ("Ordinary PNG background changed", corner)
+    viewport = page.viewport_size
+    page.locator("#clean-png").set_checked(True)
+    page.locator("#clean-background").set_checked(True)
+    page.locator("#export-controls").screenshot(path=str(output / "export-controls-desktop.png"))
+    try:
+        page.set_viewport_size({"width":390, "height":844})
+        page.locator("#export-controls").screenshot(path=str(output / "export-controls-mobile.png"))
+    finally:
+        page.set_viewport_size(viewport)
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    return reports
+
+
 def check_app(page, output, fixture):
     page.wait_for_function("typeof pattern !== 'undefined' && pattern && !document.getElementById('tutorial-start').disabled")
     page.evaluate("async () => { if (typeof waitForCurrentRender === 'function') await waitForCurrentRender(); draw(); }")
@@ -528,8 +720,9 @@ def check_app(page, output, fixture):
     }""")
     drag = check_angle_drag(page, output)
     interactions = check_plot_interactions(page, output)
+    exports = check_clean_exports(page, output)
     return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu, "angleDrag": drag,
-            "plotInteractions": interactions}
+            "plotInteractions": interactions, "cleanExports": exports}
 
 
 def main():
@@ -586,7 +779,7 @@ def main():
             assert not errors, errors
             report["runtime"] = base
             (output / "result.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-            print("Real Chromium/Pyodide startup, Native/WASM scientific edge cases, cancellation, session import, PNG, pointer interactions and twelve GPU markers passed.")
+            print("Real Chromium/Pyodide startup, Native/WASM scientific edge cases, cancellation, session import, PNG/SVG background and raster comparisons, pointer interactions and twelve GPU markers passed.")
         except Exception:
             page.screenshot(path=str(output / "failure.png"), full_page=True)
             (output / "failure.txt").write_text(page.locator("#status").inner_text() + "\n" + "\n".join(errors + console), encoding="utf-8")

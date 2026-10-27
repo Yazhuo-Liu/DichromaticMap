@@ -2514,9 +2514,25 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         if filename:
             try:
-                self.plot.save(Path(filename), clean=clean)
+                self.plot.save(
+                    Path(filename), clean=clean,
+                    transparent=not self.controls.export_background_check.isChecked(),
+                )
             except Exception as error:
                 QtWidgets.QMessageBox.warning(self, "PNG export failed", str(error))
+
+    def _choose_svg_export_path(self) -> None:
+        filename, _filter = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export atoms as vectors", "dichromatic_atoms.svg", "SVG image (*.svg)",
+        )
+        if filename:
+            try:
+                self.plot.save_svg(
+                    Path(filename),
+                    transparent=not self.controls.export_background_check.isChecked(),
+                )
+            except Exception as error:
+                QtWidgets.QMessageBox.warning(self, "SVG export failed", str(error))
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
         if self._show_close_citation:

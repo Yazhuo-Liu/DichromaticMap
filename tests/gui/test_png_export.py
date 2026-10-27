@@ -181,7 +181,7 @@ def test_clean_png_omits_overlays_axes_grid_and_preserves_live_plot(gui, tmp_pat
     blank = tmp_path / "no-atoms.png"
     plot.save(blank, clean=True)
     blank_pixels = image_array(blank)
-    background = np.array(plot.plot_widget.backgroundBrush().color().getRgb())
+    background = np.array([255, 255, 255, 255])
     assert np.all(blank_pixels == background)
     assert_plot_unchanged(window, hidden_snapshot)
 
@@ -234,7 +234,7 @@ def test_clean_png_keeps_atom_positions_after_rotation_and_pan(gui, tmp_path):
     output = tmp_path / "positions.png"
     plot.save(output, clean=True)
     pixels = image_array(output)
-    background = np.array(plot.plot_widget.backgroundBrush().color().getRgb()[:3])
+    background = np.array([255, 255, 255])
     # A hidden export ViewBox must update its coordinate transform before
     # painting; otherwise every symbol collapses at the top-left corner.
     for x, y in points:
@@ -242,6 +242,25 @@ def test_clean_png_keeps_atom_positions_after_rotation_and_pan(gui, tmp_path):
         row = round((ymax - y) / (ymax - ymin) * pixels.shape[0])
         patch = pixels[row - 2:row + 3, column - 2:column + 3, :3].astype(int)
         assert np.any(np.max(np.abs(patch - background), axis=2) > 20), (x, y, column, row)
+
+
+@pytest.mark.parametrize("transparent", [False, True])
+def test_clean_png_white_or_transparent_background(gui, tmp_path, transparent):
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    gui.select_layer(window, 0, grains=(0,))
+    gui.settle(window)
+    snapshot = plot_snapshot(window)
+    output = tmp_path / "background.png"
+    window.plot.save(output, clean=True, transparent=transparent)
+    pixels = image_array(output)
+    if transparent:
+        assert np.count_nonzero(pixels[:, :, 3] == 0) > pixels.shape[0] * pixels.shape[1] * 0.5
+        assert np.count_nonzero((pixels[:, :, 3] > 0) & (pixels[:, :, 3] < 255)) > 100
+        assert np.count_nonzero(pixels[:, :, 3] > 0) > 100
+    else:
+        assert np.all(pixels[:, :, 3] == 255)
+        assert np.count_nonzero(np.all(pixels == [255, 255, 255, 255], axis=2)) > 100
+    assert_plot_unchanged(window, snapshot)
 
 
 def test_clean_png_dialog_and_cancel(gui, monkeypatch, tmp_path):
@@ -257,7 +276,12 @@ def test_clean_png_dialog_and_cancel(gui, monkeypatch, tmp_path):
     window.controls.clean_export_check.setChecked(True)
     window.controls.export_button.click()
     assert calls[0][1:] == ("Export atoms only", "dichromatic_atoms.png", "PNG image (*.png)")
-    assert image_array(output).shape[1] == 1800
+    pixels = image_array(output)
+    assert pixels.shape[1] == 1800
+    assert np.all(pixels[:, :, 3] == 255)
+    window.controls.export_background_check.setChecked(False)
+    window.controls.export_button.click()
+    assert np.count_nonzero(image_array(output)[:, :, 3] == 0) > 100
     monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", lambda *args: ("", ""))
     monkeypatch.setattr(window.plot, "save", lambda *args, **kwargs: pytest.fail("Cancelled export must not save"))
     window.controls.export_button.click()

@@ -14,7 +14,7 @@ If you find DichromaticMap helpful, please cite:
 DichromaticMap includes a numerical Python library and an interactive viewer for
 SC/FCC/BCC tilt grain-boundary dichromatic patterns. It displays two grains by
 axial layer and supports exact coincidence sites, local near-pair matching,
-vector measurements, atom counting, uniform-strain common cells, PNG export and restorable sessions with numerical tables.
+vector measurements, atom counting, uniform-strain common cells, PNG/SVG export and restorable sessions with numerical tables.
 
 GUI guide: [Overview](#gui-overview) · [First session](#gui-quick-start) ·
 [Crystal and orientation](#gui-orientation) · [Layers](#gui-layers) ·
@@ -602,25 +602,35 @@ transformation, not a stress-free configuration or an energy relaxation.
    `Fit` action to arrange the image.
 2. Scroll to the bottom of `Controls`. Leave `Clean PNG (atoms only)` unchecked
    for the annotated plot, or check it for just the visible G1/G2 atom symbols.
-   Then click `Export PNG…`.
-3. Choose a folder and a `.png` filename, then save. Normal export opens
+3. For atom-only exports, leave `White background (atoms only)` checked for
+   pure white (`#ffffff`), or uncheck it for a transparent background. Transparent
+   PNGs retain alpha transparency in empty areas and inside hollow symbols.
+4. Click `Export PNG…`, choose a folder and a `.png` filename, then save. Normal
+   export opens
    `Export dichromatic pattern` with the default name `dichromatic_pattern.png`;
    clean export opens `Export atoms only` with `dichromatic_atoms.png`.
    Cancel closes the dialog without saving.
+5. Click `Export SVG…` to save the visible atoms as vector shapes, using the
+   same background choice. SVG always exports atoms only, regardless of the
+   `Clean PNG` checkbox; its shapes remain sharp when enlarged and can be edited
+   in a vector graphics editor.
 
-The PNG is 1800 pixels wide. Normal export contains the plot, title, axes, legend
+The desktop PNG is 1800 pixels wide. Normal export contains the plot, title, axes, legend
 and currently displayed annotations, including display rotation and enabled grain
 reference axes. Controls and their detailed result boxes are outside the exported
 plot; copy their text separately when needed.
 
 `Clean PNG (atoms only)` is off by default. When enabled, the image preserves the
 current view, display rotation, grain/layer and GB-side filtering, atom colors,
-symbols and sizes, and the plot background. It omits floating legends, reference
-axes and readouts, the title, coordinate axes, grid and border, CSL highlights,
+symbols and sizes. It omits floating legends, reference axes and readouts,
+the title, coordinate axes, grid and border, CSL highlights,
 local-pair markers and links, cell outlines, GB lines and vector annotations.
 Exporting leaves the live view, selections and numerical state unchanged. This
-checkbox only affects PNG export and is not stored in `.dmap` sessions.
-PNG is an image export, not a saved interactive session.
+checkbox only affects PNG export. The background option defaults to white and
+applies to clean PNG and SVG; ordinary annotated PNG retains its plot background.
+These export preferences are not stored in `.dmap` sessions. The online app
+offers the same options; its PNG dimensions follow the browser canvas resolution.
+PNG and SVG are figure exports, not saved interactive sessions.
 
 <a id="gui-session"></a>
 
@@ -628,7 +638,7 @@ PNG is an image export, not a saved interactive session.
 
 1. Finish the desired selections and strain application. Wait for active calculations
    if you want to save their completed results.
-2. At the bottom of `Controls`, click `Save session…`, beside `Export PNG…`.
+2. At the bottom of `Controls`, click `Save session…`, below the export buttons.
 3. In the file dialog, choose a folder and filename ending in `.dmap`, then save.
    This writes one file; cancelling leaves the current session unchanged.
 4. To continue later, open `ORIENTATION` and click `Import session…`. Choose the
