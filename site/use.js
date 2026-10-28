@@ -53,6 +53,13 @@ const activePointers = new Map();
 let pinchStart;
 let gestureWasPinch = false;
 let gestureNeedsRender = false;
+// A rectangle edits one fixed source selection, never atoms entering its
+// destination. These UI snapshots do not change the portable delta history.
+let translationSelection = null;
+let translationPreview = null;
+let translationPointer;
+let translationVector = null;
+let translationUndo = [[], []];
 
 if (window.matchMedia("(max-width: 820px)").matches) {
   state.referenceAxes = false;
@@ -552,7 +559,7 @@ function marker(context, x, y, radius, symbol, stroke, fill, lineWidth = 1.25) {
   }
 }
 function drawGrid(context, r) {
-  context.fillStyle = "#f7f9fb";
+  context.fillStyle = "#ffffff";
   context.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
   context.save();
   context.beginPath(); context.rect(r.left, r.top, r.width, r.height); context.clip();
@@ -734,8 +741,8 @@ function draw() {
     });
   }
   if (state.boundary.length) drawBoundary(ctx);
-  if (state.translationCorners.length === 2) {
-    const [xmin, xmax, ymin, ymax] = translationBounds();
+  if (state.translationCorners.length === 2 || (state.translationCorners.length === 1 && translationPreview)) {
+    const [xmin, xmax, ymin, ymax] = translationBounds(translationPreview ? [state.translationCorners[0], translationPreview] : state.translationCorners);
     drawPolygon(ctx, [[xmin, ymin], [xmax, ymin], [xmax, ymax], [xmin, ymax]], "#b7791f", [5, 3], "#fbbf241f");
   } else if (state.translationCorners.length === 1) {
     marker(ctx, ...screen(state.translationCorners[0]), 6, "+", "#b7791f", null, 2);
@@ -980,6 +987,7 @@ function resetSelections() {
   state.nearCell = null; state.nearSolutions = [];
   state.deformations = identity(); state.translations = [[0, 0], [0, 0]];
   state.grainDisplacements = [[], []]; state.translationCorners = [];
+  resetTranslationEditor();
   state.mode = "idle"; $("manual-info").dataset.count = "";
   $("vector-annotation").hidden = true; $("strain-info").classList.add("hidden");
 }
@@ -1037,16 +1045,19 @@ function finishAngleDrag(event) {
 function setMode(mode) {
   if (mode === "cell" && state.manualFit) return setStatus("Restore the local structure before editing cell vertices.");
   invalidateAnalyses();
+  const previous = state.mode;
   state.mode = state.mode === mode ? "idle" : mode;
   if (state.mode === "boundary") state.boundary = [];
   if (state.mode === "vector") { state.atoms = []; $("vector-annotation").hidden = true; }
   if (state.mode === "cell") { state.manual = []; $("manual-info").dataset.count = ""; }
-  if (state.mode === "translate") state.translationCorners = [];
+  if (state.mode === "translate") {
+    clearTranslationSelection(false); state.mode = "translate"; setTranslationInputs([0, 0]);
+  } else if (previous === "translate") clearTranslationSelection(false);
   for (const [id, value] of [["pick-gb","boundary"],["pick-vector","vector"],["pick-cell","cell"],["pick-translation","translate"]]) {
     $(id).classList.toggle("selected", state.mode === value);
   }
   draw(); updateSummary();
-  setStatus(({idle:"Ready · choose an interaction tool",boundary:"Pick B1, then B2 on visible atoms",vector:"Pick P1, then P2 on visible atoms",cell:"Pick four same-layer CSL or near-pair markers",translate:"Pick two opposite rectangle corners; all axial layers will move"})[state.mode]);
+  setStatus(({idle:"Ready · choose an interaction tool",boundary:"Pick B1, then B2 on visible atoms",vector:"Pick P1, then P2 on visible atoms",cell:"Pick four same-layer CSL or near-pair markers",translate:"Drag a rectangle or click two opposite corners · Esc cancels · all axial layers will move"})[state.mode]);
 }
 function hasGrainDisplacements() {
   return state.grainDisplacements.some(operations => operations.length);
@@ -1057,24 +1068,103 @@ function uniformStrainBlocked() {
   return state.deformations.some(f => f.some((row, i) => row.some((value, j) => Math.abs(value - (i === j ? 1 : 0)) > 1e-12))) ||
     state.translations.some(delta => delta.some(value => Math.abs(value) > 1e-12));
 }
-function translationBounds() {
-  if (state.translationCorners.length !== 2) return null;
-  const [a, b] = state.translationCorners;
+function translationBounds(corners = state.translationCorners) {
+  if (corners.length !== 2) return null;
+  const [a, b] = corners;
   return [Math.min(a[0], b[0]), Math.max(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[1], b[1])];
 }
+function translationGrain() { return Number($("translation-grain").value) === 1 ? 1 : 0; }
+function wholeGrainOffset(operations) {
+  // Compensated sums retain small shifts in imported large-coordinate histories.
+  return [0, 1].map(axis => {
+    let sum = 0, correction = 0;
+    for (const operation of operations) {
+      if (operation.bounds !== null) continue;
+      const value = operation.delta[axis], next = sum + value;
+      correction += Math.abs(sum) >= Math.abs(value) ? (sum - next) + value : (value - next) + sum;
+      sum = next;
+    }
+    return sum + correction;
+  });
+}
+function setTranslationInputs(target) {
+  $("translation-dx").value = String(target[0]); $("translation-dy").value = String(target[1]);
+  if (translationVector) {
+    const length = target[0] * translationVector[0] + target[1] * translationVector[1];
+    if (Math.hypot(target[0] - length * translationVector[0], target[1] - length * translationVector[1]) > 1e-10 * Math.max(1, Math.hypot(...target)))
+      translationVector = null;
+    else $("translation-vector-length").value = String(length);
+  }
+  $("translation-vector-length").disabled = !translationVector;
+}
+function clearTranslationSelection(refresh = true) {
+  state.translationCorners = []; translationSelection = null; translationPreview = null;
+  if (translationPointer) pointerStart = undefined;
+  translationPointer = undefined;
+  if (state.mode === "translate") state.mode = "idle";
+  if (refresh) {
+    setTranslationInputs(wholeGrainOffset(state.grainDisplacements[translationGrain()]));
+    draw(); updateTranslationControls();
+  }
+}
+function resetTranslationEditor() {
+  clearTranslationSelection(false); translationUndo = [[], []]; translationVector = null;
+  $("translation-vector-length").value = "0";
+  setTranslationInputs(wholeGrainOffset(state.grainDisplacements[translationGrain()]));
+}
+function completeTranslationSelection(a, b) {
+  const bounds = translationBounds([a, b]);
+  if (!bounds.every(value => Number.isFinite(value) && Math.abs(value) <= 1e8) ||
+      bounds[1] - bounds[0] < 1e-8 || bounds[3] - bounds[2] < 1e-8) {
+    setStatus("Choose opposite corners with nonzero width and height within ±1e8 a₀."); return false;
+  }
+  const grain = translationGrain();
+  translationSelection = {grain, baseHistory:clone(state.grainDisplacements[grain]), bounds, target:[0, 0]};
+  state.translationCorners = [a, b]; translationPreview = null; state.mode = "idle";
+  setTranslationInputs([0, 0]); draw(); updateSummary();
+  setStatus("Rectangle selected. Set an absolute shift or use a measured vector, then Set rectangle shift.");
+  return true;
+}
+function useTranslationVector() {
+  if (state.atoms.length !== 2 || !currentPattern()) return setStatus("Measure a vector with P1 and P2 first.");
+  const delta = state.atoms[1].position.map((value, axis) => value - state.atoms[0].position[axis]);
+  const length = Math.hypot(...delta);
+  if (!Number.isFinite(length) || length <= 0 || length > 1e8)
+    return setStatus("The measured vector needs a nonzero in-plane length of at most 1e8 a₀.");
+  translationVector = delta.map(value => value / length);
+  setTranslationInputs(delta); $("translation-vector-length").value = String(length);
+  setStatus("Copied P1 → P2 in the physical plot plane. Adjust its length, then set the shift.");
+}
+function updateTranslationVectorLength() {
+  if (!translationVector) return;
+  const raw = $("translation-vector-length").value;
+  const length = raw.trim() === "" ? NaN : Number(raw);
+  if (!Number.isFinite(length) || Math.abs(length) > 1e8) {
+    setStatus("Vector length must be finite and within ±1e8 a₀. Negative values reverse the direction.");
+    // Invalid input must never silently apply the previously valid vector.
+    $("translation-dx").value = ""; $("translation-dy").value = ""; return;
+  }
+  setTranslationInputs(translationVector.map(value => value * length));
+}
 function updateTranslationControls() {
-  const grain = Number($("translation-grain").value) === 1 ? 1 : 0;
+  const grain = translationGrain();
   const counts = state.grainDisplacements.map(operations => operations.length);
   $("undo-translation").textContent = `Undo G${grain + 1} move`;
-  $("undo-translation").disabled = !counts[grain];
+  $("undo-translation").disabled = !counts[grain] && !translationUndo[grain].length;
   $("reset-translations").disabled = !hasGrainDisplacements();
-  $("translate-whole").disabled = counts[grain] >= 64 || angleSliderDragging;
-  $("translate-region").disabled = !translationBounds() || counts[grain] >= 64 || angleSliderDragging;
+  $("translate-whole").disabled = angleSliderDragging;
+  $("translate-region").disabled = !translationBounds() || state.mode === "translate" || angleSliderDragging;
+  $("clear-translation").disabled = !state.translationCorners.length && state.mode !== "translate";
+  $("translation-use-vector").disabled = state.atoms.length !== 2 || !currentPattern();
+  $("translation-vector-length").disabled = !translationVector;
   $("pick-translation").classList.toggle("selected", state.mode === "translate");
+  canvas.style.cursor = state.mode === "translate" ? "crosshair" : "";
   const bounds = translationBounds();
   const lines = [`G1 moves: ${counts[0]} · G2 moves: ${counts[1]}`];
+  lines.push(`G${grain + 1} whole-grain shift: (${wholeGrainOffset(state.grainDisplacements[grain]).join(", ")}) a₀`);
   if (bounds) lines.push(`Rectangle: x ${bounds[0].toFixed(4)}…${bounds[1].toFixed(4)}, y ${bounds[2].toFixed(4)}…${bounds[3].toFixed(4)} a₀`);
-  else if (state.mode === "translate") lines.push(state.translationCorners.length ? "Pick the opposite corner." : "Pick the first corner.");
+  if (translationSelection) lines.push(`Rectangle shift from its initial position: (${translationSelection.target.join(", ")}) a₀`);
+  else if (state.mode === "translate") lines.push(state.translationCorners.length ? "Move to preview, then click the opposite corner. Esc cancels." : "Drag a rectangle or click its first corner. Esc cancels.");
   if (hasGrainDisplacements()) lines.push("Reset moves to use uniform-strain fitting or periodic cell search.");
   else if (uniformStrainBlocked()) lines.push("A prior strained/translated base remains. Change the angle or lattice to reset it before periodic strain analysis.");
   $("translation-info").textContent = lines.join("\n");
@@ -1085,7 +1175,7 @@ function invalidateMovedGeometry() {
   state.atoms = []; state.manual = [];
   state.manualLocalCutoff = null; state.manualFit = null; state.manualOriginal = null;
   state.nearCell = null; state.nearSolutions = [];
-  state.translationCorners = []; state.mode = "idle";
+  translationPreview = null; translationPointer = undefined; state.mode = "idle";
   // Manual moves compose after the current uniform F/t. Preserve that
   // physical baseline even after discarding its old fitted-cell metadata.
   if (state.nearMethod === "strain") {
@@ -1101,27 +1191,61 @@ function invalidateMovedGeometry() {
 function translateGrain(local = false) {
   if (angleSliderDragging) return setStatus("Release the angle slider before moving atoms.");
   const grain = Number($("translation-grain").value);
-  const delta = [$("translation-dx").value, $("translation-dy").value].map(value => value.trim() === "" ? NaN : Number(value));
-  if (![0, 1].includes(grain) || !delta.every(value => Number.isFinite(value) && Math.abs(value) <= 1e8))
-    return setStatus("Choose G1 or G2 and finite Δx / Δy values between −1e8 and 1e8 a₀.");
-  if (delta.every(value => value === 0)) return setStatus("Enter a nonzero translation.");
-  if (state.grainDisplacements[grain].length >= 64) return setStatus("A grain can have at most 64 moves. Undo or reset moves first.");
-  const bounds = local ? translationBounds() : null;
+  const target = [$("translation-dx").value, $("translation-dy").value].map(value => value.trim() === "" ? NaN : Number(value));
+  if (![0, 1].includes(grain) || !target.every(value => Number.isFinite(value) && Math.abs(value) <= 1e8))
+    return setStatus("Choose G1 or G2 and finite Shift x / y values between −1e8 and 1e8 a₀.");
+  const bounds = local ? translationSelection?.bounds || translationBounds() : null;
   if (local && (!bounds || !(bounds[0] < bounds[1] && bounds[2] < bounds[3]) || !bounds.every(value => Number.isFinite(value) && Math.abs(value) <= 1e8)))
     return setStatus("Select a rectangle with nonzero width and height within ±1e8 a₀.");
-  state.grainDisplacements[grain].push({delta, bounds});
+  if (local && translationSelection && translationSelection.grain !== grain)
+    return setStatus("Select a new rectangle for this grain.");
+  const current = state.grainDisplacements[grain];
+  const selection = local ? translationSelection || {grain, baseHistory:clone(current), bounds, target:[0, 0]} : null;
+  const delta = local ? target : target.map((value, axis) => value - wholeGrainOffset(current)[axis]);
+  if (delta.some(value => !Number.isFinite(value) || Math.abs(value) > 1e8))
+    return setStatus("This change exceeds ±1e8 a₀ in one move. Use an intermediate shift first.");
+  const next = clone(local ? selection.baseHistory : current);
+  if (delta.some(value => value !== 0)) next.push({delta, bounds});
+  if (next.length > 64) return setStatus("A grain can have at most 64 moves. Undo or reset moves first.");
+  if (JSON.stringify(next) === JSON.stringify(current)) {
+    if (!local) { clearTranslationSelection(false); draw(); updateTranslationControls(); }
+    return setStatus("This absolute shift is already applied.");
+  }
+  translationUndo[grain].push({history:clone(current), selection:clone(translationSelection),
+    after:JSON.stringify(next), target:translationSelection ? [...translationSelection.target] : wholeGrainOffset(current)});
+  if (translationUndo[grain].length > 128) translationUndo[grain].shift();
+  state.grainDisplacements[grain] = next;
+  if (local) {
+    translationSelection = {...selection, target:[...target]};
+    state.translationCorners = [[bounds[0] + target[0], bounds[2] + target[1]], [bounds[1] + target[0], bounds[3] + target[1]]];
+  } else clearTranslationSelection(false);
   invalidateMovedGeometry();
-  setStatus(`G${grain + 1} ${local ? "rectangle" : "whole grain"} moved by (${delta.join(", ")}) a₀ across all axial layers`);
+  setStatus(`G${grain + 1} ${local ? "rectangle" : "whole grain"} shift set to (${target.join(", ")}) a₀ across all axial layers`);
 }
 function undoGrainTranslation() {
-  const grain = Number($("translation-grain").value) === 1 ? 1 : 0;
-  if (!state.grainDisplacements[grain].length) return;
-  state.grainDisplacements[grain].pop(); invalidateMovedGeometry();
+  const grain = translationGrain(), previous = translationUndo[grain].at(-1);
+  clearTranslationSelection(false);
+  if (previous && previous.after === JSON.stringify(state.grainDisplacements[grain])) {
+    translationUndo[grain].pop(); state.grainDisplacements[grain] = clone(previous.history);
+    translationSelection = clone(previous.selection);
+    if (translationSelection) {
+      const {bounds:b, target:t} = translationSelection;
+      state.translationCorners = [[b[0] + t[0], b[2] + t[1]], [b[1] + t[0], b[3] + t[1]]];
+    }
+    setTranslationInputs(previous.target);
+  } else {
+    translationUndo[grain] = [];
+    if (!state.grainDisplacements[grain].length) return;
+    state.grainDisplacements[grain].pop();
+    setTranslationInputs(wholeGrainOffset(state.grainDisplacements[grain]));
+  }
+  invalidateMovedGeometry();
   setStatus(`Undid the last G${grain + 1} move`);
 }
 function resetGrainTranslations() {
   if (!hasGrainDisplacements()) return;
   state.grainDisplacements = [[], []]; invalidateMovedGeometry();
+  resetTranslationEditor(); updateTranslationControls();
   setStatus("Both grains restored to their positions before manual moves");
 }
 function nearestAtom(x, y) {
@@ -1269,16 +1393,13 @@ async function selectAt(x, y) {
     if (!currentPattern()) return setStatus("Wait for the current atom positions before selecting a rectangle.");
     const r = plotRect();
     if (x < r.left || x > r.left + r.width || y < r.top || y > r.top + r.height) return;
-    state.translationCorners.push(modelFromScreen(x, y));
-    if (state.translationCorners.length === 2) {
-      const bounds = translationBounds();
-      if (bounds[1] - bounds[0] < 1e-8 || bounds[3] - bounds[2] < 1e-8) {
-        state.translationCorners.pop(); return setStatus("Choose an opposite corner with nonzero width and height.");
-      }
-      state.mode = "idle";
+    const point = modelFromScreen(x, y);
+    if (state.translationCorners.length === 1) {
+      completeTranslationSelection(state.translationCorners[0], point); return;
     }
+    state.translationCorners = [point]; translationPreview = null;
     draw(); updateSummary();
-    setStatus(state.translationCorners.length === 2 ? "Rectangle selected. Set Δx / Δy and choose Move rectangle." : "Pick the opposite rectangle corner");
+    setStatus("Move to preview the rectangle, then click the opposite corner. Esc cancels.");
     return;
   }
   if (state.mode === "cell" && state.manual.length >= 4) {
@@ -1410,6 +1531,7 @@ async function toggleSelectedStrain() {
     state.manualOriginal = null; state.manualFit = null;
     state.boundary = []; state.atoms = []; $("vector-annotation").hidden = true;
     state.deformations = identity(); state.translations = [[0, 0], [0, 0]];
+    resetTranslationEditor();
     state.nearCell = null; $("strain-info").classList.add("hidden");
     renderRequest(); await countManual(); updateSummary();
     setStatus("Original local structure restored");
@@ -1426,6 +1548,7 @@ async function toggleSelectedStrain() {
     state.boundary = []; state.atoms = []; $("vector-annotation").hidden = true;
     state.deformations = [fit.cell.f1, fit.cell.f2];
     state.translations = fit.translations;
+    resetTranslationEditor();
     state.manual = state.manual.map((v, i) => {
       const endpoints = [fit.vertices[0][i], fit.vertices[1][i]];
       return {position: endpoints[0].map((x, j) => (x + endpoints[1][j]) / 2),
@@ -1444,6 +1567,7 @@ function applyNearCell(index) {
   state.boundary = []; state.atoms = []; state.manual = [];
   state.nearCell = cell;
   state.deformations = [cell.f1, cell.f2]; state.translations = [[0, 0], [0, 0]];
+  resetTranslationEditor();
   $("near-info").textContent = cell.readout || `${cell.label}\nG1 F = ${JSON.stringify(cell.f1)}\nG2 F = ${JSON.stringify(cell.f2)}`;
   renderRequest(); updateSummary();
 }
@@ -1460,6 +1584,7 @@ function searchNear() {
   const generation = nearGeneration;
   state.nearCell = null; state.nearSolutions = [];
   state.deformations = identity(); state.translations = [[0, 0], [0, 0]];
+  resetTranslationEditor();
   state.boundary = []; state.atoms = []; state.manual = [];
   $("vector-annotation").hidden = true;
   renderRequest(); updateSummary();
@@ -1666,6 +1791,7 @@ async function importSession(file) {
     state.nearCell = raw.near_cell; state.nearSolutions = raw.near_cell ? [raw.near_cell] : [];
     state.deformations = raw.deformations; state.translations = raw.translations;
     state.grainDisplacements = clone(raw.grain_displacements || [[], []]); state.translationCorners = [];
+    resetTranslationEditor();
     state.regions = loaded.settings.region_states; state.showCell = loaded.settings.show_common_cell;
     state.center = view.center; state.scale = view.scale;
     state.width = view.width; state.height = view.height;
@@ -1848,7 +1974,7 @@ $("near-method").addEventListener("change", () => {
   $("vector-annotation").hidden = true;
   state.nearMethod = $("near-method").value;
   state.nearCell = null; state.nearSolutions = [];
-  if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; }
+  if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; resetTranslationEditor(); }
   updateSummary(); renderRequest();
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();
 });
@@ -1861,7 +1987,7 @@ $("near-toggle").addEventListener("click", () => {
     state.boundary = []; state.atoms = []; state.manual = [];
     $("vector-annotation").hidden = true;
     state.nearCell = null; state.nearSolutions = [];
-    if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; }
+    if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; resetTranslationEditor(); }
     $("near-info").textContent = uniformStrainBlocked() ? "Local matching off. Current atom positions retained." : "Off. Original unstrained lattices restored.";
   } else if (state.nearMethod === "local") {
     $("near-info").textContent = "Local same-layer mutual nearest pairs. Original atom positions retained.";
@@ -1889,10 +2015,16 @@ $("count-visible").addEventListener("change", countManual);
 $("apply-strain").addEventListener("click", toggleSelectedStrain);
 $("export-png").addEventListener("click", exportPNG);
 $("export-svg").addEventListener("click", exportSVG);
-$("translation-grain").addEventListener("change", updateTranslationControls);
+$("translation-grain").addEventListener("change", () => clearTranslationSelection());
 $("translate-whole").addEventListener("click", () => translateGrain(false));
 $("pick-translation").addEventListener("click", () => setMode("translate"));
 $("translate-region").addEventListener("click", () => translateGrain(true));
+$("clear-translation").addEventListener("click", () => clearTranslationSelection());
+$("translation-use-vector").addEventListener("click", useTranslationVector);
+$("translation-vector-length").addEventListener("input", updateTranslationVectorLength);
+for (const id of ["translation-dx", "translation-dy"]) $(id).addEventListener("input", () => {
+  translationVector = null; $("translation-vector-length").disabled = true;
+});
 $("undo-translation").addEventListener("click", undoGrainTranslation);
 $("reset-translations").addEventListener("click", resetGrainTranslations);
 $("retry-engine").addEventListener("click", retryEngine);
@@ -1909,6 +2041,10 @@ function startPan(pointerId, point) {
   dragDistance = 0;
 }
 function startPinch() {
+  if (translationPointer) {
+    state.translationCorners = []; translationPreview = null; translationPointer = undefined;
+    updateTranslationControls();
+  }
   const [a, b] = Array.from(activePointers.values());
   const midpoint = {x:(a.x + b.x) / 2, y:(a.y + b.y) / 2};
   const r = plotRect();
@@ -1939,6 +2075,17 @@ function updatePinch() {
 function finishPointer(event, cancelled = false) {
   if (!activePointers.has(event.pointerId)) return;
   const point = canvasPoint(event);
+  if (translationPointer?.pointerId === event.pointerId && activePointers.size === 1) {
+    const selection = translationPointer;
+    activePointers.delete(event.pointerId); translationPointer = undefined; pointerStart = undefined;
+    translationPreview = null;
+    if (cancelled) state.translationCorners = selection.beforeCorners;
+    else if (selection.dragged) {
+      if (!completeTranslationSelection(selection.anchor, translationModelPoint(point)))
+        state.translationCorners = selection.beforeCorners;
+    } else selectAt(point.x, point.y);
+    scheduleDraw(); updateTranslationControls(); return;
+  }
   const wasPan = pointerStart?.pointerId === event.pointerId;
   activePointers.delete(event.pointerId);
   pinchStart = undefined;
@@ -1965,15 +2112,42 @@ canvas.addEventListener("pointerdown", event => {
   if (activePointers.size === 1) {
     gestureWasPinch = false;
     gestureNeedsRender = false;
+    if (state.mode === "translate") {
+      const r = plotRect();
+      pointerStart = undefined;
+      if (!currentPattern() || point.x < r.left || point.x > r.left + r.width || point.y < r.top || point.y > r.top + r.height) return;
+      translationPointer = {pointerId:event.pointerId, start:point, beforeCorners:clone(state.translationCorners),
+        anchor:state.translationCorners[0] || translationModelPoint(point), dragged:false};
+      return;
+    }
     startPan(event.pointerId, point);
   } else {
     startPinch();
   }
 });
+function translationModelPoint(point) {
+  const r = plotRect();
+  return modelFromScreen(Math.max(r.left, Math.min(r.left + r.width, point.x)),
+    Math.max(r.top, Math.min(r.top + r.height, point.y)));
+}
 canvas.addEventListener("pointermove", event => {
-  if (!activePointers.has(event.pointerId)) return;
   const point = canvasPoint(event);
+  if (!activePointers.has(event.pointerId)) {
+    if (!activePointers.size && state.mode === "translate" && state.translationCorners.length === 1) {
+      translationPreview = translationModelPoint(point); scheduleDraw();
+    }
+    return;
+  }
   activePointers.set(event.pointerId, point);
+  if (translationPointer?.pointerId === event.pointerId) {
+    if (Math.hypot(point.x - translationPointer.start.x, point.y - translationPointer.start.y) > 3)
+      translationPointer.dragged = true;
+    if (translationPointer.dragged) {
+      state.translationCorners = [translationPointer.anchor];
+      translationPreview = translationModelPoint(point); scheduleDraw();
+    }
+    return;
+  }
   if (pinchStart && activePointers.size >= 2) {
     updatePinch();
   } else if (pointerStart?.pointerId === event.pointerId) {
@@ -1994,6 +2168,7 @@ canvas.addEventListener("lostpointercapture", event => finishPointer(event, true
 canvas.addEventListener("wheel", event => {
   if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return;
   event.preventDefault();
+  if (translationPointer) return;
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? plotRect().height : 1;
   const factor = Math.exp(event.deltaY * unit * .002);
   state.scale = Math.max(.1, Math.min(5, state.scale * factor));
@@ -2012,7 +2187,7 @@ document.addEventListener("keydown", event => {
   else if (key === "f") regionPreset([true,true,true,true]);
   else if (key === "1") regionPreset([true,false,false,true]);
   else if (key === "2") regionPreset([false,true,true,false]);
-  else if (key === "escape") { state.mode = "idle"; updateSummary(); }
+  else if (key === "escape") { clearTranslationSelection(); state.mode = "idle"; updateSummary(); }
 });
 window.addEventListener("resize", () => { if (metadata) renderRequest(); });
 

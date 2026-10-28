@@ -324,6 +324,8 @@ atom positions before picking.
 
 Expand `VIEW / PERFORMANCE` and open its third tab, `APPEARANCE`.
 
+The plot background is pure white (`#FFFFFF`); the grid keeps its existing colors.
+
 1. Click the G1 or G2 color button to open the color dialog. Choose a color and
    confirm; cancelling keeps the previous color. Each grain's atoms, reference
    arrows, manual-cell outlines, layer icons and legend update together.
@@ -556,24 +558,48 @@ The apply/restore workflow below preserves its own paired selection.
 ## Translating a grain or a local region
 
 The desktop viewer and web app both provide a `TRANSLATION` section.
-Choose **G1** or **G2** and enter **Δx / a₀** and **Δy / a₀**. These are physical
-analysis coordinates, before `Display rotation`; rotating the view does not
-rotate the displacement you entered.
+Choose **G1** or **G2** and enter **Shift x / a₀** and **Shift y / a₀**. These are
+absolute offsets in the physical analysis axes, before `Display rotation`;
+rotating the view does not rotate the displacement you entered.
 
-- Apply to the whole grain to move every atom of the chosen grain.
-- For a local move, start rectangle selection and click two opposite corners
-  in the plot. The highlighted rectangle follows the analysis x/y axes; it
-  appears rotated when the display is rotated. Apply the move to the rectangle
-  to translate only that grain's atoms inside or on its boundary.
-- Undo removes the chosen grain's last move. Reset clears the move histories
-  of both grains. Any pre-existing uniform deformation remains applied.
+- **Whole grain:** click `Set whole-grain shift` to set its offset relative to
+  its position before manual moves. Setting `(1, 0)` twice leaves the whole-grain
+  offset at `(1, 0)`, not `(2, 0)`. Setting `(0, 0)` removes this whole-grain
+  offset while preserving any local moves and pre-existing uniform deformation.
+- **Rectangle:** click `Select rectangle`, then drag across the plot or click
+  two opposite corners. A live preview shows the bounds. The rectangle follows
+  the analysis x/y axes, so it appears rotated when the view is rotated.
+  Enter an offset and click `Set rectangle shift` to move the selected grain's
+  atoms inside or on the original rectangle boundary. The box follows the move
+  and stays selected: changing the offset sets a new displacement from that
+  selection's initial position, rather than adding to the last displacement.
+  `(0, 0)` restores those atoms to their positions when the rectangle was selected.
+- **Cancel or reselect:** `Clear selection` or `Esc` removes the box without
+  undoing a shift already applied. Starting another rectangle, changing the
+  selected grain, or setting a whole-grain shift ends the current rectangle edit.
+  A new rectangle starts with zero offset and uses the atoms' current positions
+  as its baseline.
+- **Undo and reset:** Undo restores the selected grain's previous applied
+  change. Reset clears both grains' manual moves; any pre-existing uniform
+  deformation remains applied.
 
-All axial layers participate, including hidden layers. Local membership is
-evaluated at the time of each move, using positions after earlier moves.
-Changing the rectangle afterward does not change an already applied move.
-Subsequent whole-grain moves carry previously displaced atoms along with them.
+All axial layers participate, including hidden layers. Repeated adjustments
+of the active rectangle retain its original atoms, even if they now overlap
+other atoms; those other atoms are not added to the selection. Subsequent
+whole-grain shifts carry previously displaced atoms along with them.
 Panning or zooming regenerates the same displaced structure, including atoms
 that moved into the view from outside it.
+
+To define a shift using a vector, pick **P1**, then **P2** with `Measure vector`,
+and click `Use measured vector` in `TRANSLATION`. This copies the direction
+P1 → P2 and its **in-plane** length into the shift controls. Edit
+`Vector length / a₀` to scale that direction; a negative length reverses it.
+Then click `Set rectangle shift` or `Set whole-grain shift` to apply the result.
+The direction uses physical x/y coordinates, independent of display rotation;
+the P2 axial periodic image affects the out-of-plane component only and does
+not change this shift. A vector with zero in-plane length cannot define a
+direction. The copied direction remains available after a move clears the
+measurement points; editing x/y directly switches back to coordinate input.
 
 Moves update coincidence matching, vector measurements, cell counts and
 PNG/SVG exports. Existing atom/cell selections and fitted-cell results are
@@ -584,9 +610,13 @@ resetting the moves. If a prior uniform deformation remains after reset,
 change the reference angle or lattice to restore the original base before
 fitting again. A local displacement is not a uniform strain or atomic
 relaxation. Changing the lattice, tilt axis or reference angle clears the moves.
-`Save session…` records their order and regions; an unfinished rectangle
-selection is not saved. In `strain.csv`, `displacement_1`, `displacement_2`, …
-record each grain's shifts and, for local moves, the rectangle bounds.
+`Save session…` records the applied moves and regions, and older sessions retain
+their original geometry. The active rectangle edit and copied vector direction
+are not saved; after importing, select a new rectangle to start a new edit.
+In `strain.csv`, `displacement_1`, `displacement_2`, … record the ordered
+incremental operations that reproduce each grain's final positions, including
+rectangle bounds for local moves. These entries need not equal the absolute
+offsets displayed by the shift controls.
 
 <a id="gui-selected-strain"></a>
 

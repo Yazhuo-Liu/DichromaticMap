@@ -6,6 +6,7 @@ window attributes below are properties onto those owners for API compatibility.
 
 from __future__ import annotations
 from concurrent.futures.process import BrokenProcessPool
+from copy import deepcopy
 import html
 import os
 from pathlib import Path
@@ -36,7 +37,10 @@ from ..crystal import (
     format_direction_components,
 )
 from ..cells import validate_cell_vertices, selected_region_mask
-from ..displacements import MAX_DISPLACEMENT_OPERATIONS, normalize_grain_displacements
+from ..displacements import (
+    MAX_DISPLACEMENT_OPERATIONS, normalize_grain_displacements,
+    whole_grain_displacement, set_whole_grain_displacement, set_region_displacement,
+)
 from ..matching import exact_csl_cell, LocalPairs, COINCIDENCE_TOLERANCE_FACTOR
 from ..state import (
     PatternParameters,
@@ -286,6 +290,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.session = SessionController(self)
         self._pending_display_rotation = None
         self._translation_corners = []
+        self._translation_preview = None
+        self._translation_vector_direction = None
+        self._translation_selection = None
+        self._translation_undo = [[], []]
         available_cpus = max(1, os.cpu_count() or 1)
         automatic_workers = min(4, available_cpus)
         self.compute.worker_count = int(worker_count or automatic_workers)
@@ -352,7 +360,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             ("F", lambda: self._set_region_states((True, True, True, True))),
             ("1", lambda: self._set_region_states((True, False, False, True))),
             ("2", lambda: self._set_region_states((False, True, True, False))),
-            ("Escape", lambda: self._set_mode("idle")),
+            ("Escape", self._cancel_interaction),
         )
         self.shortcuts: list[QtGui.QShortcut] = []
         for key, callback in shortcuts:
@@ -428,10 +436,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         controls = self.controls
         grain = controls.translation_grain_combo.currentData()
         histories = self.state.grain_displacements
-        available = len(histories[grain]) < MAX_DISPLACEMENT_OPERATIONS
-        controls.translation_whole_button.setEnabled(available)
-        controls.translation_region_button.setEnabled(available and len(self._translation_corners) == 2)
-        controls.translation_undo_button.setEnabled(bool(histories[grain]))
+        # Validation reports the operation budget. Even a full history can
+        # accept an unchanged target or remove the active region's offset.
+        controls.translation_whole_button.setEnabled(True)
+        controls.translation_region_button.setEnabled(self._translation_selection is not None)
+        controls.translation_clear_button.setEnabled(bool(self._translation_corners))
+        controls.translation_vector_button.setEnabled(len(self.state.selected_atoms) == 2)
+        controls.translation_undo_button.setEnabled(bool(histories[grain] or self._translation_undo[grain]))
         controls.translation_reset_button.setEnabled(any(histories))
         counts = f"G1: {len(histories[0])} moves · G2: {len(histories[1])} moves"
         if message is None and len(self._translation_corners) == 2:
@@ -439,21 +450,107 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             message = f"Rectangle x=[{low[0]:.4g}, {high[0]:.4g}], y=[{low[1]:.4g}, {high[1]:.4g}] a₀."
         controls.translation_status.setText(counts + ("\n" + message if message else ""))
 
-    def _clear_translation_selection(self):
+    def _clear_translation_selection(self, *, sync_offset=True):
         self._translation_corners = []
+        self._translation_preview = None
+        self._translation_selection = None
+        if sync_offset and hasattr(self.controls, "translation_dx_spin"):
+            grain = self.controls.translation_grain_combo.currentData()
+            self._set_translation_offset(whole_grain_displacement(self.state.grain_displacements[grain]), keep_direction=True)
         self.plot._draw_translation_region()
         self._sync_translation_controls()
 
+    def _cancel_interaction(self):
+        self._clear_translation_selection()
+        self._set_mode("idle")
+
+    def _on_translation_components_changed(self, *_args):
+        self._translation_vector_direction = None
+        self.controls.translation_vector_length_spin.setEnabled(False)
+
+    def _set_translation_offset(self, offset, *, keep_direction=False):
+        if keep_direction and self._translation_vector_direction is not None:
+            direction = self._translation_vector_direction
+            keep_direction = np.linalg.norm(np.asarray(offset) - direction * np.dot(offset, direction)) <= 1e-8
+        if not keep_direction:
+            self._on_translation_components_changed()
+        for spin, value in zip((self.controls.translation_dx_spin, self.controls.translation_dy_spin), offset):
+            with QtCore.QSignalBlocker(spin):
+                spin.setValue(float(value))
+        if keep_direction and self._translation_vector_direction is not None:
+            with QtCore.QSignalBlocker(self.controls.translation_vector_length_spin):
+                self.controls.translation_vector_length_spin.setValue(float(
+                    np.dot(offset, self._translation_vector_direction)
+                ))
+
+    def _restore_translation_selection(self, selection):
+        self._translation_selection = deepcopy(selection)
+        if selection is None:
+            self._translation_corners = []
+            grain = self.controls.translation_grain_combo.currentData()
+            target = whole_grain_displacement(self.state.grain_displacements[grain])
+        else:
+            xmin, xmax, ymin, ymax = selection["bounds"]
+            offset = np.asarray(selection["target"])
+            self._translation_corners = [np.array([xmin, ymin]) + offset, np.array([xmax, ymax]) + offset]
+            target = selection["target"]
+        self._set_translation_offset(target, keep_direction=True)
+        self._translation_preview = None
+        self.plot._draw_translation_region()
+
+    def _use_translation_vector(self):
+        if len(self.state.selected_atoms) != 2:
+            self._sync_translation_controls("Measure P1 and P2 first using Measure vector (V).")
+            return
+        first, second = self.state.selected_atoms
+        displacement = np.asarray(second.position - first.position, dtype=float)
+        length = float(np.hypot(*displacement))
+        if not np.isfinite(length) or length <= 1e-12:
+            self._sync_translation_controls("The measured vector needs a nonzero planar length.")
+            return
+        if length > self.controls.translation_vector_length_spin.maximum():
+            self._sync_translation_controls("The measured vector exceeds the supported shift length.")
+            return
+        self._translation_vector_direction = displacement / length
+        with QtCore.QSignalBlocker(self.controls.translation_vector_length_spin):
+            self.controls.translation_vector_length_spin.setValue(length)
+        self.controls.translation_vector_length_spin.setEnabled(True)
+        self._on_translation_vector_length(self.controls.translation_vector_length_spin.value())
+        self._sync_translation_controls("Copied P1 → P2 in model axes. Adjust its planar length, then set the offset.")
+
+    def _on_translation_vector_length(self, length):
+        if self._translation_vector_direction is None:
+            return
+        offset = self._translation_vector_direction * length
+        for spin, value in zip((self.controls.translation_dx_spin, self.controls.translation_dy_spin), offset):
+            with QtCore.QSignalBlocker(spin):
+                spin.setValue(float(value))
+
     def _on_translation_grain_changed(self, *_args):
         self._clear_translation_selection()
+        grain = self.controls.translation_grain_combo.currentData()
+        self._set_translation_offset(whole_grain_displacement(self.state.grain_displacements[grain]))
         if self.state.interaction_mode == "translate":
             self._set_mode("idle")
 
     def _start_translation_selection(self, *_args):
         self._flush_display_rotation()
-        self._clear_translation_selection()
+        self._clear_translation_selection(sync_offset=False)
         self._set_mode("translate")
-        self._sync_translation_controls("Click two opposite rectangle corners; all axial layers will move.")
+        self._sync_translation_controls("Drag a rectangle, or click two opposite corners. Esc cancels; all axial layers are included.")
+
+    def _on_translation_hover(self, point):
+        if self.state.interaction_mode != "translate" or len(self._translation_corners) != 1:
+            return
+        if not self.plot.view_box.sceneBoundingRect().contains(point):
+            return
+        position = self.plot.view_box.mapSceneToView(point)
+        self._preview_translation_corner(self.plot._from_view(np.array([position.x(), position.y()])))
+
+    def _preview_translation_corner(self, position):
+        if len(self._translation_corners) == 1:
+            self._translation_preview = np.asarray(position, dtype=float).copy()
+            self.plot._draw_translation_region()
 
     def _pick_translation_corner(self, position):
         if len(self._translation_corners) == 1:
@@ -461,8 +558,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 self._sync_translation_controls("Choose an opposite corner with nonzero width and height.")
                 return
         self._translation_corners.append(np.asarray(position, dtype=float).copy())
+        self._translation_preview = None
         self.plot._draw_translation_region()
         if len(self._translation_corners) == 2:
+            low, high = np.minimum(*self._translation_corners), np.maximum(*self._translation_corners)
+            grain = self.controls.translation_grain_combo.currentData()
+            self._translation_selection = {
+                "grain": grain,
+                "base_history": deepcopy(self.state.grain_displacements[grain]),
+                "bounds": [float(low[0]), float(high[0]), float(low[1]), float(high[1])],
+                "target": [0.0, 0.0],
+            }
+            self._set_translation_offset([0.0, 0.0], keep_direction=True)
             self._set_mode("idle")
         self._sync_translation_controls(
             "First corner selected; click the opposite corner." if len(self._translation_corners) == 1 else None
@@ -471,35 +578,56 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _apply_translation(self, local=False):
         try:
             self.plot._await_current_scene()
-            if local and len(self._translation_corners) != 2:
+            if local and self._translation_selection is None:
                 raise ValueError("Select two opposite rectangle corners first.")
-            delta = [self.controls.translation_dx_spin.value(), self.controls.translation_dy_spin.value()]
-            if not any(delta):
-                raise ValueError("Enter a nonzero Δx or Δy before moving atoms.")
-            bounds = None
-            if local:
-                low, high = np.minimum(*self._translation_corners), np.maximum(*self._translation_corners)
-                bounds = [float(low[0]), float(high[0]), float(low[1]), float(high[1])]
+            target = [self.controls.translation_dx_spin.value(), self.controls.translation_dy_spin.value()]
             grain = self.controls.translation_grain_combo.currentData()
             histories = normalize_grain_displacements(self.state.grain_displacements)
-            histories[grain].append({"delta": delta, "bounds": bounds})
-            histories = normalize_grain_displacements(histories)
-            self._replace_displacements(histories, f"Moved {'rectangle in' if local else 'whole'} G{grain + 1}; all axial layers affected.")
+            selection = deepcopy(self._translation_selection) if local else None
+            if local:
+                histories[grain] = set_region_displacement(selection["base_history"], target, selection["bounds"])
+                selection["target"] = target
+            else:
+                histories[grain] = set_whole_grain_displacement(histories[grain], target)
+            if histories == self.state.grain_displacements:
+                if not local:
+                    self._clear_translation_selection()
+                self._sync_translation_controls("This absolute offset is already applied; no additional shift.")
+                return
+            self._translation_undo[grain].append({
+                "operations": deepcopy(self.state.grain_displacements[grain]),
+                "selection": deepcopy(self._translation_selection),
+            })
+            # Histories already have an operation budget; cap in-memory edit
+            # snapshots as well for arbitrarily many region adjustments.
+            self._translation_undo[grain] = self._translation_undo[grain][-MAX_DISPLACEMENT_OPERATIONS:]
+            self._replace_displacements(histories, f"Set absolute offset of {'rectangle in' if local else 'whole'} G{grain + 1}; all axial layers affected.", selection)
         except (ValueError, RuntimeError, TimeoutError) as error:
             self._sync_translation_controls(str(error))
 
     def _undo_translation(self, *_args):
         histories = normalize_grain_displacements(self.state.grain_displacements)
         grain = self.controls.translation_grain_combo.currentData()
-        if histories[grain]:
+        selection = None
+        if self._translation_undo[grain]:
+            previous = self._translation_undo[grain].pop()
+            histories[grain] = previous["operations"]
+            selection = previous["selection"]
+        elif histories[grain]:
             histories[grain].pop()
-            self._replace_displacements(histories, f"Undid last move in G{grain + 1}.")
+        else:
+            return
+        self._replace_displacements(histories, f"Undid last move in G{grain + 1}.", selection)
+        self._set_translation_offset(selection["target"] if selection else whole_grain_displacement(histories[grain]))
 
     def _reset_translations(self, *_args):
+        self._translation_undo = [[], []]
         if self._has_displacements():
             self._replace_displacements([[], []], "All manual moves reset; existing bulk deformation is retained.")
+        self._clear_translation_selection()
+        self._set_translation_offset([0, 0])
 
-    def _replace_displacements(self, histories, message):
+    def _replace_displacements(self, histories, message, selection=None):
         self.near_debounce_timer.stop()
         self.near_poll_timer.stop()
         if self.compute.near_search is not None:
@@ -519,7 +647,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         with QtCore.QSignalBlocker(self.controls.near_combo):
             self.controls.near_combo.clear()
         boundary = [point.copy() for point in self.state.selected_points]
-        self._clear_lattice_selections()
+        self._clear_lattice_selections(reset_translation_undo=False)
+        self._restore_translation_selection(selection)
         # The GB is a fixed spatial clipping reference, not a material region
         # that follows a moved grain. Retain its position and side filters.
         self.state.selected_points = boundary
@@ -1336,6 +1465,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.compute.near_search.cancel()
         self._clear_lattice_selections()
         self.state.grain_displacements = [[], []]
+        self._set_translation_offset([0, 0])
         self._sync_translation_controls("Manual moves cleared by the lattice/axis change.")
         self.state.geometry = geometry
         self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, geometry.layer_count)
@@ -2241,6 +2371,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if cleared_moves:
                 self.state.grain_displacements = [[], []]
                 self._clear_translation_selection()
+                self._set_translation_offset([0, 0])
                 self._clear_near_cell(reset_custom=True)
                 self._sync_translation_controls("Manual moves cleared by the angle change.")
             if self.state.near_enabled:
@@ -2352,6 +2483,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         )
         self.plot.plot_widget.viewport().setCursor(cursor)
         self._sync_context_controls()
+        self._sync_translation_controls()
         self._update_status()
 
     def _start_new_boundary(self, *_args) -> None:
@@ -2373,8 +2505,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             item.hide()
         self._set_mode("vector")
 
-    def _clear_lattice_selections(self) -> None:
-        self._clear_translation_selection()
+    def _clear_lattice_selections(self, *, reset_translation_undo=True) -> None:
+        if reset_translation_undo:
+            self._translation_undo = [[], []]
+            self._on_translation_components_changed()
+        self._clear_translation_selection(sync_offset=reset_translation_undo)
         self._clear_manual_cell()
         self.state.selected_points.clear()
         self.state.selected_atoms.clear()

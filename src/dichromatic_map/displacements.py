@@ -6,6 +6,7 @@ change. This module deliberately has no GUI or crystal geometry dependency.
 """
 
 from collections.abc import Mapping
+from math import fsum
 
 import numpy as np
 
@@ -72,6 +73,54 @@ def normalize_grain_displacements(histories=None):
     if not isinstance(histories, (list, tuple)) or len(histories) != 2:
         raise ValueError("Provide translation histories for both grains")
     return [normalize_displacements(operations) for operations in histories]
+
+
+def whole_grain_displacement(operations=None):
+    """Return the absolute whole-grain offset above the existing F/t base.
+
+    Local moves keep their own offsets.  The serialized operations remain
+    incremental so existing sessions and ordered region membership retain
+    their original meaning.
+    """
+    operations = normalize_displacements(operations)
+    return [fsum(operation["delta"][axis] for operation in operations
+                 if operation["bounds"] is None) for axis in (0, 1)]
+
+
+def set_whole_grain_displacement(operations, target):
+    """Set the global manual offset, preserving existing local translations.
+
+    Append only the difference from the current whole-grain offset.  This
+    carries every current atom together without replaying older rectangular
+    selections at different positions.  The caller owns undo snapshots.
+    """
+    history = normalize_displacements(operations)
+    target = _finite_vector(target, 2, "target")
+    delta = target - whole_grain_displacement(history)
+    if not np.any(delta):
+        return history
+    return normalize_displacements(history + [{"delta": delta, "bounds": None}])
+
+
+def set_region_displacement(base_history, target, bounds):
+    """Set a selected region's offset from its positions when first selected.
+
+    ``base_history`` and ``bounds`` must be the immutable snapshot taken at
+    selection time, before any offset is applied to this active region.
+    Rebuilding its final operation preserves the originally selected atoms,
+    even if their destination overlaps other atoms.  Selecting the moved box
+    again would incorrectly move those other atoms on a subsequent edit.
+
+    A zero target restores the selection-time snapshot.  No session schema
+    change is needed: the result is an ordinary incremental history.
+    """
+    history = normalize_displacements(base_history)
+    operation = normalize_displacements([{"delta": target, "bounds": bounds}])[0]
+    if operation["bounds"] is None:
+        raise ValueError("A region translation requires rectangle bounds")
+    if not any(operation["delta"]):
+        return history
+    return normalize_displacements(history + [operation])
 
 
 def _region_bounds(bounds):

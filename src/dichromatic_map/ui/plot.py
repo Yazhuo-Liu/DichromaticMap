@@ -36,9 +36,38 @@ if TYPE_CHECKING:
 class PatternViewBox(pg.ViewBox):
     """Pan-mode ViewBox used by the pattern canvas."""
 
-    def __init__(self) -> None:
+    def __init__(self, owner) -> None:
         super().__init__(lockAspect=True, enableMouse=True, enableMenu=False)
+        self.owner = owner
+        self._translation_drag_active = False
         self.setMouseMode(self.PanMode)
+
+    def mouseDragEvent(self, event, axis=None):
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and (
+            self.owner.state.interaction_mode == "translate" or self._translation_drag_active
+        ):
+            event.accept()
+            # A cancelled selection must not turn into a pan midway through
+            # the same held mouse gesture.
+            if self.owner.state.interaction_mode != "translate":
+                if event.isFinish():
+                    self._translation_drag_active = False
+                return
+            if event.isStart():
+                self._translation_drag_active = True
+                if len(self.owner._translation_corners) != 1:
+                    start = self.mapToView(event.buttonDownPos())
+                    self.owner._translation_corners = [self.owner.plot._from_view(
+                        np.array([start.x(), start.y()])
+                    )]
+            point = self.mapToView(event.pos())
+            position = self.owner.plot._from_view(np.array([point.x(), point.y()]))
+            self.owner._preview_translation_corner(position)
+            if event.isFinish():
+                self._translation_drag_active = False
+                self.owner._pick_translation_corner(position)
+            return
+        super().mouseDragEvent(event, axis=axis)
 
 
 class PatternPlot:
@@ -57,13 +86,13 @@ class PatternPlot:
         self._local_distances = np.empty(0)
 
     def _create_plot(self) -> None:
-        self.view_box = PatternViewBox()
+        self.view_box = PatternViewBox(self.owner)
         self.plot_widget = pg.PlotWidget(viewBox=self.view_box)
         self.plot_item = self.plot_widget.getPlotItem()
         # Keep axis strokes inside the viewport, including at fractional DPI.
         self.plot_item.layout.setContentsMargins(8, 8, 12, 8)
         self.owner.setCentralWidget(self.plot_widget)
-        self.plot_widget.setBackground("#f8fafc")
+        self.plot_widget.setBackground("#ffffff")
         self.plot_item.hideButtons()
         self.plot_item.showGrid(x=True, y=True, alpha=0.16)
         self.plot_item.setLabel("bottom", "x / a₀")
@@ -201,6 +230,7 @@ class PatternPlot:
         self.plot_widget.scene().sigMouseClicked.connect(
             self.owner._on_scene_mouse_click
         )
+        self.plot_widget.scene().sigMouseMoved.connect(self.owner._on_translation_hover)
         self.view_box.sigRangeChanged.connect(self.owner._on_view_range_changed)
         self.plot_widget.sigDeviceRangeChanged.connect(self._layout_title)
         self.view_box.sigResized.connect(self._layout_title)
@@ -450,6 +480,8 @@ class PatternPlot:
     def _draw_translation_region(self):
         corners = self.owner._translation_corners
         self._set_scatter(self.translation_corner_item, np.asarray(corners).reshape(-1, 2))
+        if len(corners) == 1 and self.owner._translation_preview is not None:
+            corners = [corners[0], self.owner._translation_preview]
         if len(corners) != 2:
             self.translation_region_item.setData([], [])
             self.translation_region_fill.hide()

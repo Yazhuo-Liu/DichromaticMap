@@ -788,32 +788,50 @@ class ControlDock:
         translation_form.addRow("Move grain", self.translation_grain_combo)
         self.translation_dx_spin = QtWidgets.QDoubleSpinBox()
         self.translation_dy_spin = QtWidgets.QDoubleSpinBox()
-        for label, spin in (("Model Δx / a₀", self.translation_dx_spin),
-                            ("Model Δy / a₀", self.translation_dy_spin)):
-            spin.setRange(-1_000_000, 1_000_000)
+        for label, spin in (("Shift x / a₀", self.translation_dx_spin),
+                            ("Shift y / a₀", self.translation_dy_spin)):
+            spin.setRange(-100_000_000, 100_000_000)
             spin.setDecimals(8)
             spin.setSingleStep(0.1)
             translation_form.addRow(label, spin)
-        self.translation_dx_spin.setValue(0.1)
+        self.translation_vector_button = QtWidgets.QPushButton("Use measured vector P1 → P2")
+        self.translation_vector_button.setToolTip(
+            "Copy the measured vector's direction and planar length in physical model axes."
+        )
+        translation_form.addRow(self.translation_vector_button)
+        self.translation_vector_length_spin = QtWidgets.QDoubleSpinBox()
+        self.translation_vector_length_spin.setRange(-100_000_000, 100_000_000)
+        self.translation_vector_length_spin.setDecimals(8)
+        self.translation_vector_length_spin.setSingleStep(0.1)
+        self.translation_vector_length_spin.setEnabled(False)
+        self.translation_vector_length_spin.setToolTip(
+            "Planar length / a₀ along the copied P1 → P2 direction; negative values reverse it. "
+            "The axial periodic image does not change this planar shift."
+        )
+        translation_form.addRow("Vector length / a₀", self.translation_vector_length_spin)
         translation_layout.addLayout(translation_form)
         translation_help = QtWidgets.QLabel(
-            "Move all axial layers, including hidden atoms. Δx/Δy and the rectangle follow "
-            "model axes; display rotation only changes the view. Select two opposite corners "
-            "for a local move. Changing the lattice, axis or angle clears moves."
+            "Offsets are absolute from the grain or selected region's starting position; "
+            "reapplying the same values does not add another shift. All axial layers move, "
+            "including hidden atoms. Drag a rectangle or click two opposite corners; Esc "
+            "cancels. Coordinates follow model axes, independent of display rotation. "
+            "Changing the lattice, axis or angle clears moves."
         )
         translation_help.setWordWrap(True)
         translation_help.setObjectName("mutedLabel")
         translation_layout.addWidget(translation_help)
         translation_buttons = QtWidgets.QGridLayout()
-        self.translation_whole_button = QtWidgets.QPushButton("Move whole grain")
+        self.translation_whole_button = QtWidgets.QPushButton("Set whole-grain shift")
         self.translation_select_button = QtWidgets.QPushButton("Select rectangle")
         self.translation_select_button.setCheckable(True)
-        self.translation_region_button = QtWidgets.QPushButton("Move rectangle")
+        self.translation_region_button = QtWidgets.QPushButton("Set rectangle shift")
+        self.translation_clear_button = QtWidgets.QPushButton("Clear selection")
         self.translation_undo_button = QtWidgets.QPushButton("Undo last move")
         self.translation_reset_button = QtWidgets.QPushButton("Reset all moves")
         translation_buttons.addWidget(self.translation_whole_button, 0, 0)
         translation_buttons.addWidget(self.translation_select_button, 0, 1)
-        translation_buttons.addWidget(self.translation_region_button, 1, 0, 1, 2)
+        translation_buttons.addWidget(self.translation_region_button, 1, 0)
+        translation_buttons.addWidget(self.translation_clear_button, 1, 1)
         translation_buttons.addWidget(self.translation_undo_button, 2, 0)
         translation_buttons.addWidget(self.translation_reset_button, 2, 1)
         translation_layout.addLayout(translation_buttons)
@@ -823,9 +841,14 @@ class ControlDock:
         self.translation_whole_button.clicked.connect(lambda: self.owner._apply_translation(False))
         self.translation_select_button.clicked.connect(self.owner._start_translation_selection)
         self.translation_region_button.clicked.connect(lambda: self.owner._apply_translation(True))
+        self.translation_clear_button.clicked.connect(self.owner._cancel_interaction)
         self.translation_undo_button.clicked.connect(self.owner._undo_translation)
         self.translation_reset_button.clicked.connect(self.owner._reset_translations)
         self.translation_grain_combo.currentIndexChanged.connect(self.owner._on_translation_grain_changed)
+        self.translation_vector_button.clicked.connect(self.owner._use_translation_vector)
+        self.translation_vector_length_spin.valueChanged.connect(self.owner._on_translation_vector_length)
+        self.translation_dx_spin.valueChanged.connect(self.owner._on_translation_components_changed)
+        self.translation_dy_spin.valueChanged.connect(self.owner._on_translation_components_changed)
         layout.addWidget(self.translation_section)
         self.owner._sync_translation_controls()
 

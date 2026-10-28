@@ -622,7 +622,18 @@ def check_clean_exports(page, output):
       const context = canvas.getContext('2d'); context.drawImage(img,0,0);
       return Array.from(context.getImageData(0,0,1,1).data);
     }""", "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode("ascii"))
-    assert corner == [247, 249, 251, 255], ("Ordinary PNG background changed", corner)
+    assert corner == [255, 255, 255, 255], ("Ordinary PNG background is not pure white", corner)
+    page.evaluate("""() => {
+      const target=document.createElement('canvas');
+      target.width=canvas.clientWidth; target.height=canvas.clientHeight;
+      const context=target.getContext('2d'), stroke=context.stroke.bind(context), colors=[];
+      context.stroke=function(...args) { colors.push(this.strokeStyle); return stroke(...args); };
+      drawGrid(context,plotRect());
+      if (!colors.includes('#d9e1ea') || !colors.includes('#ebeff4'))
+        throw Error('The white background changed the existing major or minor grid color');
+      if ([...context.getImageData(0,0,1,1).data].join()!=='255,255,255,255')
+        throw Error('The screen plot background is not pure white');
+    }""")
     viewport = page.viewport_size
     page.locator("#clean-png").set_checked(True)
     page.locator("#clean-background").set_checked(True)
@@ -740,6 +751,161 @@ def check_translations(page, output):
     return {"whole":whole, "local":local, "undo":"restored", "session":"restored"}
 
 
+def check_absolute_translations(page, output):
+    """Keep a selected material region fixed while its absolute offset changes."""
+    page.evaluate("""async () => {
+      state.lattice='SC'; state.axis='100'; resetSelections(); await loadMetadata(true);
+      state.angle=0; state.scale=.6; state.center=[0,0]; state.displayRotation=31;
+      state.regions=[true,true,true,true]; state.nearEnabled=false;
+      rebuildLayers(); updateSummary(); renderRequest(); await waitForCurrentRender(); draw();
+      const rows=pattern.grains.map(grain=>Array.from(grain));
+      const at=(x,y)=>rows[0].find(row=>Math.abs(row[0]-x)<1e-12 && Math.abs(row[1]-y)<1e-12);
+      globalThis.absoluteShiftSmoke={before:rows,zero:at(0,0).slice(2).join(','),
+        neighbor:at(1,0).slice(2).join(','),center:JSON.stringify(state.center)};
+      document.getElementById('translation-panel').open=true;
+    }""")
+    page.locator("#translation-grain").select_option("0")
+
+    def apply_offset(x, y, *, local=False):
+        page.locator("#translation-dx").fill(str(x))
+        page.locator("#translation-dy").fill(str(y))
+        page.locator("#translate-region" if local else "#translate-whole").click()
+        page.evaluate("async () => { await waitForCurrentRender(); draw(); }")
+
+    def assert_whole(x, y):
+        return page.evaluate("""([x,y]) => {
+          const rows=pattern.grains.map(grain=>Array.from(grain));
+          const moved=new Map(rows[0].map(row=>[row.slice(2).join(','),row]));
+          let checked=0;
+          for (const before of absoluteShiftSmoke.before[0]) {
+            if (Math.abs(before[0])>1 || Math.abs(before[1])>1) continue;
+            const after=moved.get(before.slice(2).join(','));
+            if (!after || Math.abs(after[0]-before[0]-x)>1e-10 || Math.abs(after[1]-before[1]-y)>1e-10)
+              throw Error('Whole-grain offset accumulated instead of using the original position');
+            checked++;
+          }
+          if (!checked || JSON.stringify(rows[1])!==JSON.stringify(absoluteShiftSmoke.before[1]))
+            throw Error('Absolute whole-grain move changed G2 or checked no atoms');
+          return checked;
+        }""", [x, y])
+
+    apply_offset(.5, .25)
+    whole = assert_whole(.5, .25)
+    history = page.evaluate("JSON.stringify(state.grainDisplacements)")
+    apply_offset(.5, .25)
+    assert_whole(.5, .25)
+    assert page.evaluate("JSON.stringify(state.grainDisplacements)") == history, "An unchanged whole offset added a move"
+    apply_offset(1, -.5)
+    assert_whole(1, -.5)
+    apply_offset(0, 0)
+    assert_whole(0, 0)
+    page.locator("#reset-translations").click()
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+
+    def points_on_canvas(points):
+        return page.evaluate("""points => points.map(point => {
+          const [x,y]=screen(point), rect=canvas.getBoundingClientRect();
+          return [rect.left+x,rect.top+y];
+        })""", points)
+
+    def drag_rectangle():
+        page.locator("#pick-translation").click()
+        # Reverse corners exercise normalized model-axis bounds under rotation.
+        first, second = points_on_canvas([[.2, .2], [-.2, -.2]])
+        page.mouse.move(*first)
+        page.mouse.down()
+        page.mouse.move(*second, steps=8)
+        page.mouse.up()
+        page.wait_for_function("state.translationCorners.length===2 && state.mode==='idle'")
+        assert page.evaluate("JSON.stringify(state.center)") == page.evaluate("absoluteShiftSmoke.center"), "Rectangle drag panned the plot"
+        page.evaluate("""() => {
+          const expected=[-.2,.2,-.2,.2], bounds=translationBounds();
+          if (bounds.some((value,index)=>Math.abs(value-expected[index])>.015))
+            throw Error('Dragged rectangle used display coordinates instead of physical model axes');
+        }""")
+
+    def assert_region(x, y):
+        return page.evaluate("""([x,y]) => {
+          const rows=pattern.grains.map(grain=>Array.from(grain));
+          const moved=new Map(rows[0].map(row=>[row.slice(2).join(','),row]));
+          const selected=moved.get(absoluteShiftSmoke.zero), neighbor=moved.get(absoluteShiftSmoke.neighbor);
+          if (!selected || Math.abs(selected[0]-x)>1e-10 || Math.abs(selected[1]-y)>1e-10)
+            throw Error('The original selected atom did not receive the absolute region offset');
+          if (!neighbor || Math.abs(neighbor[0]-1)>1e-10 || Math.abs(neighbor[1])>1e-10)
+            throw Error('Editing a moved rectangle captured an overlapping unselected atom');
+          if (JSON.stringify(rows[1])!==JSON.stringify(absoluteShiftSmoke.before[1]))
+            throw Error('Editing the G1 rectangle changed G2');
+          return {selected:selected.slice(0,2),neighbor:neighbor.slice(0,2)};
+        }""", [x, y])
+
+    drag_rectangle()
+    apply_offset(1, 0, local=True)
+    overlap = assert_region(1, 0)
+    history = page.evaluate("JSON.stringify(state.grainDisplacements)")
+    apply_offset(1, 0, local=True)
+    assert_region(1, 0)
+    assert page.evaluate("JSON.stringify(state.grainDisplacements)") == history, "An unchanged region offset added a move"
+    apply_offset(2, 0, local=True)
+    assert_region(2, 0)
+    apply_offset(0, 0, local=True)
+    assert_region(0, 0)
+    page.locator("#undo-translation").click()
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    assert_region(2, 0)
+    apply_offset(.25, .125)
+    page.locator("#undo-translation").click()
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    assert_region(2, 0)
+    assert [float(page.locator(selector).input_value()) for selector in ("#translation-dx", "#translation-dy")] == [2, 0], "Undo restored the rectangle but displayed its whole-grain offset"
+    page.locator("#translate-region").click()
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    assert_region(2, 0)
+    page.locator("#reset-translations").click()
+    page.evaluate("async () => { await waitForCurrentRender(); }")
+    page.locator("#pick-translation").click()
+    first, second = points_on_canvas([[-.6, -.4], [.6, .4]])
+    page.mouse.click(*first)
+    page.mouse.move(*second, steps=5)
+    page.wait_for_function("state.translationCorners.length===1 && translationPreview!==null")
+    assert page.locator("#translate-region").is_disabled(), "Hover alone committed a rectangle"
+    assert page.evaluate("JSON.stringify(state.center)") == page.evaluate("absoluteShiftSmoke.center")
+    page.screenshot(path=str(output / "translation-hover.png"))
+    page.keyboard.press("Escape")
+    page.wait_for_function("state.mode==='idle' && !state.translationCorners.length && translationPreview===null")
+
+    page.locator("#pick-vector").click()
+    for point in points_on_canvas([[0, 0], [1, 1]]):
+        page.mouse.click(*point)
+    page.wait_for_function("state.atoms.length===2 && state.mode==='idle'")
+    page.locator("#axial-repeat").fill("2")
+    page.locator("#axial-repeat").dispatch_event("change")
+    drag_rectangle()
+    page.locator("#translation-use-vector").click()
+    vector = page.evaluate("""() => {
+      const x=Number(document.getElementById('translation-dx').value);
+      const y=Number(document.getElementById('translation-dy').value);
+      const length=Number(document.getElementById('translation-vector-length').value);
+      if (Math.abs(x-1)>1e-10 || Math.abs(y-1)>1e-10 || Math.abs(length-Math.SQRT2)>1e-10)
+        throw Error('Vector shift used display axes or included the axial periodic-image height');
+      return {x,y,length,displayRotation:state.displayRotation,axialRepeat:state.axialRepeat};
+    }""")
+    page.locator("#translation-vector-length").fill(str(-2 ** .5 / 2))
+    page.locator("#translation-vector-length").dispatch_event("change")
+    page.locator("#translate-region").click()
+    page.evaluate("async () => { await waitForCurrentRender(); draw(); }")
+    assert_region(-.5, -.5)
+    assert page.locator("#translation-vector-length").is_enabled(), "Applying the shift lost the captured vector direction"
+    page.locator("#translation-vector-length").fill(str(2 ** .5 / 2))
+    page.locator("#translation-vector-length").dispatch_event("change")
+    page.locator("#translate-region").click()
+    page.evaluate("async () => { await waitForCurrentRender(); draw(); }")
+    assert_region(.5, .5)
+    page.screenshot(path=str(output / "absolute-translation.png"))
+    return {"wholeAtomsChecked": whole, "overlap": overlap,
+            "sameOffset": "idempotent", "zeroOffset": "restored", "undo": "restored",
+            "hover": "previewed and cancelled", "vector": vector, "signedLength": "reversed and reapplied"}
+
+
 def check_app(page, output, fixture):
     page.wait_for_function("typeof pattern !== 'undefined' && pattern && !document.getElementById('tutorial-start').disabled")
     page.evaluate("async () => { if (typeof waitForCurrentRender === 'function') await waitForCurrentRender(); draw(); }")
@@ -826,8 +992,10 @@ def check_app(page, output, fixture):
     interactions = check_plot_interactions(page, output)
     exports = check_clean_exports(page, output)
     translations = check_translations(page, output)
+    absolute_translations = check_absolute_translations(page, output)
     return {"buffers": buffers, "cancellation": cancellation, "session": "restored", "png": ["pattern.png", "atoms.png"], "gpu": gpu, "angleDrag": drag,
-            "plotInteractions": interactions, "cleanExports": exports, "translations": translations}
+            "plotInteractions": interactions, "cleanExports": exports, "translations": translations,
+            "absoluteTranslations": absolute_translations}
 
 
 def main():

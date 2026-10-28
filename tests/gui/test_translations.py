@@ -126,6 +126,8 @@ def test_rectangle_move_uses_model_axes_and_hidden_axial_layers(gui):
     assert window.state.interaction_mode == "idle"
     assert controls.translation_region_button.isEnabled()
     assert window.plot.translation_region_item.getData()[0].size == 5
+    controls.translation_dx_spin.setValue(0.375)
+    controls.translation_dy_spin.setValue(0.25)
     controls.translation_region_button.click()
     gui.settle(window)
     operation = window.state.grain_displacements[1][0]
@@ -136,8 +138,8 @@ def test_rectangle_move_uses_model_axes_and_hidden_axial_layers(gui):
     assert moved > 5 and unchanged > 100 and layers == {0, 1}
     assert_moved(before[0], window.state.grains[0], np.zeros(2))
     assert window.state.visible_grain_layers == [set(), {0}]
-    assert window._translation_corners == []
-    assert not controls.translation_region_button.isEnabled()
+    np.testing.assert_allclose(window._translation_corners, np.array([[-1.7, -1.3], [1.4, 1.8]]) + [0.375, 0.25], atol=0.04)
+    assert controls.translation_region_button.isEnabled()
     assert not controls.manual_strain_button.isEnabled()
     assert not controls.manual_complete_button.isEnabled()
     assert not controls.near_method_combo.model().item(controls.near_method_combo.findData("strain")).isEnabled()
@@ -168,6 +170,9 @@ def test_moves_survive_pan_and_session_then_reset_with_angle_or_lattice(gui, tmp
     window.controls.angle_spin.setValue(10)
     gui.settle(window)
     assert window.state.grain_displacements == [[], []]
+    assert not controls.translation_undo_button.isEnabled()
+    assert controls.translation_dx_spin.value() == 0
+    assert controls.translation_dy_spin.value() == 0
     assert "angle change" in controls.translation_status.text()
     controls.translation_whole_button.click()
     gui.settle(window)
@@ -207,6 +212,7 @@ def test_manual_cell_count_uses_displaced_atoms(gui):
     controls.translation_select_button.click()
     for point in ((-0.1, -0.1), (0.1, 0.1)):
         gui.click_plot(window, point)
+    controls.translation_dx_spin.setValue(0.5)
     controls.translation_region_button.click()
     gui.settle(window)
     # A small region around the moved atom's new position contains G1 only.
@@ -228,7 +234,7 @@ def test_translation_cancel_zero_delta_and_late_worker_cannot_restore_undone_mov
     controls = open_translation(window, delta=(0, 0))
     controls.translation_whole_button.click()
     assert window.state.grain_displacements == [[], []]
-    assert "nonzero" in controls.translation_status.text()
+    assert "already applied" in controls.translation_status.text()
     controls.translation_select_button.click()
     gui.click_plot(window, (-1, -1))
     gui.key(window, gui.QtCore.Qt.Key_Escape)
@@ -257,3 +263,228 @@ def test_translation_cancel_zero_delta_and_late_worker_cannot_restore_undone_mov
     assert window.state.grain_displacements == [[], []]
     assert window.state.grain_signature == window._geometry_signature()
     assert_moved(before, window.state.grains[0], np.zeros(2))
+
+
+def test_absolute_whole_offsets_repeat_zero_and_undo(gui):
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    before = atom_map(window.state.grains[0])
+    controls = open_translation(window, delta=(0.25, -0.125))
+    controls.translation_whole_button.click()
+    gui.settle(window)
+    controls.translation_whole_button.click()
+    assert len(window.state.grain_displacements[0]) == 1
+    assert_moved(before, window.state.grains[0], np.array([0.25, -0.125]))
+    controls.translation_dx_spin.setValue(0.75)
+    controls.translation_whole_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([0.75, -0.125]))
+    controls.translation_undo_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([0.25, -0.125]))
+    assert controls.translation_dx_spin.value() == 0.25
+    controls.translation_grain_combo.setCurrentIndex(1)
+    assert controls.translation_dx_spin.value() == 0
+    controls.translation_grain_combo.setCurrentIndex(0)
+    assert controls.translation_dx_spin.value() == 0.25
+    controls.translation_dx_spin.setValue(0)
+    controls.translation_dy_spin.setValue(0)
+    controls.translation_whole_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.zeros(2))
+    controls.translation_undo_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([0.25, -0.125]))
+
+
+def test_imported_session_clears_runtime_translation_undo(gui, tmp_path):
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    before = atom_map(window.state.grains[0])
+    controls = open_translation(window, delta=(0.25, 0))
+    controls.translation_whole_button.click()
+    gui.settle(window)
+    saved = tmp_path / "absolute-shift.dmap"
+    window.save_session(saved)
+    controls.translation_dx_spin.setValue(0.5)
+    controls.translation_whole_button.click()
+    gui.settle(window)
+    window.load_session(saved)
+    gui.settle(window)
+    assert controls.translation_dx_spin.value() == 0.25
+    controls.translation_undo_button.click()
+    gui.settle(window)
+    assert window.state.grain_displacements == [[], []]
+    assert_moved(before, window.state.grains[0], np.zeros(2))
+
+
+def test_region_absolute_updates_keep_original_atoms_when_destination_overlaps(gui):
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    before = atom_map(window.state.grains[0])
+    controls = open_translation(window)
+    controls.translation_select_button.click()
+    for point in ((-0.15, -0.15), (0.15, 0.15)):
+        gui.click_plot(window, point)
+    assert controls.translation_dx_spin.value() == 0
+    bounds = window._translation_selection["bounds"].copy()
+    for target in (1, 1, 2):
+        controls.translation_dx_spin.setValue(target)
+        controls.translation_region_button.click()
+        gui.settle(window)
+        assert len(window.state.grain_displacements[0]) == 1
+        # Original x=0 overlaps stationary x=1 after the first shift. Only
+        # the original selected atom may move to x=2 on the next adjustment.
+        assert_moved(before, window.state.grains[0], np.array([target, 0]), bounds)
+    controls.translation_undo_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([1, 0]), bounds)
+    assert controls.translation_dx_spin.value() == 1
+    controls.translation_dx_spin.setValue(0)
+    controls.translation_region_button.click()
+    gui.settle(window)
+    assert window.state.grain_displacements == [[], []]
+    assert_moved(before, window.state.grains[0], np.zeros(2))
+    assert controls.translation_undo_button.isEnabled()
+    controls.translation_undo_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([1, 0]), bounds)
+    controls.translation_clear_button.click()
+    assert window._translation_selection is None
+    assert window._translation_corners == []
+    assert controls.translation_dx_spin.value() == 0
+
+
+def test_vector_shift_uses_planar_model_direction_and_signed_length(gui):
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    controls = open_translation(window)
+    controls.rotation_spin.setValue(31)
+    gui.settle(window)
+    controls.vector_button.click()
+    for point in ((-1, 0), (1, 1)):
+        gui.click_plot(window, point)
+    controls.axial_spin.setValue(3)
+    assert controls.translation_vector_button.isEnabled()
+    controls.translation_vector_button.click()
+    np.testing.assert_allclose(
+        [controls.translation_dx_spin.value(), controls.translation_dy_spin.value()], [2, 1], atol=1e-8,
+    )
+    assert controls.translation_vector_length_spin.value() == pytest.approx(np.sqrt(5), abs=1e-8)
+    controls.translation_vector_length_spin.setValue(-np.sqrt(5) / 2)
+    np.testing.assert_allclose(
+        [controls.translation_dx_spin.value(), controls.translation_dy_spin.value()], [-1, -0.5], atol=1e-8,
+    )
+    controls.translation_select_button.click()
+    for point in ((-0.3, -0.3), (0.3, 0.3)):
+        gui.click_plot(window, point)
+    assert controls.translation_vector_length_spin.isEnabled()
+    assert controls.translation_vector_length_spin.value() == 0
+    before = atom_map(window.state.grains[0])
+    bounds = window._translation_selection["bounds"].copy()
+    controls.translation_vector_length_spin.setValue(np.sqrt(5) / 2)
+    controls.translation_region_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([1, 0.5]), bounds)
+    assert window.state.selected_atoms == []
+    assert controls.translation_vector_length_spin.isEnabled()
+    controls.translation_vector_length_spin.setValue(-np.sqrt(5) / 2)
+    controls.translation_region_button.click()
+    gui.settle(window)
+    assert_moved(before, window.state.grains[0], np.array([-1, -0.5]), bounds)
+    controls.translation_dx_spin.setValue(0.123)
+    assert not controls.translation_vector_length_spin.isEnabled()
+
+
+def test_angle_change_discards_copied_vector_direction(gui):
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    controls = open_translation(window)
+    controls.vector_button.click()
+    for point in ((0, 0), (1, 0)):
+        gui.click_plot(window, point)
+    controls.translation_vector_button.click()
+    assert controls.translation_vector_length_spin.isEnabled()
+    controls.angle_spin.setValue(10)
+    gui.settle(window)
+    assert not controls.translation_vector_length_spin.isEnabled()
+    assert controls.translation_dx_spin.value() == 0
+
+
+def viewport_point(window, point):
+    x, y = window.plot._to_view(point)
+    scene = window.plot.view_box.mapViewToScene(QtCore.QPointF(float(x), float(y)))
+    return window.plot.plot_widget.mapFromScene(scene)
+
+
+def test_rectangle_drag_preview_cancel_and_click_preview_do_not_pan(gui):
+    from PySide6 import QtGui
+
+    window = gui.window(lattice="SC", axis="100", angle_deg=0)
+    controls = open_translation(window)
+    controls.rotation_spin.setValue(31)
+    gui.settle(window)
+    controls.translation_select_button.click()
+    gui.app.processEvents()
+    view_before = np.array(window.plot.view_box.viewRange())
+    viewport = window.plot.plot_widget.viewport()
+    first, second = (-1.3, -0.8), (1.5, 1.2)
+    p1, p2 = viewport_point(window, first), viewport_point(window, second)
+    gui.QtTest.mousePress(viewport, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, p1)
+    move = QtGui.QMouseEvent(
+        QtCore.QEvent.Type.MouseMove, QtCore.QPointF(p2), QtCore.QPointF(viewport.mapToGlobal(p2)),
+        QtCore.Qt.MouseButton.NoButton, QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.KeyboardModifier.NoModifier,
+    )
+    gui.app.sendEvent(viewport, move)
+    gui.app.processEvents()
+    assert window.plot.translation_region_fill.isVisible()
+    assert window._translation_preview is not None
+    gui.QtTest.mouseRelease(viewport, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, p2)
+    gui.app.processEvents()
+    assert window.state.interaction_mode == "idle"
+    assert controls.translation_region_button.isEnabled()
+    np.testing.assert_allclose(window._translation_corners, [first, second], atol=0.04)
+    np.testing.assert_allclose(window.plot.view_box.viewRange(), view_before, atol=1e-12)
+    gui.key(window, QtCore.Qt.Key_Escape)
+    assert window._translation_corners == []
+    assert not window.plot.translation_region_fill.isVisible()
+    controls.translation_select_button.click()
+    gui.click_plot(window, first)
+    gui.QtTest.mouseMove(viewport, p2)
+    gui.app.processEvents()
+    assert window.plot.translation_region_fill.isVisible()
+    assert window._translation_preview is not None
+    assert not controls.translation_region_button.isEnabled()
+    gui.click_plot(window, second)
+    assert controls.translation_region_button.isEnabled()
+    assert window._translation_preview is None
+
+    # A drag after a first click keeps that explicitly chosen first corner.
+    # Cancelling while held also consumes the remaining gesture rather than
+    # converting its mouse movement into a pan.
+    for cancel in (False, True):
+        controls.translation_select_button.click()
+        gui.click_plot(window, first)
+        alternate_start = viewport_point(window, (0, 0))
+        gui.QtTest.mousePress(viewport, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, alternate_start)
+        move = QtGui.QMouseEvent(
+            QtCore.QEvent.Type.MouseMove, QtCore.QPointF(p2), QtCore.QPointF(viewport.mapToGlobal(p2)),
+            QtCore.Qt.MouseButton.NoButton, QtCore.Qt.MouseButton.LeftButton, QtCore.Qt.KeyboardModifier.NoModifier,
+        )
+        gui.app.sendEvent(viewport, move)
+        gui.app.processEvents()
+        if cancel:
+            gui.key(window, QtCore.Qt.Key_Escape)
+            assert window._translation_corners == []
+        gui.QtTest.mouseRelease(viewport, QtCore.Qt.LeftButton, QtCore.Qt.NoModifier, p2)
+        gui.app.processEvents()
+        np.testing.assert_allclose(window.plot.view_box.viewRange(), view_before, atol=1e-12)
+        if cancel:
+            assert window._translation_corners == []
+            assert not controls.translation_region_button.isEnabled()
+        else:
+            np.testing.assert_allclose(window._translation_corners, [first, second], atol=0.04)
+
+
+def test_plot_is_pure_white_and_grid_style_is_retained(gui):
+    window = gui.window()
+    assert window.plot.plot_widget.backgroundBrush().color().name() == "#ffffff"
+    for side in ("bottom", "left"):
+        axis = window.plot.plot_item.getAxis(side)
+        assert axis.grid == int(255 * 0.16)
+        assert axis.pen().color().name() == "#94a3b8"

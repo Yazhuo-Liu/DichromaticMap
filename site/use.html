@@ -84,11 +84,15 @@
 
         <details class="section" id="translation-panel"><summary>TRANSLATION</summary><div class="section-body">
           <label class="stacked">Move grain<select id="translation-grain"><option value="0">G1</option><option value="1">G2</option></select></label>
-          <div class="translation-delta"><label>Δx / a₀<input id="translation-dx" type="number" min="-100000000" max="100000000" step="0.1" value="0.1"></label><label>Δy / a₀<input id="translation-dy" type="number" min="-100000000" max="100000000" step="0.1" value="0"></label></div>
-          <button id="translate-whole" type="button">Move whole grain</button>
-          <div class="button-row"><button id="pick-translation" type="button">Select rectangle</button><button id="translate-region" type="button" disabled>Move rectangle</button></div>
+          <div class="translation-delta"><label>Shift x / a₀<input id="translation-dx" type="number" min="-100000000" max="100000000" step="0.1" value="0"></label><label>Shift y / a₀<input id="translation-dy" type="number" min="-100000000" max="100000000" step="0.1" value="0"></label></div>
+          <button id="translation-use-vector" type="button" disabled>Use measured vector</button>
+          <label class="stacked">Vector length / a₀<input id="translation-vector-length" type="number" min="-100000000" max="100000000" step="0.1" value="0" disabled></label>
+          <button id="translate-whole" type="button">Set whole-grain shift</button>
+          <div class="button-row"><button id="pick-translation" type="button">Select rectangle</button><button id="translate-region" type="button" disabled>Set rectangle shift</button></div>
+          <button id="clear-translation" type="button" disabled>Clear selection</button>
           <div class="button-row"><button id="undo-translation" type="button" disabled>Undo G1 move</button><button id="reset-translations" type="button" disabled>Reset both grains</button></div>
-          <p class="hint">Moves atoms in every axial layer, including hidden layers. Δx and Δy use physical model axes. Select two opposite rectangle corners; the box follows those axes when the view is rotated. Changing angle or lattice clears moves.</p>
+          <p class="hint">Shift is absolute: whole-grain values are relative to the original origin; rectangle values are relative to that selection's initial position. Reapplying the same values does not add another shift; zero restores that offset. Local shifts are preserved by whole-grain shifts.</p>
+          <p class="hint">Drag a rectangle or click two opposite corners; Esc clears the selection. All axial layers move, including hidden layers. Coordinates use physical model axes. Use measured vector copies P1 → P2 in the plot plane; edit its length (negative reverses direction), then set the shift. Changing angle or lattice clears moves.</p>
           <pre id="translation-info" class="readout">No grain moves.</pre>
         </div></details>
         <div class="status-card" role="status" aria-live="polite" id="status">Loading local Python engine…</div>

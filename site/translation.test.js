@@ -40,23 +40,29 @@ test("two rectangle clicks use physical axes after display rotation and panning"
   const {h, app, api} = setup();
   app.state.displayRotation = 31;
   app.state.center = [.2, -.3];
+  h.node("translation-grain").value = "1";
+  h.node("translation-grain").handlers.change();
   h.node("pick-translation").handlers.click();
   await app.selectAt(...app.screen([-.8, -.6]));
   await app.selectAt(...app.screen([1.2, .9]));
   assert.equal(app.state.mode, "idle");
   assert.equal(h.node("translate-region").disabled, false);
   plain(api.translationBounds()).forEach((value, index) => assert(Math.abs(value - [-.8, 1.2, -.6, .9][index]) < 1e-12));
-  h.node("translation-grain").value = "1";
+  h.node("translation-dx").value = ".25";
+  h.node("translation-dy").value = "-.1";
   h.node("translate-region").handlers.click();
   const operation = app.state.grainDisplacements[1][0];
   assert.deepEqual(plain(operation.delta), [.25, -.1]);
   operation.bounds.forEach((value, index) => assert(Math.abs(value - [-.8, 1.2, -.6, .9][index]) < 1e-12));
-  assert.equal(app.state.translationCorners.length, 0);
+  assert.equal(app.state.translationCorners.length, 2, "the active selection stays editable");
+  plain(api.translationBounds()).forEach((value, index) => assert(Math.abs(value - [-.55, 1.45, -.7, .8][index]) < 1e-12));
 });
 
 test("moves invalidate superseded worker replies and retain exact final coordinates", async () => {
   const {h, app, api} = setup();
   app.changeAngle(22); h.flush(45); const old = h.last("render");
+  h.node("translation-dx").value = ".25";
+  h.node("translation-dy").value = "-.1";
   api.translateGrain(); h.flush(45); const fresh = h.last("render");
   h.reply(old, fixture(22)); await Promise.resolve();
   assert.equal(app.currentPattern(), false);
