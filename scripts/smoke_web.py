@@ -159,4 +159,25 @@ encoded_real = call("save_session", state=real_state, settings=settings,
                     view_range=[-6, 6, -4.5, 4.5])
 assert call("load_session", bytes=encoded_real)["state"]["manual_strain_fit"] is not None
 
-print("Web adapter smoke passed: geometry, CSL, near search, count, vector, strain, .dmap")
+# Two different grains: FCC [110] / BCC [111] with a0(alpha-Fe)/a0(gamma-Fe).
+fe = dict(lattice="FCC", axis="110", lattice2="BCC", axis2="111", ratio=2.87 / 3.59)
+fe_info = call("metadata", **fe)
+assert not fe_info["homophase"] and fe_info["grain_layers"] == [2, 3]
+assert [preset["name"] for preset in fe_info["presets"]] == ["KS"]
+ks = fe_info["default_angle"]
+fe_render = call("render", **fe, angle=ks, width=12, height=9, center=[0, 0],
+                 local_matching=True, local_distance=0.1)
+assert set(fe_render["local_partners"]) == {0, 1, 2}
+assert len(fe_render["coincidence_partners"]) == len(fe_render["coincidences"])
+fe_cells = call("near_search", **fe, angle=ks, percent=2, index=12)
+assert fe_cells and fe_cells[0]["max_strain"] <= 0.02
+fe_state = dict(browser_state, **fe, angle=ks, symbols=fe_info["symbols"], sizes=[1, 1, 1],
+                visible_layers=[[0, 1], [0, 1, 2]], near_enabled=True, near_method="strain",
+                near_cell=fe_cells[0], deformations=[fe_cells[0]["f1"], fe_cells[0]["f2"]])
+fe_loaded = call("load_session", bytes=call("save_session", state=fe_state, settings=settings,
+                                             view_range=[-6, 6, -4.5, 4.5]))["state"]
+assert fe_loaded["parameters"]["lattice2"] == "BCC" and fe_loaded["parameters"]["axis2"] == "111"
+assert fe_loaded["parameters"]["lattice_ratio"] == fe["ratio"]
+assert fe_loaded["near_cell"]["lattice"] == ["FCC", "BCC"]
+
+print("Web adapter smoke passed: geometry, CSL, near search, count, vector, strain, .dmap, FCC/BCC")

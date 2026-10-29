@@ -110,6 +110,7 @@ operations use the same layer rules for all three lattices.
 | `--axis` | Integer axis, default `110`; quote separated signed/multi-digit indices, e.g. `"1 -1 3"` |
 | `--angle` | Reference misorientation in the selected axis range: ⟨100⟩ 0–45°, ⟨110⟩ 0–90°, ⟨111⟩ 0–60°, other cubic axes 0–180°; default Σ9 for `110`, Σ5 for `100`, lowest-Σ preset for other axes, or 0° if none exists |
 | `--lattice-constant` | Reference a₀ in Å, default 3.52 |
+| `--lattice2`, `--axis2`, `--lattice-ratio` | Grain 2 lattice, tilt axis and lattice-constant ratio a₀(G2)/a₀(G1); they default to grain 1's lattice and axis and a ratio of 1. Any difference selects the two-grain mode described in [Two different grains](#gui-two-grains) |
 | `--width`, `--height` | Base view dimensions in a₀, default 12 and 9 |
 | `--marker-size` | Atom marker size parameter, default 32 |
 | `--view-scale` | Initial field-size multiplier, 0.1–5, default 1 |
@@ -253,6 +254,44 @@ angle; changing the crystal or axis restores all layer checkboxes.
 remains fixed. The reference misorientation, physical strain and grain-frame
 vector components stay the same. Existing selections remain available, and
 PNG export includes this rotation.
+
+<a id="gui-two-grains"></a>
+
+### Two different grains (FCC/BCC and other interfaces)
+
+By default both grains share one structure, as before. Check `Set G2 separately`
+to give G2 its own `G2 structure`, `G2 view axis` and `a₀(G2)/a₀(G1)`. These
+controls start as a copy of G1 (ratio 1), so checking the box alone changes
+nothing. Coordinates are in G1's a₀, so G2's lattice constant enters only as the
+ratio, e.g. 2.87/3.59 = 0.7994 for α-Fe on γ-Fe. Both view axes point along the
+screen normal, for example FCC [110] ∥ BCC [111] or FCC [110] ∥ BCC [001]. On
+the command line, use `--lattice2`, `--axis2` and `--lattice-ratio`:
+
+```bash
+dichromatic-map --lattice FCC --axis 110 \
+  --lattice2 BCC --axis2 111 --lattice-ratio 0.7994
+```
+
+With two different grains:
+
+- `Orientation relationship` replaces `CSL preset` for FCC/BCC pairs. It lists the
+  Bain, Nishiyama–Wassermann (NW) and Kurdjumov–Sachs (KS) relationships available
+  for the chosen axes, e.g. KS at 24.74° for FCC [110] / BCC [111], or Bain at 0°
+  and NW at 9.74° for FCC [110] / BCC [001]. Other combinations have no presets.
+- The angle range follows both grains' axial symmetries; grain exchange no longer
+  applies. FCC [110] / BCC [111] uses 0–30°.
+- Each grain keeps its own axial layers (e.g. A–B for FCC [110], A–C for BCC [111]).
+  Their heights are unrelated, so gold markers and near pairs show coincidences of
+  *projected columns* from any G1 layer and any G2 layer, not three-dimensional
+  coincidence sites. A marker is shown when both of its layers are visible.
+- A manual cell uses one G1 layer and one G2 layer for all four vertices; counts
+  report each grain in its own layer.
+- An exact periodic cell exists only for a commensurate ratio (e.g. 0.8). For measured lattice constants use `Near-CSL` → automatic strain
+  search, which reports the strain needed in each grain.
+- Vector readouts give G2 components in G2's own lattice constant, `a₀(G2)`.
+
+Uncheck the box to return to one structure for both grains. The `Lattice
+constant a₀` field in Å still converts exported lengths, as before.
 
 <a id="gui-layers"></a>
 

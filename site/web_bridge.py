@@ -16,18 +16,19 @@ from dichromatic_map.appearance import default_layer_symbols
 from dichromatic_map.cells import StrainedCell, checked_integer_array, count_cell_atoms
 from dichromatic_map.completion import cell_completion_candidates
 from dichromatic_map.crystal import (
-    crystal_vector_coordinates, csl_presets, format_direction_components, get_geometry,
-    in_plane_reference_axes, in_plane_reference_directions,
-    matching_csl_preset, misorientation_range, projected_columns,
+    CSLPreset, angle_presets, axial_displacement, bicrystal, crystal_vector_coordinates,
+    format_direction_components, in_plane_reference_axes, in_plane_reference_directions,
+    matching_angle_preset, misorientation_range, projected_columns,
 )
 from dichromatic_map.matching import (
-    exact_csl_cell, local_near_pairs, same_layer_coincidence_sites,
+    exact_csl_cell, local_near_pairs, projected_coincidence_sites, projected_near_pairs,
+    same_layer_coincidence_sites,
 )
 from dichromatic_map.session import (
     FORMAT, SCHEMA_VERSION, _snapshot_from_payload, _state_payload, load_session,
 )
 from dichromatic_map.state import (
-    CellVertex, PatternParameters, PatternState, SelectedAtom, default_angle_deg,
+    CellVertex, PatternParameters, PatternState, SelectedAtom, default_crystal_angle_deg,
 )
 from dichromatic_map.strain import (
     CandidatePreparation, SelectedCellStrain, cache_cell_search, candidate_vectors,
@@ -76,6 +77,22 @@ def _axial_repeat(value):
     return int(value)
 
 
+def _crystal(request):
+    """Grain 2 inherits grain 1 unless lattice2/axis2/ratio are given (as in PatternParameters)."""
+    return bicrystal(
+        (request["lattice"], request.get("lattice2") or request["lattice"]),
+        (request["axis"], request.get("axis2") or request["axis"]),
+        request.get("ratio", 1.0),
+    )
+
+
+def _layer_request(value):
+    """One shared layer, or one layer per grain, as sent by the browser."""
+    if isinstance(value, list):
+        return tuple(int(layer) for layer in value)
+    return int(value)
+
+
 def _cell(cell):
     if cell is None:
         return None
@@ -90,49 +107,67 @@ def _cell(cell):
     }
 
 
-def _from_cell(value, lattice, axis):
+def _from_cell(value, lattice, axis="110", scale=1.0):
     if value is None:
         return None
+    crystal = bicrystal(lattice, axis, scale)
     for field in ("m1", "m2"):
         _safe_integer_values(value[field])
     return StrainedCell(
         checked_integer_array(value["m1"]), checked_integer_array(value["m2"]),
         _array(value["f1"]), _array(value["f2"]), _array(value["cell"]),
-        float(value["max_strain"]), lattice, axis,
+        float(value["max_strain"]), crystal.lattice, crystal.axis, crystal.scale,
     )
 
 
+def _reference_labels(axis):
+    return ["[" + " ".join(map(str, vector)) + "]"
+            for vector in in_plane_reference_directions(axis)]
+
+
 def _metadata(request):
-    lattice, axis = request["lattice"], request["axis"]
-    geometry = get_geometry(lattice, axis)
-    presets = csl_presets(geometry.axis)
+    crystal = _crystal(request)
+    geometry = crystal.geometries[0]
+    bounds = misorientation_range(crystal.axis, crystal.lattice, scale=crystal.scale)
     return {
         "lattice": geometry.lattice, "axis": geometry.axis,
+        # Grain 2 fields are null for a homophase bicrystal.
+        "lattice2": None if crystal.homophase else crystal.lattices[1],
+        "axis2": None if crystal.homophase else crystal.axes[1],
+        "homophase": crystal.homophase, "scale": crystal.scale, "label": crystal.label,
         "axis_label": geometry.axis_label,
-        "layers": geometry.layer_count,
+        "layers": crystal.layer_count,
+        "grain_layers": list(crystal.layer_counts),
         "layer_spacing": geometry.layer_spacing,
         "axial_period": geometry.axial_period,
         "axial_repeat_half_indices": geometry.axial_repeat_half_indices.tolist(),
         "frame_axis": geometry.frame[:, 2].tolist(),
-        "symbols": default_layer_symbols(geometry.layer_count),
-        "reference_labels": ["[" + " ".join(map(str, vector)) + "]"
-                             for vector in in_plane_reference_directions(geometry.axis)],
-        "max_angle": misorientation_range(geometry.axis, lattice).maximum_deg,
-        "default_angle": default_angle_deg(geometry.axis),
+        "symbols": default_layer_symbols(crystal.layer_count),
+        "reference_labels": _reference_labels(geometry.axis),
+        "grains": [{
+            "lattice": grain.lattice, "axis": grain.axis, "axis_label": grain.axis_label,
+            "layers": grain.layer_count, "layer_spacing": scale * grain.layer_spacing,
+            "axial_period": scale * grain.axial_period,
+            "reference_labels": _reference_labels(grain.axis),
+        } for grain, scale in zip(crystal.geometries, crystal.scales)],
+        "max_angle": bounds.maximum_deg,
+        "period": bounds.period_deg, "sign_equivalent": bounds.sign_equivalent,
+        "default_angle": default_crystal_angle_deg(crystal),
         "angle_snap_tolerance": 0.006,
+        "preset_kind": "CSL" if crystal.homophase else "orientation relationship",
         "presets": [{"name": p.name, "angle": p.angle_deg, "label": p.label}
-                    for p in presets],
+                    for p in angle_presets(crystal)],
     }
 
 
 def _render_data(request):
-    lattice, axis = request["lattice"], request["axis"]
+    crystal = _crystal(request)
     angle = float(request["angle"])
     # Rendering consumes an already chosen physical angle. Interactive inputs
     # snap before any request; imported sessions retain their exact saved angle.
-    preset = matching_csl_preset(angle, tolerance_deg=1e-10, axis=axis)
-    geometry = get_geometry(lattice, axis)
-    if not 0 <= angle <= misorientation_range(axis, lattice).maximum_deg:
+    preset = matching_angle_preset(angle, tolerance_deg=1e-10, lattice=crystal)
+    bounds = misorientation_range(crystal.axis, crystal.lattice, scale=crystal.scale)
+    if not 0 <= angle <= bounds.maximum_deg:
         raise ValueError("Misorientation is outside the allowed range")
     width, height = float(request["width"]), float(request["height"])
     if not 0 < width <= 150 or not 0 < height <= 150:
@@ -143,16 +178,28 @@ def _render_data(request):
     displacements = normalize_grain_displacements(request.get("grain_displacements"))
     halo = 2 * float(request.get("local_distance", 0.1)) if request.get("local_matching") else 0.0
     grains = [projected_columns(width + 2 * halo, height + 2 * halo, sign * angle / 2,
-                                center=center, deformation=f[g], lattice=lattice,
-                                axis=axis, translation=t[g], displacements=displacements[g])
+                                center=center, deformation=f[g], lattice=crystal.lattices[g],
+                                axis=crystal.axes[g], translation=t[g],
+                                displacements=displacements[g], scale=crystal.scales[g])
               for g, sign in enumerate((1, -1))]
     for grain in grains:
         _safe_integer_values(grain.half_indices)
-    matches = same_layer_coincidence_sites(*grains, 1e-6)
+    # Rows keep [x, y, G1 layer]; different grains add each match's G2 layer
+    # in a parallel array, since their axial layers are unrelated.
+    partners = local_partners = None
+    if crystal.homophase:
+        matches = same_layer_coincidence_sites(*grains, 1e-6)
+    else:
+        matches, by_layer = projected_coincidence_sites(*grains, 1e-6)
+        partners = np.concatenate(by_layer).astype(float)
     local = None
     if request.get("local_matching"):
-        pairs = local_near_pairs(*grains, float(request.get("local_distance", 0.1)))
+        distance = float(request.get("local_distance", 0.1))
+        pairs = (local_near_pairs(*grains, distance) if crystal.homophase
+                 else projected_near_pairs(*grains, distance))
         local = np.column_stack((pairs.first, pairs.second, pairs.layers))
+        if not crystal.homophase:
+            local_partners = pairs.second_layers.astype(float)
     coincidences = np.empty((sum(len(points) for points in matches), 3), dtype=float)
     start = 0
     for layer, points in enumerate(matches):
@@ -162,44 +209,60 @@ def _render_data(request):
         start = stop
     metadata = {
         "angle": angle, "preset": preset.name if preset else None,
-        "exact_cell": _cell(exact_csl_cell(angle, lattice=lattice, axis=axis))
+        "exact_cell": _cell(exact_csl_cell(angle, lattice=crystal.lattice, axis=crystal.axis,
+                                           scale=crystal.scale))
                       if not any(displacements) and np.all(f == np.eye(2)) and np.all(t == 0) else None,
-        "layers": geometry.layer_count,
+        "layers": crystal.layer_count,
         "reference_axes": [in_plane_reference_axes(sign * angle / 2, f[g]).tolist()
                            for g, sign in enumerate((1, -1))],
     }
-    return metadata, [np.column_stack((grain.positions, grain.layers, grain.half_indices))
-                      for grain in grains], coincidences, local
+    return (metadata, [np.column_stack((grain.positions, grain.layers, grain.half_indices))
+                       for grain in grains], coincidences, local, partners, local_partners)
 
 
 def _render(request):
     """Preserve the JSON adapter used by exports, smoke checks and clients."""
-    metadata, grains, coincidences, local = _render_data(request)
-    return {
+    metadata, grains, coincidences, local, partners, local_partners = _render_data(request)
+    result = {
         **metadata, "grains": [grain.tolist() for grain in grains],
         "coincidences": [[float(x), float(y), int(layer)] for x, y, layer in coincidences],
         "local": None if local is None else
         [[float(x1), float(y1), float(x2), float(y2), int(layer)]
          for x1, y1, x2, y2, layer in local],
     }
+    # G2 layers exist only for two different grains; homophase output is unchanged.
+    for name, values in (("coincidence_partners", partners), ("local_partners", local_partners)):
+        if values is not None:
+            result[name] = [int(value) for value in values]
+    return result
 
 
 def web_render(serialized):
     """Provide contiguous buffers for Pyodide without boxing every atom."""
-    metadata, grains, coincidences, local = _render_data(json.loads(serialized))
-    return {
+    metadata, grains, coincidences, local, partners, local_partners = _render_data(
+        json.loads(serialized))
+    result = {
         "metadata": json.dumps(metadata, allow_nan=False),
         "grains": [grain.ravel() for grain in grains],
         "coincidences": coincidences.ravel(),
         "local": None if local is None else local.ravel(),
     }
+    for name, values in (("coincidence_partners", partners), ("local_partners", local_partners)):
+        if values is not None:
+            result[name] = values
+    return result
+
+
+def _search_args(request):
+    crystal = _crystal(request)
+    return (float(request["angle"]), float(request["percent"]), int(request["index"]),
+            crystal.lattice, crystal.axis, crystal.scale)
 
 
 def web_near_start(serialized):
     request = json.loads(serialized)
     _require_uniform_structure(request)
-    args = (float(request["angle"]), float(request["percent"]),
-            int(request["index"]), request["lattice"], request["axis"])
+    args = _search_args(request)
     cached = get_cached_cell_search(*args, rows_per_chunk=8)
     job = {"args": args, "first": None, "second": None, "cells": cached or [],
            "next": 0, "preparation": None, "complete": cached is not None,
@@ -229,7 +292,7 @@ def web_near_step(job):
     stop = start + 8
     if start < len(job["first"]):
         _, part = solve_cells_chunk(args[0], args[1], job["first"], job["second"],
-                                    start, stop, args[3], args[4])
+                                    start, stop, args[3], args[4], args[5])
         job["cells"].extend(part)
     job["next"] = min(stop, len(job["first"]))
     job["complete"] = stop >= len(job["first"])
@@ -256,13 +319,15 @@ def _near_search(request):
 
 def _count(request):
     polygons = _array(request["polygons"])
+    crystal = _crystal(request)
     result = count_cell_atoms(
         polygons, float(request["angle"]), _array(request["deformations"]),
-        request["lattice"], request["axis"],
+        crystal.lattice, crystal.axis,
         boundary_points=request.get("boundary") if request.get("use_boundary") else None,
         region_states=tuple(request.get("region_states", [True] * 4)),
-        layer=int(request["layer"]), translations=_array(request["translations"]),
+        layer=_layer_request(request["layer"]), translations=_array(request["translations"]),
         grain_displacements=normalize_grain_displacements(request.get("grain_displacements")),
+        scale=crystal.scale,
     )
     for values in (result.interior, result.boundary, result.half_open,
                    result.half_open_edges, result.half_open_corners):
@@ -285,11 +350,12 @@ def _require_uniform_structure(request):
 
 def _complete(request):
     _require_uniform_structure(request)
+    crystal = _crystal(request)
     candidates = cell_completion_candidates(
         _array(request["polygons"]), float(request["angle"]),
-        lattice=request["lattice"], axis=request["axis"],
-        layer=int(request["layer"]), percent=float(request["percent"]),
-        max_rotation_deg=float(request["rotation"]),
+        lattice=crystal.lattice, axis=crystal.axis,
+        layer=_layer_request(request["layer"]), percent=float(request["percent"]),
+        max_rotation_deg=float(request["rotation"]), scale=crystal.scale,
     )
     for candidate in candidates:
         _safe_integer_values(candidate.atoms)
@@ -302,11 +368,12 @@ def _complete(request):
 
 def _fit_selected(request):
     _require_uniform_structure(request)
+    crystal = _crystal(request)
     fit = strain_selected_cell(
         _array(request["polygons"]), float(request["angle"]),
-        percent=float(request["percent"]), lattice=request["lattice"],
-        axis=request["axis"], layer=int(request["layer"]),
-        max_rotation_deg=float(request["rotation"]),
+        percent=float(request["percent"]), lattice=crystal.lattice,
+        axis=crystal.axis, layer=_layer_request(request["layer"]),
+        max_rotation_deg=float(request["rotation"]), scale=crystal.scale,
     )
     return {"cell": _cell(fit.cell), "translations": fit.translations.tolist(),
             "vertices": fit.vertices.tolist(), "origin": fit.origin.tolist(),
@@ -321,24 +388,28 @@ def _fit_selected(request):
 
 def _vector(request):
     a, b = request["atoms"]
-    geometry = get_geometry(request["lattice"], request["axis"])
+    crystal = _crystal(request)
     for atom in (a, b):
         _safe_integer_values(atom["half_indices"])
-    half = (checked_integer_array(b["half_indices"]) - checked_integer_array(a["half_indices"])
-            + _axial_repeat(request["axial_repeat"]) * geometry.axial_repeat_half_indices)
-    dz = 0.5 * half @ geometry.frame[:, 2]
+    dz = axial_displacement(
+        crystal, int(a["grain"]), checked_integer_array(a["half_indices"]),
+        int(b["grain"]), checked_integer_array(b["half_indices"]),
+        _axial_repeat(request["axial_repeat"]),
+    )
     displacement = np.r_[np.asarray(b["position"]) - np.asarray(a["position"]), dz]
     grains = (0, 1) if a["grain"] != b["grain"] else (a["grain"],)
     vectors = {}
     for grain in grains:
         coordinates = crystal_vector_coordinates(
             displacement, (1 - 2 * grain) * float(request["angle"]) / 2,
-            _array(request["deformations"][grain]), request["lattice"], request["axis"],
+            _array(request["deformations"][grain]), crystal.lattices[grain],
+            crystal.axes[grain], scale=crystal.scales[grain],
         )
+        unit = "a₀" if grain == 0 or crystal.scale == 1.0 else "a₀(G2)"
         vectors[f"G{grain + 1}"] = {
             "current": coordinates.current.tolist(),
             "lattice": coordinates.lattice.tolist(),
-            "current_formatted": format_direction_components(coordinates.current),
+            "current_formatted": format_direction_components(coordinates.current, unit),
             "lattice_formatted": format_direction_components(coordinates.lattice, unit=""),
             "strained": coordinates.strained,
         }
@@ -351,8 +422,12 @@ def _state_from_browser(raw):
         angle_deg=float(raw["angle"]), lattice_constant=float(raw.get("a0", 3.52)),
         width=12, height=9, marker_size=32, view_scale=1,
         lattice=raw["lattice"], axis=raw["axis"],
+        lattice2=raw.get("lattice2"), axis2=raw.get("axis2"),
+        lattice_ratio=float(raw.get("ratio", 1.0)),
     )
     state = PatternState(parameters)
+    second_layer = (lambda vertex: None if state.crystal.homophase
+                    else int(vertex.get("layer2", vertex["layer"])))
     state.angle_deg = float(raw["angle"])
     state.interaction_mode = raw.get("mode", "idle")
     state.display_rotation_deg = float(raw.get("display_rotation", 0))
@@ -369,26 +444,26 @@ def _state_from_browser(raw):
                                       int(atom["layer"]), checked_integer_array(atom["half_indices"]))
                             for atom in raw["atoms"]]
     state.manual_vertices = [CellVertex(_array(v["position"]), int(v["layer"]),
-                                        v["source"], _array(v["endpoints"]))
+                                        v["source"], _array(v["endpoints"]), second_layer(v))
                              for v in raw["manual"]]
     state.manual_local_cutoff = raw.get("manual_local_cutoff")
     state.axial_repeat = _axial_repeat(raw.get("axial_repeat", 0))
     state.near_enabled = bool(raw.get("near_enabled", False))
     state.near_method = raw.get("near_method", "local")
-    state.near_cell = _from_cell(raw.get("near_cell"), raw["lattice"], raw["axis"])
+    state.near_cell = _from_cell(raw.get("near_cell"), state.crystal)
     state.deformations = _array(raw["deformations"])
     state.translations = _array(raw["translations"])
     state.grain_displacements = normalize_grain_displacements(raw.get("grain_displacements"))
     if raw.get("manual_original") is not None:
         state.manual_unstrained_vertices = [
             CellVertex(_array(v["position"]), int(v["layer"]), v["source"],
-                       _array(v["endpoints"])) for v in raw["manual_original"]
+                       _array(v["endpoints"]), second_layer(v)) for v in raw["manual_original"]
         ]
         state.manual_unstrained_cutoff = raw.get("manual_local_cutoff")
     if raw.get("manual_fit") is not None:
         fit = raw["manual_fit"]
         state.manual_strain_fit = SelectedCellStrain(
-            _from_cell(fit["cell"], raw["lattice"], raw["axis"]),
+            _from_cell(fit["cell"], state.crystal),
             _array(fit["translations"]), _array(fit["vertices"]),
             _array(fit["origin"]), float(fit["residual"]),
             _array(fit["rotations_deg"]), _array(fit["stretches"]),

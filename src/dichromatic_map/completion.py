@@ -3,6 +3,8 @@
 Symmetries act on translation vectors, with grain exchange when required.
 Generated vertices are certified by integer lattice coordinates, not by a
 nearest-neighbor cutoff. No deformation is applied by these functions.
+Two different grains (see ``crystal.Bicrystal``) use one picked layer per grain
+and only operations shared by both lattices; grain exchange is unavailable.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from itertools import permutations, product
 import numpy as np
 
 from .cells import bases, checked_integer_array, determinant, validate_cell_vertices
-from .crystal import get_geometry, rotation_matrix_2d
+from .crystal import bicrystal, get_geometry, grain_layer_pair, rotation_matrix_2d
 from .strain import SelectedCellStrain, strain_selected_cell
 
 
@@ -29,17 +31,18 @@ class CellCompletion:
     error: str | None
 
 
-def _integer_vertices(vertices, grain_bases, geometry, layer):
-    offset = geometry.layer_offsets_half_indices[layer] @ geometry.frame[:, :2] / 2
-    phase = np.linalg.solve(geometry.planar_basis, offset)
-    result = []
-    for points, basis in zip(vertices, grain_bases):
+def _integer_vertices(vertices, grain_bases, geometries, layers):
+    result, phases = [], []
+    for points, basis, geometry, layer in zip(vertices, grain_bases, geometries, layers):
+        offset = geometry.layer_offsets_half_indices[layer] @ geometry.frame[:, :2] / 2
+        phase = np.linalg.solve(geometry.planar_basis, offset)
         coordinates = np.linalg.solve(basis, points.T).T - phase
         integers = np.rint(coordinates)
         if np.max(np.linalg.norm((coordinates - integers) @ basis.T, axis=1)) > 1e-7:
             raise ValueError("Vertices must be original atoms in the same selected layer")
         result.append(checked_integer_array(integers))
-    return np.array(result), phase
+        phases.append(phase)
+    return np.array(result), np.array(phases)
 
 
 @lru_cache(maxsize=128)
@@ -63,12 +66,16 @@ def _plane_operations(lattice, axis):
     return tuple(operations)
 
 
-def _translation_symmetries(angle, geometry, grain_bases):
-    """Certify each operation in BOTH same-layer translation lattices."""
+def _translation_symmetries(angle, crystal, grain_bases):
+    """Certify each operation in BOTH same-layer translation lattices.
+
+    A symmetry shared by two different lattices is one of grain 1's own
+    operations, so those candidates suffice; exchange needs identical grains.
+    """
     rotations = [rotation_matrix_2d(sign * angle / 2) for sign in (1, -1)]
-    for exchange in (False, True):
+    for exchange in (False, True) if crystal.homophase else (False,):
         source = (1, 0) if exchange else (0, 1)
-        for local in _plane_operations(geometry.lattice, geometry.axis):
+        for local in _plane_operations(crystal.lattices[0], crystal.axes[0]):
             operation = rotations[0] @ local @ rotations[source[0]].T
             valid = True
             for target, origin in enumerate(source):
@@ -90,7 +97,7 @@ def _translation_symmetries(angle, geometry, grain_bases):
 
 def cell_completion_candidates(
     vertices, angle, *, lattice="FCC", axis="110", layer=0,
-    percent=2.0, max_rotation_deg=1.0,
+    percent=2.0, max_rotation_deg=1.0, scale=1.0,
 ):
     """Complete two paired vertices by symmetry, or three by parallelogram closure.
 
@@ -102,17 +109,20 @@ def cell_completion_candidates(
     vertices = np.asarray(vertices, dtype=float)
     if vertices.shape not in ((2, 2, 2), (2, 3, 2)) or not np.all(np.isfinite(vertices)):
         raise ValueError("Select two or three finite paired vertices first")
-    if not np.isfinite(angle) or not 0 <= angle <= 180:
-        raise ValueError("Reference angle must be in [0,180] degrees")
+    crystal = bicrystal(lattice, axis, scale)
+    maximum = 180 if crystal.homophase else 360
+    if not np.isfinite(angle) or not 0 <= angle <= maximum:
+        raise ValueError(f"Reference angle must be in [0,{maximum}] degrees")
     if not np.isfinite(percent) or not 0 < percent <= 10:
         raise ValueError("Strain limit must be in (0,10]%")
     if not np.isfinite(max_rotation_deg) or not 0 <= max_rotation_deg <= 5:
         raise ValueError("Rotation limit must be in [0,5] degrees per grain")
-    geometry = get_geometry(lattice, axis)
-    if not isinstance(layer, (int, np.integer)) or not 0 <= layer < geometry.layer_count:
-        raise ValueError("Select one valid axial layer")
-    grain_bases = bases(angle, geometry.lattice, geometry.axis)
-    indices, phase = _integer_vertices(vertices, grain_bases, geometry, layer)
+    try:
+        layers = grain_layer_pair(layer, crystal)
+    except ValueError:
+        raise ValueError("Select one valid axial layer") from None
+    grain_bases = bases(angle, crystal)
+    indices, phases = _integer_vertices(vertices, grain_bases, crystal.geometries, layers)
     count = vertices.shape[1]
     proposed = []
     if count == 3:
@@ -122,7 +132,7 @@ def cell_completion_candidates(
         proposed.append(("Parallelogram closure", "closure", integer_cells))
     else:
         edge = vertices[:, 1] - vertices[:, 0]
-        for operation, source, description in _translation_symmetries(angle, geometry, grain_bases):
+        for operation, source, description in _translation_symmetries(angle, crystal, grain_bases):
             second_edge = edge[list(source)] @ operation.T
             steps = checked_integer_array([
                 np.rint(np.linalg.solve(basis, vector))
@@ -149,7 +159,8 @@ def cell_completion_candidates(
         if determinants[0] * determinants[1] <= 0:
             continue
         polygons = np.array([
-            (integer + phase) @ basis.T for integer, basis in zip(integer_cells, grain_bases)
+            (integer + phase) @ basis.T
+            for integer, phase, basis in zip(integer_cells, phases, grain_bases)
         ])
         polygons[:, :count] = vertices  # preserve every originally selected atom
         try:
@@ -161,8 +172,8 @@ def cell_completion_candidates(
                       for basis, matrix in zip(grain_bases, matrices))
         try:
             fit = strain_selected_cell(
-                polygons, angle, percent, geometry.lattice, geometry.axis, layer,
-                max_rotation_deg=max_rotation_deg,
+                polygons, angle, percent, crystal.lattice, crystal.axis, layers,
+                max_rotation_deg=max_rotation_deg, scale=crystal.scale,
             )
             error = None
         except ValueError as exc:

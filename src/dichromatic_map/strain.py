@@ -8,7 +8,7 @@ import os
 from threading import RLock
 import numpy as np
 from .affine import affine_points
-from .crystal import get_geometry, rotation_matrix_2d
+from .crystal import bicrystal, grain_layer_pair, rotation_matrix_2d
 from .cells import (
     StrainedCell, bases, checked_integer_array, determinant, reduce_cell, validate_cell_vertices,
 )
@@ -84,7 +84,7 @@ def canonical_cell_basis(cell, angle):
     if (f.shape != (2, 2, 2) or common.shape != (2, 2)
             or not np.all(np.isfinite(f)) or not np.all(np.isfinite(common))):
         raise ValueError("Canonical cell requires finite deformations and common vectors")
-    grain_bases = bases(angle, cell.lattice, cell.axis)
+    grain_bases = bases(angle, cell.lattice, cell.axis, cell.scale)
     for deformation, basis, matrix in zip(f, grain_bases, matrices):
         if not np.allclose(deformation @ basis @ np.asarray(matrix, dtype=float),
                            common, atol=1e-8, rtol=1e-9):
@@ -215,6 +215,8 @@ def strain_selected_cell(
     axis="110",
     layer=0,
     max_rotation_deg=1.0,
+    *,
+    scale=1.0,
 ):
     """Align all four pairs by bounded, homogeneous in-plane deformation.
 
@@ -226,6 +228,9 @@ def strain_selected_cell(
     The two centroids are placed at their original midpoint by uniform shifts.
     Integer same-layer edge vectors certify common translations; all FOUR pairs
     are validated independently, so an incompatible fourth corner is not ignored.
+    Two different grains (per-grain ``lattice``/``axis`` or ``scale``) take one
+    layer per grain, since their axial layers are unrelated; reference angles
+    then span [0,360].
     This is geometric compatibility, not an elastic-energy minimum.
     """
     vertices = np.asarray(vertices, dtype=float)
@@ -235,23 +240,27 @@ def strain_selected_cell(
         validate_cell_vertices(polygon)
     if not np.isfinite(percent) or not 0 < percent <= 10:
         raise ValueError("Strain limit must be in (0,10]%")
-    if not np.isfinite(angle) or not 0 <= angle <= 180:
-        raise ValueError("Reference angle must be in [0,180] degrees")
+    crystal = bicrystal(lattice, axis, scale)
+    if crystal.homophase:
+        if not np.isfinite(angle) or not 0 <= angle <= 180:
+            raise ValueError("Reference angle must be in [0,180] degrees")
+    elif not np.isfinite(angle) or not 0 <= angle <= 360:
+        raise ValueError("Reference angle must be in [0,360] degrees")
     if not np.isfinite(max_rotation_deg) or not 0 <= max_rotation_deg <= 5:
         raise ValueError("Rotation limit must be in [0,5] degrees per grain")
-    geometry = get_geometry(lattice, axis)
-    if (
-        not isinstance(layer, (int, np.integer))
-        or not 0 <= layer < geometry.layer_count
-    ):
-        raise ValueError("Select one valid axial layer")
-    grain_bases = bases(angle, lattice, axis)
-    reference_offset = (
-        geometry.layer_offsets_half_indices[layer] @ geometry.frame[:, :2] / 2
-    )
-    phase = np.linalg.solve(geometry.planar_basis, reference_offset)
+    try:
+        layers = grain_layer_pair(layer, crystal)
+    except ValueError:
+        raise ValueError("Select one valid axial layer") from None
+    grain_bases = bases(angle, crystal)
     matrices = []
-    for polygon, basis in zip(vertices, grain_bases):
+    for polygon, basis, geometry, grain_layer in zip(
+        vertices, grain_bases, crystal.geometries, layers
+    ):
+        reference_offset = (
+            geometry.layer_offsets_half_indices[grain_layer] @ geometry.frame[:, :2] / 2
+        )
+        phase = np.linalg.solve(geometry.planar_basis, reference_offset)
         indices = polygon @ np.linalg.inv(basis).T - phase
         integer = checked_integer_array(np.rint(indices))
         if np.max(np.linalg.norm((indices - integer) @ basis.T, axis=1)) > 1e-7:
@@ -344,7 +353,7 @@ def strain_selected_cell(
             "No exact homogeneous alignment of all four pairs; choose another cell"
         )
     cell = StrainedCell(
-        *matrices, f[0], f[1], common, max_strain, geometry.lattice, geometry.axis
+        *matrices, f[0], f[1], common, max_strain, crystal.lattice, crystal.axis, crystal.scale
     )
     return SelectedCellStrain(
         cell,
@@ -357,13 +366,13 @@ def strain_selected_cell(
     )
 
 
-def _candidate_parameters(angle, percent, extent, lattice, axis):
+def _candidate_parameters(angle, percent, extent, lattice, axis, scale=1.0):
     angle, percent = float(angle), float(percent)
     if (not np.isfinite(angle) or not np.isfinite(percent)
             or not 0 < percent <= 10 or not 2 <= extent <= 40 or int(extent) != extent):
         raise ValueError("finite angle, strain (0,10]% and search index 2..40 required")
-    geometry = get_geometry(lattice, axis)
-    return angle, percent, int(extent), geometry.lattice, geometry.axis
+    crystal = bicrystal(lattice, axis, scale)
+    return angle, percent, int(extent), crystal.lattice, crystal.axis, crystal.scale
 
 
 @lru_cache(maxsize=39)
@@ -408,15 +417,15 @@ class CandidatePreparation:
     steps. Only completed preparations populate the bounded shared cache.
     """
 
-    def __init__(self, angle, percent, extent, lattice="FCC", axis="110"):
-        self.parameters = _candidate_parameters(angle, percent, extent, lattice, axis)
+    def __init__(self, angle, percent, extent, lattice="FCC", axis="110", scale=1.0):
+        self.parameters = _candidate_parameters(angle, percent, extent, lattice, axis, scale)
         self._result = _cache_get(_candidate_cache, self.parameters)
         self.completed_offsets = self.total_offsets = 0
         if self._result is not None:
             return
-        angle, percent, self.extent, lattice, axis = self.parameters
+        angle, percent, self.extent, lattice, axis, scale = self.parameters
         self.e = percent / 100
-        b1, self.b2 = bases(angle, lattice, axis)
+        b1, self.b2 = bases(angle, lattice, axis, scale)
         self.integers = _integer_translation_grid(self.extent)
         self.v = self.integers @ b1.T
         self.lengths = np.linalg.norm(self.v, axis=1)
@@ -536,9 +545,9 @@ class CandidatePreparation:
         return None
 
 
-def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110"):
+def candidate_vectors(angle, percent, extent, lattice="FCC", axis="110", scale=1.0):
     """Approximately compatible translations; bounded cache, fresh array copies."""
-    preparation = CandidatePreparation(angle, percent, extent, lattice, axis)
+    preparation = CandidatePreparation(angle, percent, extent, lattice, axis, scale)
     result = preparation.step(max(1, preparation.total_offsets))
     return result
 
@@ -563,10 +572,10 @@ def pareto_cells(cells, limit=12):
     return result[:limit]
 
 
-def _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk):
+def _cell_search_key(angle, percent, extent, lattice, axis, scale, rows_per_chunk):
     if int(rows_per_chunk) != rows_per_chunk or rows_per_chunk < 1:
         raise ValueError("rows_per_chunk must be a positive integer")
-    return (*_candidate_parameters(angle, percent, extent, lattice, axis),
+    return (*_candidate_parameters(angle, percent, extent, lattice, axis, scale),
             int(rows_per_chunk))
 
 
@@ -576,11 +585,11 @@ def _copy_search_cell(cell, readonly=False):
     if readonly:
         for array in arrays:
             array.setflags(write=False)
-    return StrainedCell(*arrays, cell.max_strain, cell.lattice, cell.axis)
+    return StrainedCell(*arrays, cell.max_strain, cell.lattice, cell.axis, cell.scale)
 
 
 def get_cached_cell_search(
-    angle, percent, extent, lattice="FCC", axis="110", *, rows_per_chunk=8
+    angle, percent, extent, lattice="FCC", axis="110", scale=1.0, *, rows_per_chunk=8
 ):
     """Return fresh result copies, or None; use in the coordinating process.
 
@@ -588,13 +597,13 @@ def get_cached_cell_search(
     numerical chunk policy is included because roundoff may select a different
     equivalent representative under a different partition.
     """
-    key = _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk)
+    key = _cell_search_key(angle, percent, extent, lattice, axis, scale, rows_per_chunk)
     cached = _cache_get(_cell_search_cache, key)
     return None if cached is None else [_copy_search_cell(cell) for cell in cached]
 
 
 def cache_cell_search(
-    cells, angle, percent, extent, lattice="FCC", axis="110", *, rows_per_chunk=8
+    cells, angle, percent, extent, lattice="FCC", axis="110", scale=1.0, *, rows_per_chunk=8
 ):
     """Remember a complete successful Pareto result, with private array copies.
 
@@ -602,7 +611,7 @@ def cache_cell_search(
     cancelled/partial/failed work must not enter this cache. Empty successful
     results are cached too. Entries and result sizes are bounded.
     """
-    key = _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk)
+    key = _cell_search_key(angle, percent, extent, lattice, axis, scale, rows_per_chunk)
     cells = tuple(cells)
     if len(cells) > 12:
         raise ValueError("Cache only a complete Pareto result of at most 12 cells")
@@ -616,29 +625,29 @@ def cache_cell_search(
                 raise ValueError("Search cache requires finite real numeric 2-by-2 cell arrays")
         if not np.isfinite(cell.max_strain):
             raise ValueError("Search cache requires a finite strain")
-        geometry = get_geometry(cell.lattice, cell.axis)
-        if (geometry.lattice, geometry.axis) != key[3:5]:
+        crystal = cell.crystal
+        if (crystal.lattice, crystal.axis, crystal.scale) != key[3:6]:
             raise ValueError("Search result crystal does not match the cache key")
     stored = tuple(_copy_search_cell(cell, readonly=True) for cell in cells)
     _cache_put(_cell_search_cache, key, stored, _CELL_SEARCH_CACHE_LIMIT)
 
 
 def find_strained_cells(
-    angle, percent, extent, lattice="FCC", axis="110", *, rows_per_chunk=8
+    angle, percent, extent, lattice="FCC", axis="110", scale=1.0, *, rows_per_chunk=8
 ):
     """Synchronous bounded search with the same cache used by async callers."""
-    key = _cell_search_key(angle, percent, extent, lattice, axis, rows_per_chunk)
-    cached = get_cached_cell_search(*key[:5], rows_per_chunk=key[5])
+    key = _cell_search_key(angle, percent, extent, lattice, axis, scale, rows_per_chunk)
+    cached = get_cached_cell_search(*key[:6], rows_per_chunk=key[6])
     if cached is not None:
         return cached
-    first, second = candidate_vectors(*key[:5])
+    first, second = candidate_vectors(*key[:6])
     parts = []
-    for start in range(0, len(first), key[5]):
+    for start in range(0, len(first), key[6]):
         parts.extend(solve_cells_chunk(
-            key[0], key[1], first, second, start, start + key[5], key[3], key[4]
+            key[0], key[1], first, second, start, start + key[6], key[3], key[4], key[5]
         )[1])
     result = pareto_cells(parts)
-    cache_cell_search(result, *key[:5], rows_per_chunk=key[5])
+    cache_cell_search(result, *key[:6], rows_per_chunk=key[6])
     return result
 
 
@@ -713,12 +722,12 @@ def _symmetric_deformations(solution):
 
 
 def solve_cells_chunk(
-    angle, percent, integers1, integers2, start, stop, lattice="FCC", axis="110"
+    angle, percent, integers1, integers2, start, stop, lattice="FCC", axis="110", scale=1.0
 ):
     """Batched least-norm symmetric deformation solve for vector pairs."""
-    geometry = get_geometry(lattice, axis)
-    lattice, axis = geometry.lattice, geometry.axis
-    b1, b2 = bases(angle, lattice, axis)
+    crystal = bicrystal(lattice, axis, scale)
+    lattice, axis, scale = crystal.lattice, crystal.axis, crystal.scale
+    b1, b2 = bases(angle, crystal)
     # Build only this chunk's rows of the upper triangle. UI workers request
     # small batches; constructing the entire triangle repeats O(N²) work.
     n = len(integers1)
@@ -838,16 +847,17 @@ def solve_cells_chunk(
         best = strain[k]
         u, v, cell = reduce_cell(m1[k], m2[k], common[k])
         cells.append(
-            StrainedCell(u, v, f[k, 0], f[k, 1], cell, float(strain[k]), lattice, axis)
+            StrainedCell(u, v, f[k, 0], f[k, 1], cell, float(strain[k]), lattice, axis, scale)
         )
     return os.getpid(), cells
 
 
 def strain_tensors(cell, angle):
     """Return dimensionless 3D Green-Lagrange E in each reference cubic frame."""
-    projection = get_geometry(cell.lattice, cell.axis).frame
+    crystal = bicrystal(cell.lattice, cell.axis, getattr(cell, "scale", 1.0))
     tensors = []
-    for g, f in enumerate((cell.f1, cell.f2)):
+    for g, (f, geometry) in enumerate(zip((cell.f1, cell.f2), crystal.geometries)):
+        projection = geometry.frame
         t = np.deg2rad((1 if g == 0 else -1) * angle / 2)
         r = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
         f3 = np.eye(3)
@@ -870,7 +880,7 @@ def selected_cell_strain_readout(
     engineering stretches minus one, not the eigenvalues of E.
     """
     cell = fit.cell
-    geometry = get_geometry(cell.lattice, cell.axis)
+    crystal = cell.crystal
 
     def array(values):
         return np.array2string(
@@ -881,7 +891,7 @@ def selected_cell_strain_readout(
 
     lines = [
         "SELECTED-CELL STRAIN DETAILS",
-        f"{geometry.lattice}; tilt axis {geometry.axis_label}",
+        _crystal_line(crystal),
         f"Reference θ = {angle:.8f}°",
         f"Polar-frame θ = {angle + fit.rotations_deg[0] - fit.rotations_deg[1]:.8f}°",
         f"Max |principal strain| = {100 * cell.max_strain:.8f}%",
@@ -950,7 +960,9 @@ def selected_cell_strain_readout(
             array(cell.cell),
             f"Common in-plane area = {abs(np.linalg.det(cell.cell)):.8f} a₀²",
             "Common translations verified; the cell may be nonprimitive.",
-            "Full-lattice exact CSL is recomputed separately, layer by layer.",
+            ("Full-lattice exact CSL is recomputed separately, layer by layer."
+             if crystal.homophase else
+             "Full-lattice coincident columns are recomputed separately, across layers."),
             "",
             "Coordinate convention",
             "x' = F x + t; x is the original atom position in analysis x,y.",
@@ -965,14 +977,37 @@ def selected_cell_strain_readout(
     return "\n".join(lines)
 
 
+def _crystal_line(crystal):
+    """Name both grains; a lattice-constant ratio is stated when it differs."""
+    if crystal.homophase:
+        geometry = crystal.geometries[0]
+        return f"{geometry.lattice}; tilt axis {geometry.axis_label}"
+    grains = "; ".join(
+        f"G{grain + 1} {geometry.lattice} {geometry.axis_label}"
+        for grain, geometry in enumerate(crystal.geometries)
+    )
+    return f"{grains}; a0(G2)/a0(G1) = {crystal.scale:.8g}"
+
+
+def _axial_vector(half_indices, unit="a0"):
+    coefficient = f"{unit}/2"
+    if np.all(half_indices % 2 == 0):
+        half_indices = half_indices // 2
+        coefficient = unit
+    return f"({coefficient})[{' '.join(str(int(x)) for x in half_indices)}]"
+
+
 def tensor_readout(cell, angle, selected=False):
     """3D strain and common translations, with units and frame explicit."""
-    geometry = get_geometry(cell.lattice, cell.axis)
-    lines = [
-        ("Full axial repeat (all layers): " if selected else "") + cell.label(),
-        f"{geometry.lattice}; {'selected-cell F1/F2' if selected else 'symmetric F1/F2'}; {geometry.axis_label} axial strain = 0",
-        "Green-Lagrange E (grain cubic [100],[010],[001] frame):",
-    ]
+    crystal = cell.crystal
+    geometry = crystal.geometries[0]
+    fit = "selected-cell F1/F2" if selected else "symmetric F1/F2"
+    lines = [("Full axial repeat (all layers): " if selected else "") + cell.label()]
+    if crystal.homophase:
+        lines.append(f"{geometry.lattice}; {fit}; {geometry.axis_label} axial strain = 0")
+    else:
+        lines.extend((_crystal_line(crystal), f"{fit}; axial strain = 0 in both grains"))
+    lines.append("Green-Lagrange E (grain cubic [100],[010],[001] frame):")
     for g, e3 in enumerate(strain_tensors(cell, angle)):
         lines.append(
             f"G{g+1}:\n" + np.array2string(e3, precision=6, suppress_small=True)
@@ -981,15 +1016,18 @@ def tensor_readout(cell, angle, selected=False):
         "Common C1,C2 columns / a0 (unrotated analysis x,y):\n"
         + np.array2string(cell.cell, precision=6)
     )
-    axial = geometry.axial_repeat_half_indices
-    coefficient = "a0/2"
-    if np.all(axial % 2 == 0):
-        axial = axial // 2
-        coefficient = "a0"
-    axial_indices = " ".join(str(int(x)) for x in axial)
-    lines.append(
-        f"Common C3 = ({coefficient})[{axial_indices}]; M1/M2 in A-layer basis:"
-    )
+    if crystal.homophase:
+        lines.append(
+            f"Common C3 = {_axial_vector(geometry.axial_repeat_half_indices)}; "
+            "M1/M2 in A-layer basis:"
+        )
+    else:
+        lines.append(
+            "Axial repeats G1 "
+            + _axial_vector(crystal.geometries[0].axial_repeat_half_indices, "a0(G1)")
+            + ", G2 " + _axial_vector(crystal.geometries[1].axial_repeat_half_indices, "a0(G2)")
+            + "; no common C3 is assumed. M1/M2 in each grain's A-layer basis:"
+        )
     lines.extend(np.array2string(m) for m in (cell.m1, cell.m2))
     lines.append(
         "Cell may be nonprimitive; counts are not Sigma. "

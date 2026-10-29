@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from .cells import StrainedCell, count_cell_atoms
-from .crystal import crystal_vector_coordinates, rotation_matrix_2d
+from .crystal import axial_displacement, crystal_vector_coordinates, rotation_matrix_2d
 from .displacements import normalize_grain_displacements
 from .matching import exact_csl_cell
 from .state import PatternState
@@ -57,9 +57,10 @@ def _csv_text(columns, rows):
 def _count_rows(state, settings, a0):
     if len(state.manual_vertices) != 4:
         return []
-    layers = {vertex.layer for vertex in state.manual_vertices}
+    layers = {vertex.layers for vertex in state.manual_vertices}
     if len(layers) != 1:
         raise ValueError("The selected cell must belong to one axial layer")
+    (layers,) = layers
     polygons = np.stack([
         _finite_array(vertex.grain_positions, (2, 2), "Cell atom endpoints")
         for vertex in state.manual_vertices
@@ -71,17 +72,17 @@ def _count_rows(state, settings, a0):
     region_states = tuple(settings.get("region_states", (True,) * 4))
     if len(region_states) != 4:
         raise ValueError("Provide four GB side visibility states")
-    layer = state.manual_vertices[0].layer
     counts = count_cell_atoms(
         polygons, state.angle_deg, state.deformations,
-        state.geometry.lattice, state.geometry.axis,
+        state.crystal.lattice, state.crystal.axis,
         boundary_points=boundary,
         region_states=region_states if filtered else (True,) * 4,
-        layer=layer, translations=state.translations,
+        layer=layers, translations=state.translations,
         grain_displacements=state.grain_displacements,
+        scale=state.crystal.scale,
     )
     rows = []
-    for grain in (0, 1):
+    for grain, layer in enumerate(layers):
         available = bool(counts.half_open_available[grain])
         interior = int(counts.interior[grain, layer])
         boundary_count = int(counts.boundary[grain, layer])
@@ -112,11 +113,10 @@ def _vector_rows(state, a0):
         _finite_array(atom.half_indices, (3,), "Selected atom half-indices")
         if atom.grain_index not in (0, 1):
             raise ValueError("Selected atom grain must be G1 or G2")
-    axial_indices = (
-        second.half_indices - first.half_indices
-        + state.axial_repeat * state.geometry.axial_repeat_half_indices
+    dz = axial_displacement(
+        state.crystal, first.grain_index, first.half_indices,
+        second.grain_index, second.half_indices, state.axial_repeat,
     )
-    dz = 0.5 * axial_indices @ state.geometry.frame[:, 2]
     displacement = np.r_[second.position - first.position, dz]
     view_displacement = np.r_[
         rotation_matrix_2d(state.display_rotation_deg) @ displacement[:2], dz,
@@ -136,10 +136,12 @@ def _vector_rows(state, a0):
     for grain in grains:
         result = crystal_vector_coordinates(
             displacement, (1 if grain == 0 else -1) * state.angle_deg / 2,
-            state.deformations[grain], state.geometry.lattice, state.geometry.axis,
+            state.deformations[grain], state.crystal.lattices[grain],
+            state.crystal.axes[grain], scale=state.crystal.scales[grain],
         )
         representations.extend((
-            (f"G{grain + 1}", "current_polar_cubic_uvw", "a0", result.current),
+            (f"G{grain + 1}", "current_polar_cubic_uvw",
+             "a0" if grain == 0 or state.crystal.scale == 1.0 else "a0_G2", result.current),
             (f"G{grain + 1}", "deformed_cubic_lattice_uvw", "1", result.lattice),
         ))
     return [
@@ -156,7 +158,7 @@ def _strain_rows(state, a0):
     # current F rather than a possibly stale fitted/search-result cell.
     cell = SimpleNamespace(
         f1=state.deformations[0], f2=state.deformations[1],
-        lattice=state.geometry.lattice, axis=state.geometry.axis,
+        lattice=state.crystal.lattice, axis=state.crystal.axis, scale=state.crystal.scale,
     )
     cubic_tensors = strain_tensors(cell, state.angle_deg)
     for grain, deformation in enumerate(state.deformations):
@@ -216,8 +218,12 @@ def _strain_rows(state, a0):
          "degree", "current_polar_grains"),
         ("both", "display_rotation", "", state.display_rotation_deg,
          "degree", "display_xy"),
-        ("both", "lattice_constant", "", a0, "angstrom", "reference_cubic"),
     ))
+    if state.crystal.homophase:
+        rows.append(("both", "lattice_constant", "", a0, "angstrom", "reference_cubic"))
+    else:
+        rows.extend((f"G{grain + 1}", "lattice_constant", "", a0 * scale, "angstrom",
+                     "reference_cubic") for grain, scale in enumerate(state.crystal.scales))
     # Supplement the unchanged physical tensors with a reproducible basis for
     # a currently applied common cell, or the undeformed exact CSL cell.
     current_cell = state.near_cell
@@ -226,11 +232,10 @@ def _strain_rows(state, a0):
     if not isinstance(current_cell, StrainedCell):
         current_cell = None
     if current_cell is None and not has_local_shifts and np.array_equal(state.deformations, (np.eye(2), np.eye(2))):
-        current_cell = exact_csl_cell(state.angle_deg, lattice=state.geometry.lattice,
-                                      axis=state.geometry.axis)
+        current_cell = exact_csl_cell(state.angle_deg, lattice=state.crystal.lattice,
+                                      axis=state.crystal.axis, scale=state.crystal.scale)
     if (current_cell is not None and not has_local_shifts
-            and current_cell.lattice == state.geometry.lattice
-            and current_cell.axis == state.geometry.axis
+            and current_cell.crystal == state.crystal
             and np.array_equal(state.deformations, (current_cell.f1, current_cell.f2))):
         canonical = canonical_cell_basis(current_cell, state.angle_deg)
         for grain, matrix in zip(("G1", "G2"), (canonical.m1, canonical.m2)):
@@ -264,6 +269,11 @@ a0 denotes the saved lattice constant in angstrom (angstrom = 1e-10 m).
 All x/y analysis coordinates exclude the display-only rotation. Layers are
 zero-based axial phase indices, not chemical species.
 
+Two different grains (another lattice, tilt axis or lattice constant for G2)
+keep a0 = the G1 lattice constant for all analysis lengths; G2's lattice
+constant is a0_G2. Their layers are unrelated: each grain's row uses its own
+picked layer, and strain.csv gives one lattice_constant row per grain.
+
 counts.csv
 One row per grain, only for the layer in the complete four-vertex selection.
 Counts are recomputed over each grain's actual physical polygon, independently
@@ -289,7 +299,9 @@ difference is computed. The in-plane displacement uses actual atom positions,
 including both grains' F, affine translations and manual displacements; reference indices are not used to
 subtract cross-grain x/y positions. analysis_xyz and display_xyz give x,y,z/a0;
 the latter rotates x/y only by the display angle. current_polar_cubic_uvw gives
-components/a0 in orthonormal cubic axes carried by that grain's polar rotation.
+components/a0 in orthonormal cubic axes carried by that grain's polar rotation
+(G2 components use a0_G2 when its lattice constant differs). Each atom's z is
+its own grain's layer height; different grains share no axial phase.
 deformed_cubic_lattice_uvw gives dimensionless coefficients in its deformed
 conventional cubic basis. These can be nonintegers, especially for cross-grain
 vectors; they are not rounded Miller indices. Crystal-frame rows use the

@@ -10,7 +10,7 @@ point per row, so corresponding matrix operations use a transpose.
 
 | Module | Responsibility |
 | --- | --- |
-| [crystal.py](../../src/dichromatic_map/crystal.py) | Integer axes, primitive layer geometry, projected columns and vector coordinates |
+| [crystal.py](../../src/dichromatic_map/crystal.py) | Integer axes, primitive layer geometry, per-grain `Bicrystal`, projected columns and vector coordinates |
 | [matching.py](../../src/dichromatic_map/matching.py) | Exact displayed coincidences, rational common cells and local pairs |
 | [cells.py](../../src/dichromatic_map/cells.py) | Cell reduction, polygon membership and full-region atom counts |
 | [strain.py](../../src/dichromatic_map/strain.py) | Automatic symmetric strain search and selected-cell fitting |
@@ -600,6 +600,103 @@ These resource bounds, candidate sampling and numerical tolerances are part of t
 algorithm. They support interactive geometric analysis and do not establish relaxed structures,
 elastic equilibria or global optimality.
 
+## 10. Two different grains (FCC/BCC and other interfaces)
+
+Implementation: `Bicrystal`, `bicrystal`, `misorientation_range`, `angle_presets` and
+`axial_displacement` in [crystal.py](../../src/dichromatic_map/crystal.py);
+`projected_coincidence_sites`, `projected_near_pairs` and `_exact_common_cell` in
+[matching.py](../../src/dichromatic_map/matching.py).
+
+`Bicrystal` stores each grain's lattice and reduced axis key and the ratio
+`s = a₀(G2)/a₀(G1)`. Analysis lengths stay in G1's a₀. Both axes lie along the common
+analysis z, and each grain keeps the frame of its own axis (Section 2), so `θ = 0`
+aligns the x axes of the two frames. Grain 2's unstrained positions are
+
+```text
+x(n,l) = s R(-theta/2) (P2 n + o2_l),        current = F x + t,
+```
+
+that is, `projected_columns(..., scale=s)` multiplies the rotation before F and t.
+Reference half-indices remain in each grain's own a₀/2. Only identical lattices,
+axes and lattice constants (`s = 1` exactly) form a *homophase* bicrystal, which
+uses every algorithm of Sections 2–9 unchanged. All other combinations follow the
+rules below. The public functions accept one value or one value per grain for
+`lattice` and `axis`, plus `scale`.
+
+### Layers and angle range
+
+Each grain keeps its own layer count, spacing and axial repeat (both scaled by its
+a₀). Layer IDs of different grains are unrelated, and the two axial periods are in
+general incommensurate. Layer symbols and sizes are indexed by layer ID up to the
+larger count; visibility filters remain per grain.
+
+Rotating grain g by its own axial symmetry adds multiples of `360°/n_g` to θ, so θ
+is periodic with `P = 360°/lcm(n1, n2)`. Grain exchange is not a symmetry. A
+half-turn about an in-plane line maps θ to `-θ + 2(α2 − α1)`, where `α_g` are the
+analysis-frame angles of grain g's cubic two-fold axes normal to its axis. If some
+offset is a multiple of P, the input interval is `[0, P/2]`; otherwise all of
+`[0, P]` is kept. FCC[110]/BCC[111] therefore uses 0–30°, FCC[110]/BCC[001] 0–45°,
+and a pair of `[1 2 3]`-type axes without such a two-fold axis 0–360°.
+`AngleRange.sign_equivalent` records whether θ and −θ are equivalent.
+
+### Orientation-relationship presets
+
+For FCC/BCC pairs the preset menu lists orientation relationships instead of Σ:
+
+| Name | Parallel planes | Parallel directions |
+| --- | --- | --- |
+| Bain | (001)γ ∥ (001)α | [100]γ ∥ [110]α |
+| Nishiyama–Wassermann (NW) | (111)γ ∥ (011)α | [1 1 −2]γ ∥ [0 −1 1]α |
+| Kurdjumov–Sachs (KS) | (111)γ ∥ (011)α | [−1 0 1]γ ∥ [−1 −1 1]α |
+
+Each relationship defines a rotation G from BCC to FCC cubic components, built
+from orthonormal triads (plane normal, direction, their cross product). A grain-g
+cubic vector maps to analysis coordinates by `R(φ_g) C_gᵀ`, so a symmetry variant
+`S1 G S2` (24 × 24 proper cubic rotations) applies to the chosen axes only if it
+maps `d̂2` to `d̂1`; then `C1ᵀ S1 G S2 C2 = R(−θ)`. Each such θ is reduced into the
+interval above and duplicates within 1e-7° are removed. FCC[110]/BCC[001] gives
+Bain at 0° and NW at 9.74°; FCC[110]/BCC[111] gives KS at 24.74°; FCC[111]/BCC[110]
+gives KS at 24.74° and NW at 30°. Other combinations have no presets, and the
+default angle is then the first preset or 0°.
+
+### Exact common cell and strain search
+
+The quaternion construction of Section 4 assumes one lattice. For two different
+grains `_exact_common_cell` recognizes every entry of `B2⁻¹ B1` as a rational with
+denominator at most `max_denominator` within `1e-9 max(1, |entry|)`, giving
+`B2⁻¹ B1 = P/d`. The same congruence kernel and Gauss reduction yield M1 and M2,
+accepted only if `B1 M1 = B2 M2` to 1e-8 a₀. Angles up to 360° are accepted. A
+lattice-constant ratio entered as rounded decimals is generally incommensurate, so
+usually no exact cell exists; for example FCC/FCC [001] with `s = 0.8` gives the
+4 × 4 / 5 × 5 cell. The automatic strain search (Section 6) and selected-cell fit
+(Section 7) use the scaled bases directly. `StrainedCell.atoms` multiplies each
+grain's determinant by its own layer count, and the readouts list each grain's
+axial repeat instead of a common C3.
+
+### Projected-column matching
+
+Exact and local matching compare every G1 column with every G2 column, regardless
+of layer, using the binned algorithms of Sections 4 and 5 on the complete arrays.
+Results are grouped by G1 layer and carry the G2 layer of each match
+(`coincident_second_layers`, `LocalPairs.second_layers`). This is a coincidence in
+projection, not a three-dimensional coincidence site. An overlay requires both
+endpoint layers to be visible in their own grains. Mutual-nearest matching runs as
+one job, because the nearest G1 column of a G2 column may belong to any layer.
+For a homophase bicrystal both layer fields are equal.
+
+### Cells, counts and vectors
+
+A manual cell's vertices share one (G1 layer, G2 layer) pair; `CellVertex.second_layer`
+stores the G2 layer. Counting, selected-cell fitting and completion take one layer
+per grain and subtract each grain's own layer offset. Completion considers only
+operations certified in both lattices: G1's axis-preserving operations, each
+verified in G2. Grain exchange is not offered.
+
+Each atom's z is its own grain's layer height `s_g (h/2)·ẑ_g`; P2's axial image uses
+the repeat of P2's grain. Vectors within one grain, or in a homophase bicrystal,
+still difference integer indices first. A grain's crystal components and lattice
+coordinates use that grain's own lattice constant.
+
 ## Appearance state and marker rendering
 
 `PatternState.grain_colors` stores two `#RRGGBB` strings; `layer_symbols` stores
@@ -680,7 +777,7 @@ preference is part of the session schema. SVG always contains atoms only.
 
 ## Session persistence and numerical export
 
-`session.py` stores a `.dmap` ZIP archive with schema version 5. `session.json`
+`session.py` stores a `.dmap` ZIP archive with schema version 6. `session.json`
 contains explicit physical and display inputs, not a dump of `PatternState`:
 current lattice/axis/angle replace potentially stale launch parameters, arrays
 become ordinary JSON lists, and selected atom indices retain their grain and
@@ -696,7 +793,10 @@ the `symmetry` and `closure` vertex source values; schemas 1–3 still load with
 their original source values. Schema 5 adds `grain_displacements`; schemas 1–4
 load with empty histories. Selected atom coordinates are verified after replaying
 the history. Unapplied rectangle selection is transient and saves as idle.
-Saving writes schema 5. Unsupported future
+Schema 6 adds the `lattice2` and `axis2` parameters (null
+repeats grain 1) and `lattice_ratio` = a₀(G2)/a₀(G1) (default 1), the cell `scale` with per-grain lattice/axis lists, and each
+vertex's `second_layer`; schemas 1–5 load as homophase bicrystals. A homophase
+vertex must use one layer in both grains. Saving writes schema 6. Unsupported future
 versions and unexpected fields are rejected.
 Saved local-pair distance values are independent of the new-session default of
 0.1 a₀ and load without modification.

@@ -31,8 +31,8 @@ function tutorialPosition(target, size, viewport) {
 const tutorialSteps = [
   {target: "map", en: ["Explore the pattern", "The plot overlays two grains. Colors identify grains; marker shapes identify axial layers.", "Drag to pan, then use the wheel or pinch to zoom. You can try each feature while this guide is open."],
    zh: ["先感受一下双色图", "图中叠加了两个晶粒：颜色区分晶粒，符号形状区分轴向层。", "拖动平移，再用滚轮或双指缩放。引导期间可以直接操作控件，不必完成操作也可进入下一步。"], keys: [["C", "Center view", "视野居中"]]},
-  {target: "crystal-controls", tab: "orientation", en: ["Choose a crystal and axis", "Select FCC, BCC or SC and a viewing axis. Custom [h k l] accepts an integer triple.", "Try a different structure or axis, then return to FCC / ⟨110⟩. Changing geometry clears earlier selections."],
-   zh: ["选择晶体与晶轴", "选择 FCC、BCC 或 SC，再选择观察晶轴。Custom [h k l] 可输入整数三元组。", "试着切换结构或晶轴，再回到 FCC / ⟨110⟩。改变几何参数会清除已有选点。"]},
+  {target: "crystal-controls", tab: "orientation", en: ["Choose a crystal and axis", "Select FCC, BCC or SC and a viewing axis. Custom [h k l] accepts an integer triple. Check Set G2 separately to give G2 its own structure, axis and a₀(G2)/a₀(G1), e.g. FCC/BCC.", "Try a different structure or axis, then return to FCC / ⟨110⟩. Changing geometry clears earlier selections."],
+   zh: ["选择晶体与晶轴", "选择 FCC、BCC 或 SC，再选择观察晶轴。Custom [h k l] 可输入整数三元组。勾选 Set G2 separately 可为 G2 单独设置结构、晶轴和 a₀(G2)/a₀(G1)，构建 FCC/BCC 等异相界面。", "试着切换结构或晶轴，再回到 FCC / ⟨110⟩。改变几何参数会清除已有选点。"]},
   {target: "angle-controls", tab: "orientation", en: ["Find an exact CSL", "CSL presets give commensurate orientations with gold coincidence markers. You can also enter or slide the misorientation angle.", "Try the Σ9 preset for FCC ⟨110⟩. Later, 22° is useful for exploring local near pairs."],
    zh: ["找到精确重合点", "CSL 预设给出公度取向，精确重合点显示为金色标记。也可输入错取向角或拖动滑块。", "先试 FCC ⟨110⟩ 的 Σ9 预设。后面体验局部近邻配对时，可使用 22°。"]},
   {target: "rotation-controls", tab: "orientation", en: ["Rotate the drawing", "Display rotation turns the view without changing the grains' relative misorientation.", "Move the slider, then use 0° to return. The grain reference axes rotate with the view."],

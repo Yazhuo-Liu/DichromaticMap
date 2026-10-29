@@ -124,7 +124,7 @@ class SessionController:
         """Detect programmatic/reentrant edits while ordinary input is paused."""
         state, controls = self.owner.state, self.owner.controls
         return (
-            id(state), state.parameters, state.geometry.lattice, state.geometry.axis,
+            id(state), state.parameters, state.crystal,
             state.pending_angle, controls.angle_spin.value(), controls.rotation_spin.value(),
             tuple(frozenset(layers) for layers in state.visible_grain_layers),
             tuple(state.grain_colors), tuple(state.layer_symbols), tuple(state.layer_size_scales),
@@ -154,9 +154,10 @@ class SessionController:
             projected_columns(
                 width, height, sign * state.angle_deg / 2,
                 center=(low + high) / 2, deformation=state.deformations[grain],
-                lattice=state.geometry.lattice, axis=state.geometry.axis,
+                lattice=state.crystal.lattices[grain], axis=state.crystal.axes[grain],
                 translation=state.translations[grain],
                 displacements=state.grain_displacements[grain],
+                scale=state.crystal.scales[grain],
             )
             for grain, sign in enumerate((1, -1))
         ]
@@ -196,6 +197,8 @@ class SessionController:
         owner._translation_undo = [[], []]
         widgets = [
             controls.structure_combo, controls.axis_combo, controls.layer_combo,
+            controls.structure2_combo, controls.axis2_combo, controls.heterophase_check,
+            controls.lattice_ratio_spin,
             controls.rotation_spin, controls.rotation_slider, controls.reference_axes_check,
             controls.axial_spin, controls.cell_check, controls.manual_visible_check,
             controls.local_distance_spin, controls.strain_spin, controls.search_index_spin,
@@ -206,18 +209,10 @@ class SessionController:
         with ExitStack() as blockers:
             for widget in widgets:
                 blockers.enter_context(QtCore.QSignalBlocker(widget))
-            controls.structure_combo.setCurrentIndex(controls.structure_combo.findData(state.geometry.lattice))
-            index = controls.axis_combo.findData(state.geometry.axis)
-            controls.axis_combo.setCurrentIndex(index if index >= 0 else controls.axis_combo.findData(None))
-            controls.custom_axis_edit.setText(" ".join(map(str, state.geometry.axis_indices)))
-            controls.custom_axis_row.setVisible(index < 0)
+            controls._sync_crystal_controls()
             controls.axis_error.clear()
             controls.axis_error.hide()
-            with QtCore.QSignalBlocker(controls.preset_combo):
-                controls.preset_combo.clear()
-                controls.preset_combo.addItem("Custom angle", None)
-                for index, preset in enumerate(state.presets):
-                    controls.preset_combo.addItem(preset.label, index)
+            owner._populate_preset_combo()
             controls._populate_layer_combo()
             controls._rebuild_layer_checks()
             controls.rotation_spin.setValue(state.display_rotation_deg)

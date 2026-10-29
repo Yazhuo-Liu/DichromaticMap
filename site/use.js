@@ -7,6 +7,8 @@ const identity = () => [[[1, 0], [0, 1]], [[1, 0], [0, 1]]];
 const clone = (x) => JSON.parse(JSON.stringify(x));
 const state = {
   lattice: "FCC", axis: "110", angle: 38.94244126898139,
+  // Grain 2 repeats grain 1 while these are null (a homophase bicrystal).
+  lattice2: null, axis2: null, ratio: 1,
   displayRotation: 0, a0: 3.52,
   center: [0, 0], scale: 1, width: 12, height: 9,
   visibleLayers: [new Set([0, 1]), new Set([0, 1])],
@@ -76,7 +78,8 @@ function setStatus(message) {
   const byLayer = Array.from(layerCounts, ([layer, count]) => `${layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`}: ${count}`).join(", ");
   const edgeHint = !currentPattern() && displayed && !displayed.coverageComplete
     ? `<br>${angleSliderDragging ? "Release to update edge atoms." : "Updating edge atoms…"}` : "";
-  setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>Same-layer CSL: ${currentPattern() ? cslPoints.length : "updating"}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}${edgeHint}<br>Compute: on this device`);
+  const cslName = metadata && !metadata.homophase ? "Coincident columns" : "Same-layer CSL";
+  setHTML($("status"), `<strong>${escapeHtml(message)}</strong>Drag to pan · pinch or wheel to zoom<br>Visible G1 / G2: ${g1} / ${g2}<br>${cslName}: ${currentPattern() ? cslPoints.length : "updating"}${byLayer ? ` · ${escapeHtml(byLayer)}` : ""}${edgeHint}<br>Compute: on this device`);
 }
 function setHTML(element, html) {
   if (element.innerHTML !== html) element.innerHTML = html;
@@ -251,9 +254,21 @@ function visibleCSL() {
 function visibleLocal() {
   return currentPattern() ? visibleData().local : [];
 }
+function crystalParameters() {
+  // Grain 2 fields are sent only when they differ, keeping homophase requests unchanged.
+  const crystal = {lattice: state.lattice, axis: state.axis};
+  if (state.lattice2 !== null) crystal.lattice2 = state.lattice2;
+  if (state.axis2 !== null) crystal.axis2 = state.axis2;
+  if (state.ratio !== 1) crystal.ratio = state.ratio;
+  return crystal;
+}
+function sameCrystal(parameters) {
+  const current = crystalParameters();
+  return ["lattice", "axis", "lattice2", "axis2", "ratio"].every(key => parameters[key] === current[key]);
+}
 function currentRenderParameters() {
   return {
-    lattice: state.lattice, axis: state.axis, angle: state.angle,
+    ...crystalParameters(), angle: state.angle,
     deformations: state.deformations, translations: state.translations,
     grain_displacements: state.grainDisplacements,
     local_matching: state.nearEnabled && state.nearMethod === "local",
@@ -279,15 +294,14 @@ async function waitForCurrentRender() {
 // Angle previews only feed drawing. The committed Float64 rows, identities,
 // matching results and currentPattern guard remain the scientific source.
 function prepareAnglePreview() {
-  if (anglePreview?.source === pattern && anglePreview.parameters.lattice === state.lattice &&
-      anglePreview.parameters.axis === state.axis) return;
+  if (anglePreview?.source === pattern && sameCrystal(anglePreview.parameters)) return;
   anglePreview = undefined;
   if (!pattern || !renderCoverage) return;
   const parameters = JSON.parse(renderCoverage.signature);
   // A piecewise move cannot be undone by the uniform preview transform.
   // Wait for exact new geometry when an angle change clears manual moves.
   if (parameters.grain_displacements?.some(operations => operations.length)) return;
-  if (parameters.lattice !== state.lattice || parameters.axis !== state.axis) return;
+  if (!sameCrystal(parameters)) return;
   const inverse = parameters.deformations.map(f => {
     const det = f[0][0] * f[1][1] - f[0][1] * f[1][0];
     return [f[1][1] / det, -f[0][1] / det, -f[1][0] / det, f[0][0] / det];
@@ -304,8 +318,7 @@ function prepareAnglePreview() {
 }
 function previewVisibleData() {
   const preview = anglePreview;
-  if (!preview || preview.source !== pattern || preview.parameters.lattice !== state.lattice ||
-      preview.parameters.axis !== state.axis ||
+  if (!preview || preview.source !== pattern || !sameCrystal(preview.parameters) ||
       preview.signature !== JSON.stringify(currentRenderParameters())) return null;
   const transform = viewTransform();
   const selection = `${[...state.visibleLayers[0]]}|${[...state.visibleLayers[1]]}|${state.boundary.flat()}|${state.regions}`;
@@ -406,6 +419,8 @@ function visibleData() {
       }
     }
   }
+  // Two different grains match columns of any layers; G2 layers come separately.
+  const cslPartners = pattern?.coincidence_partners, localPartners = pattern?.local_partners;
   const csl = data.cslMarkers, common = csl.rows.flat;
   csl.count = 0;
   const commonCandidates = csl.spatial?.queryViewport(transform);
@@ -413,7 +428,8 @@ function visibleData() {
   for (let cursor = 0; cursor < commonLength; cursor++) {
     const index = commonCandidates ? commonCandidates[cursor] : cursor;
     const offset = index * 3, px = common[offset], py = common[offset + 1], layer = common[offset + 2];
-    if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer) ||
+    const layer2 = cslPartners ? cslPartners[index] : layer;
+    if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer2) ||
         !sideVisibleXY(px, py, 0) || !sideVisibleXY(px, py, 1)) continue;
     const x = ox + (cosine * px - sine * py - cx) * r.width / width;
     const y = oy - (sine * px + cosine * py - cy) * r.height / height;
@@ -432,7 +448,8 @@ function visibleData() {
       const index = localCandidates ? localCandidates[cursor] : cursor;
       const offset = index * 5, ax = pairs[offset], ay = pairs[offset + 1],
         bx = pairs[offset + 2], by = pairs[offset + 3], layer = pairs[offset + 4];
-      if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer) ||
+      const layer2 = localPartners ? localPartners[index] : layer;
+      if (!state.visibleLayers[0].has(layer) || !state.visibleLayers[1].has(layer2) ||
           !sideVisibleXY(ax, ay, 0) || !sideVisibleXY(bx, by, 1)) continue;
       const mx = (ax + bx) / 2, my = (ay + by) / 2;
       const x = ox + (cosine * mx - sine * my - cx) * r.width / width;
@@ -805,7 +822,9 @@ function drawReferenceAxes(context, r) {
       context.lineTo(ex, ey); context.stroke();
       context.beginPath(); context.arc(ex, ey, 2.5, 0, Math.PI * 2); context.fill();
       context.font = "10px Arial";
-      context.fillText(metadata.reference_labels[axis], ex + direction[0] * 8 - 13,
+      // Grains with different tilt axes label different [uvw] directions.
+      const labels = metadata.grains?.[grain]?.reference_labels ?? metadata.reference_labels;
+      context.fillText(labels[axis], ex + direction[0] * 8 - 13,
                        ey - direction[1] * 8 + 3);
     }
   }
@@ -818,14 +837,15 @@ function plotLegendEntries() {
     .filter(layer => layer >= 0 && layer < metadata.layers).sort((a, b) => a - b);
   for (const layer of layers.slice(0, 6)) {
     for (let grain = 0; grain < 2; grain++) {
-      if (!state.visibleLayers[grain].has(layer)) continue;
+      if (!state.visibleLayers[grain].has(layer) || layer >= grainLayers(grain)) continue;
       const name = layer < 26 ? String.fromCharCode(65 + layer) : `L${layer + 1}`;
       entries.push({label: `G${grain + 1} · ${name}`, symbol: state.symbols[layer],
         stroke: grain ? state.colors[1] : "#2e6799", fill: grain ? null : state.colors[0], lineWidth: 1.25});
     }
   }
   if (layers.length > 6) entries.push({label: `+${layers.length - 6} layers`});
-  if (visibleCSL().length) entries.push({label: "CSL", symbol: "o", stroke: "#e5a50a", fill: null, lineWidth: 2.2});
+  if (visibleCSL().length) entries.push({label: metadata.homophase === false ? "Coincident column" : "CSL",
+    symbol: "o", stroke: "#e5a50a", fill: null, lineWidth: 2.2});
   if (visibleLocal().length) entries.push({label: "Near pair", symbol: "o", stroke: "#aa45bb", fill: null, lineWidth: 2});
   return entries;
 }
@@ -873,12 +893,19 @@ function updateSummary() {
   for (const [id, mode] of [["pick-gb","boundary"],["pick-vector","vector"],["pick-cell","cell"]]) {
     $(id).classList.toggle("selected", state.mode === mode);
   }
-  const name = `${state.lattice} ⟨${state.axis}⟩`;
+  const homophase = metadata.homophase !== false;
+  const name = homophase ? `${state.lattice} ⟨${state.axis}⟩` : metadata.label;
   const preset = currentPattern() && pattern?.preset ? ` · ${pattern.preset}` : "";
-  $("control-title").textContent = `${name} GB`;
+  $("control-title").textContent = `${name} ${homophase ? "GB" : "interface"}`;
+  $("control-units").textContent = homophase || metadata.scale === 1
+    ? "Coordinates in a₀ · 1 = one lattice constant"
+    : `Coordinates in a₀ of G1 · a₀(G2)/a₀(G1) = ${metadata.scale.toPrecision(6)}`;
   $("plot-title").textContent = `${name} dichromatic pattern · θ = ${state.angle.toFixed(2)}°${preset}`;
   $("angle-hint").textContent = `Exact θ = ${state.angle.toFixed(8)}° · allowed 0–${metadata.max_angle}°`;
-  $("layer-info").textContent = `${metadata.layers} axial layers per grain · spacing = ${metadata.layer_spacing.toPrecision(5)} a₀ · axial repeat = ${metadata.axial_period.toPrecision(5)} a₀. CSL and near pairs require visibility in both grains.`;
+  $("layer-info").textContent = homophase
+    ? `${metadata.layers} axial layers per grain · spacing = ${metadata.layer_spacing.toPrecision(5)} a₀ · axial repeat = ${metadata.axial_period.toPrecision(5)} a₀. CSL and near pairs require visibility in both grains.`
+    : metadata.grains.map((grain, index) => `G${index + 1} ${grain.lattice} ${grain.axis_label}: ${grain.layers} layers · spacing ${grain.layer_spacing.toPrecision(5)} a₀ · repeat ${grain.axial_period.toPrecision(5)} a₀`).join("\n") +
+      `\nLengths in G1's a₀ (a₀(G2)/a₀(G1) = ${metadata.scale.toPrecision(6)}). Grain layers are unrelated: coincident columns and near pairs match projected columns of any visible G1/G2 layers.`;
   $("gb-options").classList.toggle("hidden", state.boundary.length !== 2);
   $("near-toggle").textContent = state.nearEnabled ? "Disable Near-CSL" : "Enable Near-CSL";
   $("near-toggle").classList.toggle("selected", state.nearEnabled);
@@ -898,7 +925,7 @@ function updateSummary() {
   $("near-results").classList.toggle("hidden", !state.nearSolutions.length);
   if (state.nearEnabled && state.nearMethod === "local" && currentPattern() && pattern?.local) {
     const visible = visibleData();
-    $("near-info").textContent = `Local same-layer mutual nearest pairs\nVisible pairs: ${visible.localMarkers.count}\nMaximum visible separation: ${visible.localMarkers.count ? visible.maxLocalSeparation.toFixed(5) : "—"} a₀\nOriginal atom positions retained.`;
+    $("near-info").textContent = `${homophase ? "Local same-layer mutual nearest pairs" : "Mutual nearest projected columns (any G1/G2 layers)"}\nVisible pairs: ${visible.localMarkers.count}\nMaximum visible separation: ${visible.localMarkers.count ? visible.maxLocalSeparation.toFixed(5) : "—"} a₀\nOriginal atom positions retained.`;
   }
   $("fit-cell").disabled = !(state.nearCell || (currentPattern() ? pattern?.exact_cell : null));
   $("complete-cell").disabled = uniformStrainBlocked() || !(state.manual.length === 2 || state.manual.length === 3);
@@ -908,7 +935,7 @@ function updateSummary() {
     !state.manual.some(v => v.source !== "CSL") && !state.manualFit;
   $("apply-strain").textContent = state.manualFit ? "Restore original local structure" : "Apply bulk strain to selected cell";
   $("manual-info").textContent = state.manual.length
-    ? `Selected ${state.manual.length}/4 vertices in layer ${state.manual[0].layer + 1}.\n${$("manual-info").dataset.count || "Continue around the perimeter in the same layer."}`
+    ? `Selected ${state.manual.length}/4 vertices in ${homophase ? `layer ${state.manual[0].layer + 1}` : `G1 layer ${state.manual[0].layer + 1} / G2 layer ${vertexLayer2(state.manual[0]) + 1}`}.\n${$("manual-info").dataset.count || "Continue around the perimeter in the same layer."}`
     : "No manual cell. Pick one layer; each grain is counted inside its own four actual atom vertices.";
   $("field-label").textContent = `${state.scale.toFixed(1)}×`;
   $("angle-number").value = state.angle.toFixed(2);
@@ -916,7 +943,23 @@ function updateSummary() {
   $("rotation-number").value = String(state.displayRotation);
   $("rotation-slider").value = String(state.displayRotation);
 }
+function grainLayers(grain) {
+  return metadata?.grain_layers?.[grain] ?? metadata?.layers ?? 0;
+}
+function allGrainLayers() {
+  return [0, 1].map(grain => new Set(Array.from({length: grainLayers(grain)}, (_, i) => i)));
+}
+function vertexLayer2(vertex) {
+  return vertex.layer2 ?? vertex.layer;
+}
+function manualLayers() {
+  // One shared layer for a homophase bicrystal; otherwise one per grain.
+  const vertex = state.manual[0];
+  if (!vertex) return undefined;
+  return metadata?.homophase === false ? [vertex.layer, vertexLayer2(vertex)] : vertex.layer;
+}
 function rebuildPreset() {
+  $("preset-label").textContent = metadata.homophase === false ? "Orientation relationship" : "CSL preset";
   $("preset").replaceChildren(new Option("Custom angle", ""));
   for (const preset of metadata.presets) $("preset").add(new Option(preset.label, String(preset.angle)));
   const found = metadata.presets.find(p => Math.abs(p.angle - state.angle) < 1e-8);
@@ -927,6 +970,7 @@ function rebuildLayers() {
   const appearance = $("appearance-layers"); appearance.replaceChildren();
   for (let layer = 0; layer < metadata.layers; layer++) {
     for (let grain = 0; grain < 2; grain++) {
+      if (layer >= grainLayers(grain)) { checks.append(document.createElement("span")); continue; }
       const label = document.createElement("label");
       const check = document.createElement("input"); check.type = "checkbox";
       check.checked = state.visibleLayers[grain].has(layer);
@@ -963,20 +1007,22 @@ function rebuildLayers() {
   }
 }
 async function loadMetadata(reset = true, supplied = null) {
-  const result = supplied || await request("metadata", {lattice: state.lattice, axis: state.axis});
+  const result = supplied || await request("metadata", crystalParameters());
   applyMetadata(reset, result);
 }
 function applyMetadata(reset, result) {
   metadata = result;
   state.lattice = result.lattice; state.axis = result.axis;
+  if (result.homophase !== false) { state.lattice2 = state.axis2 = null; state.ratio = 1; }
+  else { state.lattice2 = result.lattice2; state.axis2 = result.axis2; state.ratio = result.scale; }
   if (reset) {
     state.angle = result.default_angle;
-    state.visibleLayers = [new Set(Array.from({length: result.layers}, (_, i) => i)),
-                           new Set(Array.from({length: result.layers}, (_, i) => i))];
+    state.visibleLayers = allGrainLayers();
     state.symbols = result.symbols;
     state.sizes = Array(result.layers).fill(1);
   }
   $("angle-slider").max = $("angle-number").max = String(result.max_angle);
+  syncCrystalControls();
   rebuildPreset(); rebuildLayers(); updateSummary(); renderRequest();
 }
 function resetSelections() {
@@ -991,15 +1037,46 @@ function resetSelections() {
   state.mode = "idle"; $("manual-info").dataset.count = "";
   $("vector-annotation").hidden = true; $("strain-info").classList.add("hidden");
 }
+function requestedCrystal() {
+  const crystal = {lattice: $("structure").value,
+    axis: $("axis").value === "custom" ? $("custom-axis").value : $("axis").value};
+  if ($("heterophase").checked) {
+    const ratio = Number($("lattice-ratio").value);
+    if (!(Number.isFinite(ratio) && ratio >= .001 && ratio <= 1000))
+      throw new Error("a₀(G2)/a₀(G1) must be between 0.001 and 1000");
+    Object.assign(crystal, {lattice2: $("structure2").value,
+      axis2: $("axis2").value === "custom" ? $("custom-axis2").value : $("axis2").value, ratio});
+  }
+  return crystal;
+}
+function syncCrystalControls() {
+  const heterophase = metadata?.homophase === false;
+  // A geometry change can finish while the user edits the next field (its blur
+  // started the change); never overwrite the focused control's pending input.
+  const set = (id, value) => { if ($(id) !== document.activeElement) $(id).value = value; };
+  // The box stays checked over an unchanged G2 copy; it only reveals G2's controls.
+  if (heterophase) $("heterophase").checked = true;
+  $("grain2-controls").classList.toggle("hidden", !$("heterophase").checked);
+  const grains = [[state.lattice, state.axis, ""], [state.lattice2 ?? state.lattice, state.axis2 ?? state.axis, "2"]];
+  for (const [lattice, axis, suffix] of grains) {
+    set(`structure${suffix}`, lattice);
+    const known = ["100","110","111","112"].includes(axis);
+    set(`axis${suffix}`, known ? axis : "custom");
+    $(`custom-axis${suffix}-row`).classList.toggle("hidden", $(`axis${suffix}`).value !== "custom");
+    if (!known) set(`custom-axis${suffix}`, axis);
+  }
+  set("lattice-constant", state.a0); set("lattice-ratio", state.ratio);
+}
 async function changeGeometry() {
   const generation = ++geometryGeneration;
   invalidateAnalyses(); cancelNearSearch();
   try {
-    const lattice = $("structure").value;
-    const axis = $("axis").value === "custom" ? $("custom-axis").value : $("axis").value;
-    const next = await request("metadata", {lattice, axis});
+    const crystal = requestedCrystal();
+    const next = await request("metadata", crystal);
     if (generation !== geometryGeneration) return;
     state.lattice = next.lattice; state.axis = next.axis;
+    state.lattice2 = next.lattice2; state.axis2 = next.axis2;
+    state.ratio = next.homophase ? 1 : next.scale;
     resetSelections();
     await loadMetadata(true, next);
     if (state.nearEnabled && state.nearMethod === "strain") searchNear();
@@ -1268,8 +1345,11 @@ function nearestCommon(x, y) {
   if (!currentPattern()) return null;
   let bestSource = null, bestIndex = -1, distance = Infinity;
   const tiedLayers = new Set(), visible = visibleData(), csl = visible.cslMarkers;
+  // Ties compare each grain's layer: "G1 layer/G2 layer" for different grains.
+  const pairKey = (layer, partners, row) => partners ? `${layer}/${partners[row]}` : layer;
   for (let index = 0; index < csl.count; index++) {
-    const row = csl.indices[index], layer = csl.rows.flat[row * 3 + 2];
+    const row = csl.indices[index];
+    const layer = pairKey(csl.rows.flat[row * 3 + 2], pattern.coincidence_partners, row);
     const d = Math.hypot(csl.x[index] - x, csl.y[index] - y);
     if (d < distance - 1e-6) {
       distance = d; tiedLayers.clear(); tiedLayers.add(layer);
@@ -1278,7 +1358,8 @@ function nearestCommon(x, y) {
   }
   const local = visible.localMarkers, flat = local.rows.flat, t = visible.transform, r = t.rect;
   for (let index = 0; index < local.count; index++) {
-    const row = local.indices[index], offset = row * 5, layer = flat[offset + 4];
+    const row = local.indices[index], offset = row * 5;
+    const layer = pairKey(flat[offset + 4], pattern.local_partners, row);
     const mx = (flat[offset] + flat[offset + 2]) / 2, my = (flat[offset + 1] + flat[offset + 3]) / 2;
     const sx = t.ox + (t.cosine * mx - t.sine * my - t.cx) * r.width / t.width;
     const sy = t.oy - (t.sine * mx + t.cosine * my - t.cy) * r.height / t.height;
@@ -1290,14 +1371,17 @@ function nearestCommon(x, y) {
   }
   if (distance > 15 || bestIndex < 0) return null;
   if (tiedLayers.size > 1) return {ambiguous: true};
+  const withLayer2 = (candidate, partners) =>
+    partners ? {...candidate, layer2: partners[bestIndex]} : candidate;
   if (bestSource === "CSL") {
     const offset = bestIndex * 3, common = csl.rows.flat;
-    return {position: [common[offset], common[offset + 1]], layer: common[offset + 2], source: "CSL"};
+    return withLayer2({position: [common[offset], common[offset + 1]], layer: common[offset + 2], source: "CSL"},
+      pattern.coincidence_partners);
   }
   const offset = bestIndex * 5;
-  return {position: [(flat[offset] + flat[offset + 2]) / 2, (flat[offset + 1] + flat[offset + 3]) / 2],
+  return withLayer2({position: [(flat[offset] + flat[offset + 2]) / 2, (flat[offset + 1] + flat[offset + 3]) / 2],
     endpoints: [[flat[offset], flat[offset + 1]], [flat[offset + 2], flat[offset + 3]]],
-    layer: flat[offset + 4], source: "local"};
+    layer: flat[offset + 4], source: "local"}, pattern.local_partners);
 }
 function resolveCommon(candidate) {
   if (candidate.endpoints) return candidate;
@@ -1307,7 +1391,7 @@ function resolveCommon(candidate) {
     const rows = visibleData().atoms[grain].rows, flat = rows.flat;
     for (let index = 0; index < rows.length; index++) {
       const offset = index * 6;
-      if (flat[offset + 2] !== candidate.layer) continue;
+      if (flat[offset + 2] !== (grain ? vertexLayer2(candidate) : candidate.layer)) continue;
       const d = Math.hypot(flat[offset] - candidate.position[0], flat[offset + 1] - candidate.position[1]);
       if (d < distance) { distance = d; best = offset; }
     }
@@ -1324,7 +1408,7 @@ function invalidateAnalyses() {
   if ($("completion-dialog").open) $("completion-dialog").close();
 }
 function analysisInputs(kind) {
-  const geometry = {angle:state.angle, lattice:state.lattice, axis:state.axis,
+  const geometry = {angle:state.angle, ...crystalParameters(),
     grain_displacements:state.grainDisplacements, custom_base:uniformStrainBlocked()};
   if (kind === "near") return {...geometry,
     percent:Number($("strain-percent").value), index:Number($("search-index").value)};
@@ -1332,10 +1416,10 @@ function analysisInputs(kind) {
     axial_repeat:state.axialRepeat, deformations:state.deformations};
   if (kind === "count") return {...geometry, polygons:manualPolygons(),
     deformations:state.deformations, translations:state.translations,
-    layer:state.manual[0]?.layer, boundary:state.boundary,
+    layer:manualLayers(), boundary:state.boundary,
     use_boundary:$("count-visible").checked, region_states:state.regions};
   if (kind === "complete" || kind === "fit") return {...geometry, polygons:manualPolygons(),
-    layer:state.manual[0]?.layer, percent:Number($("manual-strain").value),
+    layer:manualLayers(), percent:Number($("manual-strain").value),
     rotation:Number($("manual-rotation").value)};
   // Import replaces the whole workspace, so protect newer user edits to it.
   if (kind === "import") return [sessionState(), sessionSettings(), state.center, state.scale];
@@ -1360,9 +1444,10 @@ async function countManual() {
   try {
     const result = await request("count", token.inputs);
     if (!analysisCurrent(token)) return;
-    const layer = state.manual[0].layer;
+    const layers = [state.manual[0].layer, vertexLayer2(state.manual[0])];
     const lines = [];
     for (const grain of [0,1]) {
+      const layer = layers[grain];
       const inside = result.interior[grain][layer], boundary = result.boundary[grain][layer];
       if (result.half_open_available?.[grain] && result.half_open) {
         lines.push(`G${grain+1}: ${result.half_open[grain][layer]} half-open atom count`);
@@ -1419,7 +1504,8 @@ async function selectAt(x, y) {
     let candidate = nearestCommon(x, y);
     if (!candidate) return setStatus("Click a gold CSL or purple near-pair marker");
     if (candidate.ambiguous) return setStatus("Overlapping layers: isolate one layer before picking this marker");
-    if (state.manual.length && candidate.layer !== state.manual[0].layer) return setStatus("Choose the same axial layer for all vertices");
+    if (state.manual.length && (candidate.layer !== state.manual[0].layer ||
+        vertexLayer2(candidate) !== vertexLayer2(state.manual[0]))) return setStatus("Choose the same axial layer for all vertices");
     if (state.manual.some(v => Math.hypot(v.position[0] - candidate.position[0], v.position[1] - candidate.position[1]) < 1e-8)) return setStatus("Choose a different vertex");
     try { candidate = resolveCommon(candidate); } catch (error) { return fail(error); }
     state.manual.push(candidate);
@@ -1516,7 +1602,8 @@ async function completeManual() {
         const endpoints = [c.vertices[0][i], c.vertices[1][i]];
         const midpoint = endpoints[0].map((v, j) => (v + endpoints[1][j]) / 2);
         const source = Math.hypot(endpoints[0][0] - endpoints[1][0], endpoints[0][1] - endpoints[1][1]) <= 1e-6 ? "CSL" : c.source;
-        state.manual.push({position: midpoint, endpoints, layer: state.manual[0].layer, source});
+        state.manual.push({position: midpoint, endpoints, layer: state.manual[0].layer,
+          ...(state.manual[0].layer2 === undefined ? {} : {layer2: state.manual[0].layer2}), source});
       }
       state.mode = "idle";
       dialog.close(); await countManual(); draw(); updateSummary();
@@ -1552,7 +1639,7 @@ async function toggleSelectedStrain() {
     state.manual = state.manual.map((v, i) => {
       const endpoints = [fit.vertices[0][i], fit.vertices[1][i]];
       return {position: endpoints[0].map((x, j) => (x + endpoints[1][j]) / 2),
-              endpoints, layer: v.layer, source: "CSL"};
+              endpoints, layer: v.layer, ...(v.layer2 === undefined ? {} : {layer2: v.layer2}), source: "CSL"};
     });
     $("strain-info").classList.remove("hidden");
     $("strain-info").textContent = fit.readout || `Applied selected-cell strain\nMax principal strain: ${(fit.cell.max_strain * 100).toFixed(6)}%`;
@@ -1721,6 +1808,7 @@ async function exportPNG() {
 function sessionState() {
   return {
     lattice: state.lattice, axis: state.axis, angle: state.angle, a0: state.a0,
+    lattice2: state.lattice2, axis2: state.axis2, ratio: state.ratio,
     mode: state.mode, display_rotation: state.displayRotation,
     reference_axes: state.referenceAxes, colors: state.colors, symbols: state.symbols,
     sizes: state.sizes, selected_layer: -1,
@@ -1770,18 +1858,25 @@ async function importSession(file) {
     const loaded = await request("load_session", {bytes: dataUrl.split(",")[1]});
     if (!analysisCurrent(token)) return;
     const raw = loaded.state, p = raw.parameters;
-    const nextMetadata = await request("metadata", {lattice:p.lattice, axis:p.axis});
+    const crystal = {lattice:p.lattice, axis:p.axis};
+    if (p.lattice2 !== null) crystal.lattice2 = p.lattice2;
+    if (p.axis2 !== null) crystal.axis2 = p.axis2;
+    if (p.lattice_ratio !== 1) crystal.ratio = p.lattice_ratio;
+    const nextMetadata = await request("metadata", crystal);
     if (!analysisCurrent(token)) return;
     const view = importedView(loaded.view_range, raw.display_rotation_deg);
     state.lattice = p.lattice; state.axis = p.axis; state.angle = p.angle_deg;
     state.a0 = p.lattice_constant; state.mode = raw.interaction_mode;
+    state.ratio = nextMetadata.homophase ? 1 : nextMetadata.scale;
+    $("heterophase").checked = !nextMetadata.homophase;
     state.displayRotation = raw.display_rotation_deg; state.referenceAxes = raw.show_reference_axes;
     state.colors = raw.grain_colors; state.symbols = raw.layer_symbols;
     state.sizes = raw.layer_size_scales;
     state.visibleLayers = raw.visible_grain_layers.map(layers => new Set(layers));
     state.boundary = raw.selected_points;
     state.atoms = raw.selected_atoms.map(a => ({position:a.position, grain:a.grain_index, layer:a.layer, half_indices:a.half_indices}));
-    const vertices = list => (list || []).map(v => ({position:v.position, layer:v.layer, source:v.source, endpoints:v.grain_positions}));
+    const vertices = list => (list || []).map(v => ({position:v.position, layer:v.layer, source:v.source, endpoints:v.grain_positions,
+      ...(nextMetadata.homophase ? {} : {layer2:v.second_layer})}));
     state.manual = vertices(raw.manual_vertices);
     state.manualOriginal = raw.manual_unstrained_vertices === null ? null : vertices(raw.manual_unstrained_vertices);
     state.manualFit = raw.manual_strain_fit;
@@ -1804,13 +1899,7 @@ async function importSession(file) {
     $("strain-info").classList.toggle("hidden", !state.manualFit);
     $("strain-info").textContent = state.manualFit ? state.manualFit.readout || "Imported selected-cell strain" : "";
     applyMetadata(false, nextMetadata);
-    $("structure").value = state.lattice;
-    const known = ["100","110","111","112"].includes(state.axis);
-    $("axis").value = known ? state.axis : "custom";
-    $("custom-axis-row").classList.toggle("hidden", known);
-    if (!known) $("custom-axis").value = state.axis;
     $("g1-color").value = state.colors[0]; $("g2-color").value = state.colors[1];
-    $("lattice-constant").value = state.a0;
     $("near-method").value = state.nearMethod;
     $("reference-axes").checked = state.referenceAxes;
     $("show-cell").checked = state.showCell;
@@ -1856,13 +1945,22 @@ function importedView(range, rotation) {
   return view;
 }
 
-$("structure").addEventListener("change", changeGeometry);
-$("axis").addEventListener("change", () => {
-  $("custom-axis-row").classList.toggle("hidden", $("axis").value !== "custom");
-  if ($("axis").value !== "custom") changeGeometry();
+for (const suffix of ["", "2"]) {
+  $(`structure${suffix}`).addEventListener("change", changeGeometry);
+  $(`axis${suffix}`).addEventListener("change", () => {
+    $(`custom-axis${suffix}-row`).classList.toggle("hidden", $(`axis${suffix}`).value !== "custom");
+    if ($(`axis${suffix}`).value !== "custom") changeGeometry();
+  });
+  $(`apply-axis${suffix}`).addEventListener("click", changeGeometry);
+  $(`custom-axis${suffix}`).addEventListener("keydown", e => { if (e.key === "Enter") changeGeometry(); });
+}
+$("heterophase").addEventListener("change", () => {
+  // Checking only reveals G2's controls, which start as a copy of G1.
+  $("grain2-controls").classList.toggle("hidden", !$("heterophase").checked);
+  if ($("heterophase").checked) syncCrystalControls();
+  else if (!sameCrystal(requestedCrystal())) changeGeometry();
 });
-$("apply-axis").addEventListener("click", changeGeometry);
-$("custom-axis").addEventListener("keydown", e => { if (e.key === "Enter") changeGeometry(); });
+$("lattice-ratio").addEventListener("change", changeGeometry);
 $("preset").addEventListener("change", () => { if ($("preset").value) changeAngle($("preset").value); });
 $("angle-number").addEventListener("change", () => changeAngle($("angle-number").value));
 $("angle-slider").addEventListener("input", () => changeAngle($("angle-slider").value));
@@ -1888,7 +1986,7 @@ document.querySelectorAll("[data-view-tab]").forEach(button => button.addEventLi
   for (const name of ["view","performance","appearance"]) $(name + "-tab").classList.toggle("hidden", name !== button.dataset.viewTab);
 }));
 $("all-layers").addEventListener("click", () => {
-  state.visibleLayers = [0,1].map(() => new Set(Array.from({length:metadata.layers},(_,i)=>i)));
+  state.visibleLayers = allGrainLayers();
   rebuildLayers(); draw(); updateSummary(); setStatus("All layers visible");
 });
 $("no-layers").addEventListener("click", () => {
@@ -1990,7 +2088,7 @@ $("near-toggle").addEventListener("click", () => {
     if (!preserveBase) { state.deformations = identity(); state.translations = [[0,0],[0,0]]; resetTranslationEditor(); }
     $("near-info").textContent = uniformStrainBlocked() ? "Local matching off. Current atom positions retained." : "Off. Original unstrained lattices restored.";
   } else if (state.nearMethod === "local") {
-    $("near-info").textContent = "Local same-layer mutual nearest pairs. Original atom positions retained.";
+    $("near-info").textContent = `${metadata?.homophase === false ? "Mutual nearest projected columns" : "Local same-layer mutual nearest pairs"}. Original atom positions retained.`;
   }
   updateSummary(); renderRequest();
   if (state.nearEnabled && state.nearMethod === "strain") searchNear();

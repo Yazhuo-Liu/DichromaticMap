@@ -102,8 +102,8 @@ def test_zero_region_target_still_validates_selection(bounds):
         set_region_displacement([], [0, 0], bounds)
 
 
-def test_absolute_edits_roundtrip_as_ordinary_v5_incremental_session(tmp_path):
-    from dichromatic_map.session import load_session, save_session
+def test_absolute_edits_roundtrip_as_ordinary_incremental_session(tmp_path):
+    from dichromatic_map.session import SCHEMA_VERSION, load_session, save_session
     from dichromatic_map.state import PatternParameters, PatternState
     state = PatternState(PatternParameters(lattice="SC", axis="100", angle_deg=0))
     # This is a history written by the previous release, with additive deltas.
@@ -118,7 +118,8 @@ def test_absolute_edits_roundtrip_as_ordinary_v5_incremental_session(tmp_path):
     save_session(path, state, settings, (-5, 5, -5, 5))
     with zipfile.ZipFile(path) as archive:
         saved = json.loads(archive.read("session.json"))
-    assert saved["schema_version"] == 5
+    # Absolute edits need no schema of their own: they save as additive deltas.
+    assert saved["schema_version"] == SCHEMA_VERSION
     restored = load_session(path).state
     assert restored.grain_displacements == state.grain_displacements
     assert restored.grain_displacements[0][:3] == legacy

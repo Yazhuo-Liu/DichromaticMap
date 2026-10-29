@@ -19,13 +19,13 @@ import numpy as np
 from .affine import affine_points
 from .appearance import validate_appearance, validate_layer_size_scales
 from .cells import StrainedCell, bases, determinant, validate_cell_vertices
-from .crystal import rotation_matrix_2d
+from .crystal import bicrystal, rotation_matrix_2d
 from .displacements import apply_displacements, normalize_displacements
 from .state import CellVertex, PatternParameters, PatternState, SelectedAtom
 from .strain import SelectedCellStrain
 
 FORMAT = "dichromatic-map-session"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MAX_JSON_BYTES = 1_000_000
 MAX_MEMBER_BYTES = 8_000_000
 MAX_ARCHIVE_BYTES = 32_000_000
@@ -42,6 +42,10 @@ _STATE_FIELDS = {
     "manual_unstrained_cutoff", "grain_colors", "layer_symbols", "layer_size_scales",
     "grain_displacements",
 }
+# Schema 6 adds grain 2's lattice, axis and lattice constant (null = grain 1),
+# per-grain cell metadata and each manual vertex's grain-2 layer.
+_PARAMETER_FIELDS = set(PatternParameters.__dataclass_fields__)
+_PARAMETER_FIELDS_V5 = _PARAMETER_FIELDS - {"lattice2", "axis2", "lattice_ratio"}
 _STATE_FIELDS_V4 = _STATE_FIELDS - {"grain_displacements"}
 _STATE_FIELDS_V2 = _STATE_FIELDS_V4 - {"layer_size_scales"}
 _STATE_FIELDS_V1 = _STATE_FIELDS_V2 - {"grain_colors", "layer_symbols"}
@@ -138,17 +142,43 @@ def _read_displacements(value):
 
 
 def _cell_payload(cell):
-    return None if cell is None else {
+    if cell is None:
+        return None
+    crystal = cell.crystal
+    return {
         field: getattr(cell, field).tolist() for field in ("m1", "m2", "f1", "f2", "cell")
-    } | {"max_strain": float(cell.max_strain), "lattice": cell.lattice, "axis": cell.axis}
+    } | {"max_strain": float(cell.max_strain), "lattice": _compact_json(crystal.lattice),
+         "axis": _compact_json(crystal.axis), "scale": crystal.scale}
 
 
-def _read_cell(value, state):
+def _compact_json(value):
+    return value if isinstance(value, str) else list(value)
+
+
+def _crystal_field(value, name):
+    if isinstance(value, str):
+        return value
+    if (isinstance(value, list) and len(value) == 2
+            and all(isinstance(item, str) for item in value)):
+        return tuple(value)
+    raise ValueError(f"Cell {name} must be a string or two strings")
+
+
+def _read_cell(value, state, version=SCHEMA_VERSION):
     if value is None:
         return None
-    _fields(value, ("m1", "m2", "f1", "f2", "cell", "max_strain", "lattice", "axis"), "cell")
-    if value["lattice"] != state.geometry.lattice or value["axis"] != state.geometry.axis:
+    fields = ("m1", "m2", "f1", "f2", "cell", "max_strain", "lattice", "axis")
+    _fields(value, fields + (("scale",) if version >= 6 else ()), "cell")
+    scale = (_number(value["scale"], "cell lattice-constant ratio", 1e-3, 1e3)
+             if version >= 6 else 1.0)
+    try:
+        crystal = bicrystal(_crystal_field(value["lattice"], "lattice"),
+                            _crystal_field(value["axis"], "axis"), scale)
+    except ValueError as error:
+        raise ValueError(f"Invalid cell crystal: {error}") from error
+    if (crystal.lattices, crystal.axes) != (state.crystal.lattices, state.crystal.axes):
         raise ValueError("Cell lattice and axis do not match session")
+    _same(crystal.scale, state.crystal.scale, "cell lattice-constant ratio")
     m1 = _array(value["m1"], (2, 2), "m1", integer=True)
     m2 = _array(value["m2"], (2, 2), "m2", integer=True)
     f1, f2 = _deformations([value["f1"], value["f2"]])
@@ -156,18 +186,19 @@ def _read_cell(value, state):
     strain = _number(value["max_strain"], "max_strain", 0, 0.1 + 1e-9)
     if determinant(m1) * determinant(m2) <= 0 or abs(np.linalg.det(common)) < 1e-12:
         raise ValueError("Common cell must have compatible nonzero area")
-    for f, basis, matrix in zip((f1, f2), bases(state.angle_deg, state.geometry.lattice,
-                                              state.geometry.axis), (m1, m2)):
+    for f, basis, matrix in zip((f1, f2), bases(state.angle_deg, state.crystal), (m1, m2)):
         _same(f @ basis @ matrix, common, "common-cell translations")
     _same(strain, np.max(np.abs(np.linalg.svd([f1, f2], compute_uv=False) - 1)),
           "maximum strain")
-    return StrainedCell(m1, m2, f1, f2, common, strain, value["lattice"], value["axis"])
+    return StrainedCell(m1, m2, f1, f2, common, strain, state.crystal.lattice,
+                        state.crystal.axis, state.crystal.scale)
 
 
 def _vertex_payload(vertices):
     if vertices is None:
         return None
-    return [dict(position=vertex.position.tolist(), layer=int(vertex.layer),
+    return [dict(position=vertex.position.tolist(), layer=int(vertex.layers[0]),
+                 second_layer=int(vertex.layers[1]),
                  source=vertex.source, grain_positions=(None if vertex.grain_positions is None
                                                         else vertex.grain_positions.tolist()))
             for vertex in vertices]
@@ -175,17 +206,26 @@ def _vertex_payload(vertices):
 
 def _read_vertices(value, state, name, version):
     vertices = []
+    counts = state.crystal.layer_counts
+    fields = ("position", "layer", "source", "grain_positions")
     for item in _list(value, 4, name):
-        _fields(item, ("position", "layer", "source", "grain_positions"), name)
-        layer = _integer(item["layer"], "vertex layer", 0, state.geometry.layer_count - 1)
+        _fields(item, fields + (("second_layer",) if version >= 6 else ()), name)
+        layer = _integer(item["layer"], "vertex layer", 0, counts[0] - 1)
+        second = (_integer(item["second_layer"], "vertex layer", 0, counts[1] - 1)
+                  if version >= 6 else layer)
+        if second > counts[1] - 1:
+            raise ValueError("vertex layer is not a grain-2 layer")
+        if state.crystal.homophase and second != layer:
+            raise ValueError("Homophase vertices use one layer in both grains")
         sources = ("CSL", "local", "symmetry", "closure") if version >= 4 else ("CSL", "local")
         if item["source"] not in sources:
             raise ValueError("Invalid vertex source")
         position = _array(item["position"], (2,), "vertex position")
         endpoints = _array(item["grain_positions"], (2, 2), "grain positions")
         _same(position, endpoints.mean(axis=0), "vertex midpoint")
-        vertices.append(CellVertex(position, layer, item["source"], endpoints))
-    if len({vertex.layer for vertex in vertices}) > 1:
+        vertices.append(CellVertex(position, layer, item["source"], endpoints,
+                                   None if state.crystal.homophase else second))
+    if len({vertex.layers for vertex in vertices}) > 1:
         raise ValueError("Manual vertices must belong to one layer")
     if len(vertices) == 4:
         validate_cell_vertices([vertex.position for vertex in vertices])
@@ -203,14 +243,14 @@ def _fit_payload(fit):
     }
 
 
-def _read_fit(value, state):
+def _read_fit(value, state, version=SCHEMA_VERSION):
     if value is None:
         if state.manual_unstrained_vertices is not None or state.manual_unstrained_cutoff is not None:
             raise ValueError("Original vertices require an applied manual strain fit")
         return None
     _fields(value, ("cell", "residual", "translations", "vertices", "origin",
                     "rotations_deg", "stretches"), "manual strain fit")
-    cell = _read_cell(value["cell"], state)
+    cell = _read_cell(value["cell"], state, version)
     original = state.manual_unstrained_vertices
     if cell is None or state.near_cell is None or original is None or len(original) != 4:
         raise ValueError("Manual strain fit requires its cell and original vertices")
@@ -262,29 +302,37 @@ def _read_settings(value):
 def _snapshot_from_payload(payload):
     _fields(payload, ("format", "schema_version", "state", "settings", "view_range"), "session")
     version = payload["schema_version"]
-    if payload["format"] != FORMAT or type(version) is not int or version not in (1, 2, 3, 4, SCHEMA_VERSION):
+    if payload["format"] != FORMAT or type(version) is not int or version not in (1, 2, 3, 4, 5, SCHEMA_VERSION):
         raise ValueError("Unsupported DichromaticMap session format or schema version")
-    state_fields = {1: _STATE_FIELDS_V1, 2: _STATE_FIELDS_V2,
-                    3: _STATE_FIELDS_V4, 4: _STATE_FIELDS_V4, 5: _STATE_FIELDS}[version]
+    state_fields = {1: _STATE_FIELDS_V1, 2: _STATE_FIELDS_V2, 3: _STATE_FIELDS_V4,
+                    4: _STATE_FIELDS_V4, 5: _STATE_FIELDS, 6: _STATE_FIELDS}[version]
     raw = _fields(payload["state"], state_fields, "state")
-    parameters = dict(_fields(raw["parameters"], PatternParameters.__dataclass_fields__, "parameters"))
+    parameter_fields = _PARAMETER_FIELDS if version >= 6 else _PARAMETER_FIELDS_V5
+    parameters = dict(_fields(raw["parameters"], parameter_fields, "parameters"))
     for field in ("lattice_constant", "width", "height", "marker_size"):
         parameters[field] = _number(parameters[field], field, 1e-8, 1e4)
-    parameters["angle_deg"] = _number(parameters["angle_deg"], "angle", 0, 180)
+    parameters["angle_deg"] = _number(parameters["angle_deg"], "angle", 0, 360)
     parameters["view_scale"] = _number(parameters["view_scale"], "view scale", 0.1, 5)
     if not isinstance(parameters["lattice"], str) or not isinstance(parameters["axis"], str):
         raise ValueError("Lattice and axis must be strings")
+    for field in ("lattice2", "axis2"):
+        if parameters.get(field) is not None and not isinstance(parameters[field], str):
+            raise ValueError("Grain-2 lattice and axis must be strings or null")
+    if "lattice_ratio" in parameters:
+        parameters["lattice_ratio"] = _number(
+            parameters["lattice_ratio"], "lattice-constant ratio a0(G2)/a0(G1)", 1e-3, 1e3)
     state = PatternState(PatternParameters(**parameters))
+    counts = state.crystal.layer_counts
     # Schema 1 used fixed grain colours and had no marker preference fields.
     # Its migrated state inherits the defaults, including unique extra markers.
     if version >= 2:
         state.grain_colors, state.layer_symbols = validate_appearance(
-            raw["grain_colors"], raw["layer_symbols"], state.geometry.layer_count,
+            raw["grain_colors"], raw["layer_symbols"], state.layer_count,
         )
     # Earlier schemas had fixed marker sizes and inherit unchanged diameters.
     if version >= 3:
         state.layer_size_scales = validate_layer_size_scales(
-            raw["layer_size_scales"], state.geometry.layer_count,
+            raw["layer_size_scales"], state.layer_count,
         )
     # Preserve the actual stored angle, including precision beyond the GUI spinbox.
     state.angle_deg = state.pending_angle = parameters["angle_deg"]
@@ -293,14 +341,14 @@ def _snapshot_from_payload(payload):
     state.interaction_mode = raw["interaction_mode"]
     state.display_rotation_deg = _number(raw["display_rotation_deg"], "display rotation", -180, 180)
     state.show_reference_axes = _boolean(raw["show_reference_axes"], "reference axes")
-    state.selected_layer = _integer(raw["selected_layer"], "selected layer", -1, state.geometry.layer_count - 1)
+    state.selected_layer = _integer(raw["selected_layer"], "selected layer", -1, state.layer_count - 1)
     groups = _list(raw["visible_grain_layers"], 2, "grain layers")
     if len(groups) != 2:
         raise ValueError("Two grain-layer filters are required")
     state.visible_grain_layers = []
-    for group in groups:
-        values = [_integer(item, "visible layer", 0, state.geometry.layer_count - 1)
-                  for item in _list(group, state.geometry.layer_count, "visible layers")]
+    for group, count in zip(groups, counts):
+        values = [_integer(item, "visible layer", 0, count - 1)
+                  for item in _list(group, count, "visible layers")]
         if len(set(values)) != len(values):
             raise ValueError("Duplicate visible layers")
         state.visible_grain_layers.append(set(values))
@@ -315,13 +363,15 @@ def _snapshot_from_payload(payload):
         _fields(item, ("position", "grain_index", "layer", "half_indices"), "selected atom")
         position = _array(item["position"], (2,), "atom position")
         grain = _integer(item["grain_index"], "grain", 0, 1)
-        layer = _integer(item["layer"], "atom layer", 0, state.geometry.layer_count - 1)
+        geometry = state.geometries[grain]
+        layer = _integer(item["layer"], "atom layer", 0, geometry.layer_count - 1)
         indices = _array(item["half_indices"], (3,), "half indices", integer=True)
-        reference = indices - state.geometry.layer_offsets_half_indices[layer]
-        coefficients = np.linalg.lstsq(state.geometry.basis_half_indices, reference, rcond=None)[0]
-        _same(state.geometry.basis_half_indices @ np.rint(coefficients), reference, "atom lattice indices")
-        reference = (rotation_matrix_2d((1 - 2 * grain) * state.angle_deg / 2)
-                     @ (indices @ state.geometry.frame[:, :2] / 2))
+        reference = indices - geometry.layer_offsets_half_indices[layer]
+        coefficients = np.linalg.lstsq(geometry.basis_half_indices, reference, rcond=None)[0]
+        _same(geometry.basis_half_indices @ np.rint(coefficients), reference, "atom lattice indices")
+        reference = (state.crystal.scales[grain]
+                     * rotation_matrix_2d((1 - 2 * grain) * state.angle_deg / 2)
+                     @ (indices @ geometry.frame[:, :2] / 2))
         physical = affine_points(reference, state.deformations[grain], state.translations[grain])
         physical = apply_displacements(physical.reshape(1, 2), state.grain_displacements[grain])[0]
         _same(position, physical, "atom position")
@@ -333,14 +383,14 @@ def _snapshot_from_payload(payload):
     if raw["near_method"] not in ("local", "strain"):
         raise ValueError("Unknown near-CSL method")
     state.near_method = raw["near_method"]
-    state.near_cell = _read_cell(raw["near_cell"], state)
+    state.near_cell = _read_cell(raw["near_cell"], state, version)
     if state.near_cell is not None:
         _same(state.deformations, [state.near_cell.f1, state.near_cell.f2], "cell deformations")
         state.near_solutions = [state.near_cell]
     state.manual_unstrained_vertices = (None if raw["manual_unstrained_vertices"] is None else
         _read_vertices(raw["manual_unstrained_vertices"], state, "original manual vertices", version))
     state.manual_unstrained_cutoff = _optional_cutoff(raw["manual_unstrained_cutoff"])
-    state.manual_strain_fit = _read_fit(raw["manual_strain_fit"], state)
+    state.manual_strain_fit = _read_fit(raw["manual_strain_fit"], state, version)
     if any(state.grain_displacements) and (state.near_cell is not None or state.manual_strain_fit is not None):
         raise ValueError("Manual translations require clearing the applied common-cell result")
     settings = _read_settings(payload["settings"])
@@ -352,11 +402,18 @@ def _snapshot_from_payload(payload):
 
 def _state_payload(state):
     colors, symbols = validate_appearance(
-        state.grain_colors, state.layer_symbols, state.geometry.layer_count,
+        state.grain_colors, state.layer_symbols, state.layer_count,
     )
-    size_scales = validate_layer_size_scales(state.layer_size_scales, state.geometry.layer_count)
-    parameters = replace(state.parameters, lattice=state.geometry.lattice,
-                         axis=state.geometry.axis, angle_deg=float(state.angle_deg))
+    size_scales = validate_layer_size_scales(state.layer_size_scales, state.layer_count)
+    first, second = state.geometries
+    homophase = state.crystal.homophase
+    parameters = replace(
+        state.parameters, lattice=first.lattice, axis=first.axis,
+        lattice2=None if homophase else second.lattice,
+        axis2=None if homophase else second.axis,
+        lattice_ratio=float(state.crystal.scale),
+        angle_deg=float(state.angle_deg),
+    )
     return {
         "parameters": asdict(parameters),
         "interaction_mode": "idle" if state.interaction_mode == "translate" else state.interaction_mode,

@@ -12,9 +12,12 @@ import multiprocessing
 import os
 import threading
 import numpy as np
-from .crystal import ProjectedGrain, projected_columns, get_geometry
+from .crystal import ProjectedGrain, bicrystal, projected_columns
 from .cells import count_cell_atoms
-from .matching import local_near_pairs, same_layer_coincidence_sites
+from .matching import (
+    local_near_pairs, projected_coincidence_sites, projected_near_pairs,
+    same_layer_coincidence_sites,
+)
 from .strain import (
     candidate_vectors, solve_cells_chunk, pareto_cells,
     get_cached_cell_search, cache_cell_search,
@@ -104,6 +107,16 @@ def local_match_layers_worker(grain1, grain2, distance, layers):
     return os.getpid(), local_near_pairs(grain1, grain2, distance, layers)
 
 
+def projected_local_match_worker(grain1, grain2, distance):
+    """Mutual-nearest columns across all layers of two different grains."""
+    return os.getpid(), projected_near_pairs(grain1, grain2, distance)
+
+
+def projected_coincidence_worker(grain_1, grain_2, tolerance):
+    """Coincident columns across all layers of two different grains."""
+    return os.getpid(), projected_coincidence_sites(grain_1, grain_2, tolerance)
+
+
 def cell_count_worker(*args):
     return os.getpid(), count_cell_atoms(*args)
 
@@ -118,6 +131,7 @@ def generate_grain_worker(
     axis: str = "110",
     translation: np.ndarray | None = None,
     displacements=None,
+    scale: float = 1.0,
 ) -> tuple[int, ProjectedGrain]:
     """Process-pool entry point for one projected grain."""
 
@@ -125,7 +139,7 @@ def generate_grain_worker(
         os.getpid(),
         projected_columns(
             width, height, rotation_deg, center, deformation, lattice, axis, translation,
-            displacements=displacements,
+            displacements=displacements, scale=scale,
         ),
     )
 
@@ -263,13 +277,13 @@ class NearSearch:
         self.busy = True
         self.error = str(error) or type(error).__name__
 
-    def request(self, angle, percent, extent, lattice="FCC", axis="110"):
-        geometry = get_geometry(lattice, axis)
+    def request(self, angle, percent, extent, lattice="FCC", axis="110", scale=1.0):
+        crystal = bicrystal(lattice, axis, scale)
         with self._lock:
             if self._closed:
                 raise RuntimeError("Near-CSL search is closed")
             self._cancel_locked()
-            self.args = (angle, percent, extent, geometry.lattice, geometry.axis)
+            self.args = (angle, percent, extent, crystal.lattice, crystal.axis, crystal.scale)
             self.busy = True
             self.active_workers = 1
             if self.executor is None:
@@ -325,7 +339,7 @@ class NearSearch:
                         for start in range(0, len(i), 8):
                             self.jobs.append(("solve", solve_cells_chunk, (
                                 self.args[0], self.args[1], i, j, start, start + 8,
-                                self.args[3], self.args[4],
+                                self.args[3], self.args[4], self.args[5],
                             )))
                         self.total = len(self.jobs)
                     else:

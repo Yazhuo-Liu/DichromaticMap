@@ -11,7 +11,10 @@ from .state import PatternParameters
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Standalone FCC/BCC/SC integer-axis tilt-GB viewer; coordinates in a0"
+        description=(
+            "Standalone FCC/BCC/SC integer-axis tilt-GB viewer; coordinates in a0. "
+            "Grain 2 may use another lattice, axis and lattice constant (e.g. FCC/BCC)."
+        )
     )
     parser.add_argument(
         "--angle",
@@ -20,7 +23,9 @@ def parse_arguments() -> argparse.Namespace:
         help=(
             "degrees in the axis-dependent range: <100> 0-45, <110> 0-90, "
             "<111> 0-60, other cubic axes 0-180; default is Sigma9 for 110, "
-            "Sigma5 for 100, lowest-Sigma preset otherwise"
+            "Sigma5 for 100, lowest-Sigma preset otherwise. Two different grains "
+            "use their combined symmetry and default to the first FCC/BCC "
+            "orientation relationship (Bain, NW or KS), else 0"
         ),
     )
     parser.add_argument("--lattice", choices=SUPPORTED_LATTICES, default="FCC")
@@ -34,6 +39,19 @@ def parse_arguments() -> argparse.Namespace:
         type=float,
         default=3.52,
         help="reference a0 in Angstrom; display is normalized by a0",
+    )
+    parser.add_argument(
+        "--lattice2", choices=SUPPORTED_LATTICES, default=None,
+        help="grain 2 lattice (default: same as --lattice)",
+    )
+    parser.add_argument(
+        "--axis2", default=None,
+        help="grain 2 tilt axis along the common z, e.g. 111 (default: same as --axis)",
+    )
+    parser.add_argument(
+        "--lattice-ratio", type=float, default=1.0,
+        help="lattice-constant ratio a0(G2)/a0(G1); coordinates stay in G1's a0 "
+        "(default: %(default)s)",
     )
     parser.add_argument(
         "--width", type=float, default=12.0, help="base view width in a0 (not Angstrom)"
@@ -76,6 +94,9 @@ def main() -> None:
         view_scale=arguments.view_scale,
         lattice=arguments.lattice,
         axis=arguments.axis,
+        lattice2=arguments.lattice2,
+        axis2=arguments.axis2,
+        lattice_ratio=arguments.lattice_ratio,
     )
     application = create_application()
     window = DichromaticPatternWindow(

@@ -412,6 +412,11 @@ color:#4c617b}
 .inline{
 display:flex;
 gap:5px}
+#heterophase-row{
+justify-content:flex-start;
+border-bottom:1px solid #edf1f7}
+#grain2-controls input[type=number]{
+width:67%}
 .inline input{
 flex:1}
 input[type=range]{

@@ -3,7 +3,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
-from .crystal import get_geometry, projected_columns, GeometryLimitError
+from .crystal import bicrystal, grain_layer_pair, projected_columns, GeometryLimitError
 from .displacements import normalize_grain_displacements
 
 SIDE_TOLERANCE = 1.0e-9
@@ -67,7 +67,9 @@ def cell_membership(points, vertices):
 
 @dataclass(frozen=True)
 class CellAtomCounts:
-    interior: np.ndarray  # grain x axial layer, one full axial repeat
+    # grain x axial layer, one full axial repeat. Two different grains use
+    # their larger layer count; layers absent from one grain stay zero.
+    interior: np.ndarray
     boundary: np.ndarray
     half_open: np.ndarray | None
     areas: np.ndarray  # one actual polygon area per grain, a0 squared
@@ -94,13 +96,16 @@ def count_cell_atoms(
     layer=-1,
     translations=None,
     grain_displacements=None,
+    scale=1.0,
 ):
     """Count the entire selected cell, independently of viewport and rendering.
 
     Vertices may be one shared (4,2) polygon or two independent (2,4,2)
     polygons built from each grain's actual atom positions. Each grain is
     counted inside its own polygon; the viewer passes the picked layer.
-    layer=-1 retains all-layer counting for non-GUI callers.
+    layer=-1 retains all-layer counting for non-GUI callers. ``layer`` may
+    also give one layer per grain, as different grains' layers are unrelated.
+    ``lattice``/``axis`` may differ per grain, with ``scale``=a0(G2)/a0(G1).
     Generation uses the same interactive allocation guard as normal rendering.
     """
     vertices = np.asarray(vertices, dtype=float)
@@ -110,13 +115,12 @@ def count_cell_atoms(
         raise ValueError("Provide a (4,2) common polygon or (2,4,2) grain polygons")
     for polygon in vertices:
         validate_cell_vertices(polygon)
-    geometry = get_geometry(lattice, axis)
-    if (
-        not isinstance(layer, (int, np.integer))
-        or not -1 <= layer < geometry.layer_count
-    ):
-        raise ValueError("Count layer must be -1 or a valid axial layer index")
-    inside_counts = np.zeros((2, geometry.layer_count), dtype=int)
+    crystal = bicrystal(lattice, axis, scale)
+    try:
+        layers = grain_layer_pair(layer, crystal, allow_all=True)
+    except ValueError:
+        raise ValueError("Count layer must be -1 or a valid axial layer index") from None
+    inside_counts = np.zeros((2, crystal.layer_count), dtype=int)
     translations = (
         np.zeros((2, 2))
         if translations is None
@@ -144,11 +148,12 @@ def count_cell_atoms(
                 sign * angle / 2,
                 center,
                 deformations[grain_index],
-                lattice,
-                axis,
+                crystal.lattices[grain_index],
+                crystal.axes[grain_index],
                 translations[grain_index],
-                layers=(layer,) if layer >= 0 else None,
+                layers=(layers[grain_index],) if layers[grain_index] >= 0 else None,
                 displacements=grain_displacements[grain_index],
+                scale=crystal.scales[grain_index],
             )
         except GeometryLimitError as error:
             raise GeometryLimitError(
@@ -158,7 +163,7 @@ def count_cell_atoms(
         # A manual cell belongs to one axial layer; only that phase was
         # generated. Keep every original layer ID in the count arrays.
         positions = grain.positions
-        layers = grain.layers
+        grain_layers = grain.layers
         inside, boundary, half_open = cell_membership(positions, polygon)
         half_open_edges = None
         half_open_corners = None
@@ -192,7 +197,7 @@ def count_cell_atoms(
         ):
             if mask is not None:
                 counts[grain_index] = np.bincount(
-                    layers[mask & visible], minlength=geometry.layer_count
+                    grain_layers[mask & visible], minlength=crystal.layer_count
                 )
         is_parallelogram[grain_index] = half_open is not None
         # Translation-stable area of this grain's actual polygon.
@@ -237,12 +242,14 @@ def selected_region_mask(
     return keep
 
 
-def bases(angle, lattice="FCC", axis="110"):
+def bases(angle, lattice="FCC", axis="110", scale=1.0):
+    """Unstrained primitive planar bases of both grains, in analysis a0 units."""
     t = np.deg2rad(angle / 2)
     c, s = np.cos(t), np.sin(t)
     r = np.array([[c, -s], [s, c]])
-    b = get_geometry(lattice, axis).planar_basis
-    return r @ b, r.T @ b
+    crystal = bicrystal(lattice, axis, scale)
+    first, second = (geometry.planar_basis for geometry in crystal.geometries)
+    return r @ first, crystal.scale * (r.T @ second)
 
 
 def _exact_integer(value):
@@ -303,13 +310,19 @@ class StrainedCell:
     f2: np.ndarray
     cell: np.ndarray  # columns, laboratory projection, in units of a0
     max_strain: float
-    lattice: str = "FCC"
-    axis: str = "110"
+    # One lattice/axis for both grains, or one per grain (see Bicrystal).
+    lattice: str | tuple[str, str] = "FCC"
+    axis: str | tuple[str, str] = "110"
+    scale: float = 1.0  # a0(G2)/a0(G1)
+
+    @property
+    def crystal(self):
+        return bicrystal(self.lattice, self.axis, self.scale)
 
     @property
     def atoms(self):
-        layers = get_geometry(self.lattice, self.axis).layer_count
-        return tuple(layers * abs(determinant(m)) for m in (self.m1, self.m2))
+        return tuple(layers * abs(determinant(m))
+                     for layers, m in zip(self.crystal.layer_counts, (self.m1, self.m2)))
 
     def label(self):
         n1, n2 = self.atoms

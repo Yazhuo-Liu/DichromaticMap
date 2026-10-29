@@ -246,15 +246,18 @@ class PatternPlot:
 
     def _update_reference_axes(self, *_args):
         state = self.owner.state
-        indices = in_plane_reference_directions(state.geometry.axis)
-        labels = tuple("[" + " ".join(map(str, vector)) + "]" for vector in indices)
+        labels = [
+            tuple("[" + " ".join(map(str, vector)) + "]"
+                  for vector in in_plane_reference_directions(axis))
+            for axis in state.crystal.axes
+        ]
         directions = np.stack([
             self._to_view(in_plane_reference_axes(sign * state.angle_deg / 2, deformation))
             for sign, deformation in zip((1, -1), state.deformations)
         ])
         item = self.reference_axes_item
         item.set_colors(state.grain_colors)
-        item.set_reference(directions, labels)
+        item.set_reference(directions, *labels)
         item.setVisible(state.show_reference_axes)
         bounds = self.view_box.boundingRect()
         # Parent directly to the ViewBox, outside its data transform. A small
@@ -330,7 +333,9 @@ class PatternPlot:
         self.grain_layer_items = [[], []]
         self.coincidence_items = []
         diameter = self._base_marker_diameter()
-        for layer in range(self.owner.state.geometry.layer_count):
+        # Two different grains share layer IDs up to their larger count; a
+        # grain's missing layers keep empty items for uniform indexing.
+        for layer in range(self.owner.state.layer_count):
             symbol = marker_symbol(self.owner.state.layer_symbols[layer])
             layer_diameter = diameter * self.owner.state.layer_size_scales[layer]
             for grain in (0, 1):
@@ -393,16 +398,24 @@ class PatternPlot:
 
     def _rebuild_legend(self):
         self.legend.clear()
-        layers = sorted(set().union(*self.owner.state.visible_grain_layers))[:6]
+        state = self.owner.state
+        homophase = state.crystal.homophase
+        layers = sorted(set().union(*state.visible_grain_layers))[:6]
         for layer in layers:
             name = layer_name(layer)
-            if layer in self.owner.state.visible_grain_layers[0]:
+            if layer in state.visible_grain_layers[0]:
                 self.legend.addItem(self.grain_layer_items[0][layer], f"G1 · {name}")
-            if layer in self.owner.state.visible_grain_layers[1]:
+            if layer in state.visible_grain_layers[1]:
                 self.legend.addItem(self.grain_layer_items[1][layer], f"G2 · {name}")
-            if layer in self.owner.state.visible_layers:
+            if homophase and layer in state.visible_layers:
                 self.legend.addItem(
                     self.coincidence_items[layer], f"CSL · {name}–{name}"
+                )
+            elif (not homophase and layer in state.visible_grain_layers[0]
+                  and state.visible_grain_layers[1]):
+                # Projected columns: shaped by the G1 layer, any G2 layer.
+                self.legend.addItem(
+                    self.coincidence_items[layer], f"Coincident column · G1 {name}"
                 )
         if (
             not hasattr(self.owner.controls, "cell_check")
@@ -457,7 +470,7 @@ class PatternPlot:
 
     def _update_manual_marker_size(self, diameter):
         vertices = self.owner.state.manual_vertices
-        scale = self.owner.state.layer_size_scales[vertices[0].layer] if vertices else 1.0
+        scale = self.owner.state.layer_size_scales[vertices[0].layer] if vertices else 1.0  # G1 layer
         self.manual_vertex_item.setSize(diameter * 2.2 * scale)
 
     def _to_view(self, points):
@@ -526,7 +539,7 @@ class PatternPlot:
             if index < len(points):
                 vertex = self.owner.state.manual_vertices[index]
                 label.setText(
-                    f"C{index+1} · {self.owner._cell_layer_label(vertex.layer).split()[0]} · "
+                    f"C{index+1} · {self.owner._vertex_layers_label(vertex.layers, short=True)} · "
                     f"{vertex.source}"
                 )
                 label.setPos(*displayed[index])
@@ -540,9 +553,9 @@ class PatternPlot:
                 )
             else:
                 counts = self.owner.state.manual_counts
-                layer = self.owner.state.manual_vertices[0].layer
-                lines = [f"Manual cell · {self.owner._cell_layer_label(layer)} only"]
-                for grain in (0, 1):
+                layers = self.owner.state.manual_vertices[0].layers
+                lines = [f"Manual cell · {self.owner._vertex_layers_label(layers)} only"]
+                for grain, layer in enumerate(layers):
                     interior = counts.interior[grain, layer]
                     if counts.half_open_available[grain]:
                         total = counts.half_open[grain, layer]
@@ -591,7 +604,7 @@ class PatternPlot:
         key = (
             self.owner.local_active,
             session.display_rotation_deg,
-            tuple(sorted(session.visible_layers)),
+            tuple(tuple(sorted(layers)) for layers in session.visible_grain_layers),
             tuple(session.layer_symbols),
             tuple(np.asarray(session.selected_points).ravel()),
             self.owner._region_states(),
@@ -638,7 +651,8 @@ class PatternPlot:
         if self.owner.state.local_error:
             state = "Local matching failed: " + self.owner.state.local_error
         elif self.owner.state.local_updating:
-            state = f"Matching same-layer neighbors… ({self.owner.compute.worker_count} workers)"
+            kind = "same-layer" if session.crystal.homophase else "projected-column"
+            state = f"Matching {kind} neighbors… ({self.owner.compute.worker_count} workers)"
         else:
             state = f"Visible near pairs: {len(distances)} (exact CSL excluded)"
             if len(distances):
@@ -646,8 +660,10 @@ class PatternPlot:
         text = (
             state
             + f"\nPair cutoff: {self.owner.controls.local_distance_spin.value():.4f} a₀."
-            "\nSame-layer mutual nearest pairs; no atoms moved."
-            "\nPurple marker: midpoint, shaped by layer; line: original pair."
+            + ("\nSame-layer mutual nearest pairs; no atoms moved."
+               if session.crystal.homophase else
+               "\nMutual nearest projected columns, any G1/G2 layers; no atoms moved.")
+            + "\nPurple marker: midpoint, shaped by layer; line: original pair."
             "\nMidpoint alignment would move each atom by d/2."
             "\nNo bulk strain, relaxation or stress calculation."
             "\nLocal matches do not define a periodic common cell."
