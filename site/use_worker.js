@@ -54,7 +54,13 @@ function renderResult(pyodide) {
     };
     const local = payload.get("local");
     if (local != null) result.local = copyArray(local);
-    return {result, transfer: [...result.grains, result.coincidences, ...(result.local ? [result.local] : [])]
+    // Different grains add each match's G2 layer; same-layer matches omit it.
+    for (const name of ["coincidence_partners", "local_partners"]) {
+      const partners = payload.get(name);
+      if (partners != null) result[name] = copyArray(partners);
+    }
+    const optional = [result.local, result.coincidence_partners, result.local_partners].filter(Boolean);
+    return {result, transfer: [...result.grains, result.coincidences, ...optional]
       .map(array => array.buffer)};
   } finally {
     grains?.destroy();

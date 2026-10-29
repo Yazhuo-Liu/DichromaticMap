@@ -69,7 +69,7 @@ def test_browser_session_roundtrip_retains_both_grain_histories(bridge):
     encoded = bridge._save_session(json.loads(json.dumps({"state":raw, "settings":SETTINGS, "view_range":VIEW})))
     with ZipFile(BytesIO(base64.b64decode(encoded))) as archive:
         payload = json.loads(archive.read("session.json"))
-        assert payload["schema_version"] == 5
+        assert payload["schema_version"] == 6
         assert payload["state"]["grain_displacements"] == operations
     loaded = bridge._load_session({"bytes":encoded})
     assert loaded["state"]["grain_displacements"] == operations

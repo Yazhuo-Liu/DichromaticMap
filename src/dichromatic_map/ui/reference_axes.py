@@ -15,6 +15,8 @@ class GrainReferenceAxes(pg.GraphicsObject):
         self.setZValue(20)
         self.directions = np.tile(np.eye(2), (2, 1, 1))
         self.labels = ("", "")
+        # Grains with different tilt axes label different [uvw] directions.
+        self.grain_labels = (self.labels, self.labels)
         self.colors = (GRAIN_1_COLOR, GRAIN_2_COLOR)
         self.origin = QtCore.QPointF()
         self._rect = QtCore.QRectF()
@@ -34,22 +36,25 @@ class GrainReferenceAxes(pg.GraphicsObject):
             self.colors = colors
             self.update()
 
-    def set_reference(self, directions, labels):
+    def set_reference(self, directions, labels, second_labels=None):
         directions = np.asarray(directions, dtype=float)
         labels = tuple(labels)
-        key = (labels, tuple(directions.ravel()))
+        grain_labels = (labels, labels if second_labels is None else tuple(second_labels))
+        key = (grain_labels, tuple(directions.ravel()))
         if key == self._key:
             return
         self._key = key
         self.directions = directions.copy()
         self.labels = labels
+        self.grain_labels = grain_labels
         self._layout()
         self.update()
 
     def _layout(self):
         metrics = QtGui.QFontMetricsF(self._font)
-        sizes = [(metrics.horizontalAdvance(label) + 4, metrics.height() + 2)
-                 for label in self.labels]
+        grain_sizes = [[(metrics.horizontalAdvance(label) + 4, metrics.height() + 2)
+                        for label in labels] for labels in self.grain_labels]
+        sizes = [size for grain in grain_sizes for size in grain]
         length, gap, padding = 36.0, 10.0, 10.0
         # Reserve the full rotation envelope. Re-centering on the current
         # arrow/text bounds makes the origin jump as the orientation changes.
@@ -61,9 +66,9 @@ class GrainReferenceAxes(pg.GraphicsObject):
             self._rect = rect
         self.origin = self._rect.center()
         self._groups = []
-        for directions in self.directions:
+        for directions, labels, sizes in zip(self.directions, self.grain_labels, grain_sizes):
             arrows = []
-            for direction, label, (width, height) in zip(directions, self.labels, sizes):
+            for direction, label, (width, height) in zip(directions, labels, sizes):
                 # The analysis frame is y-up; graphics-widget coordinates are y-down.
                 unit = np.array([direction[0], -direction[1]])
                 tip = length * unit

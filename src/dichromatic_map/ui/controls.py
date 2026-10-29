@@ -180,35 +180,38 @@ class ControlDock:
         crystal_box = QtWidgets.QGroupBox("CRYSTAL / AXIS")
         crystal_layout = QtWidgets.QFormLayout(crystal_box)
         crystal_layout.setRowWrapPolicy(QtWidgets.QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.structure_combo = QtWidgets.QComboBox()
-        for lattice in SUPPORTED_LATTICES:
-            self.structure_combo.addItem(lattice, lattice)
-        self.structure_combo.setCurrentIndex(
-            self.structure_combo.findData(self.owner.state.geometry.lattice)
-        )
-        self.axis_combo = QtWidgets.QComboBox()
-        for axis in ("100", "110", "111", "112"):
-            self.axis_combo.addItem(f"⟨{axis}⟩", axis)
-        self.axis_combo.addItem("Custom [h k l]", None)
-        axis_index = self.axis_combo.findData(self.owner.state.geometry.axis)
-        self.axis_combo.setCurrentIndex(axis_index if axis_index >= 0 else 4)
+        self.structure_combo, self.axis_combo, self.custom_axis_row, self.custom_axis_edit, \
+            self.custom_axis_apply = self._grain_structure_widgets()
         crystal_layout.addRow("Structure", self.structure_combo)
         crystal_layout.addRow("View axis", self.axis_combo)
-        self.custom_axis_row = QtWidgets.QWidget()
-        custom_layout = QtWidgets.QHBoxLayout(self.custom_axis_row)
-        custom_layout.setContentsMargins(0, 0, 0, 0)
-        self.custom_axis_edit = QtWidgets.QLineEdit(
-            " ".join(map(str, self.owner.state.geometry.axis_indices))
-        )
-        self.custom_axis_edit.setPlaceholderText("e.g. 1 -1 3")
-        self.custom_axis_edit.setToolTip(
-            "Integer [h k l]; separate signed or multi-digit indices with spaces."
-        )
-        self.custom_axis_apply = QtWidgets.QPushButton("Apply axis")
-        custom_layout.addWidget(self.custom_axis_edit, 1)
-        custom_layout.addWidget(self.custom_axis_apply)
         crystal_layout.addRow(self.custom_axis_row)
-        self.custom_axis_row.setVisible(axis_index < 0)
+        # Off by default; checking it only reveals grain 2's own controls.
+        self.heterophase_check = QtWidgets.QCheckBox("Set G2 separately")
+        self.heterophase_check.setToolTip(
+            "Give G2 its own structure, view axis and a₀(G2)/a₀(G1), e.g. FCC/BCC. "
+            "G2 starts as a copy of G1, so checking this alone changes nothing. "
+            "Both axes lie along the common viewing direction; lengths stay in G1's a₀. "
+            "Layers of different grains are unrelated, so atoms are matched as projected columns."
+        )
+        crystal_layout.addRow(self.heterophase_check)
+        self.structure2_combo, self.axis2_combo, self.custom_axis2_row, self.custom_axis2_edit, \
+            self.custom_axis2_apply = self._grain_structure_widgets()
+        crystal_layout.addRow("G2 structure", self.structure2_combo)
+        crystal_layout.addRow("G2 view axis", self.axis2_combo)
+        crystal_layout.addRow(self.custom_axis2_row)
+        self.lattice_ratio_spin = QtWidgets.QDoubleSpinBox()
+        self.lattice_ratio_spin.setRange(0.001, 1000.0)
+        self.lattice_ratio_spin.setDecimals(6)
+        self.lattice_ratio_spin.setSingleStep(0.01)
+        self.lattice_ratio_spin.setKeyboardTracking(False)
+        self.lattice_ratio_spin.setToolTip(
+            "Lattice constant of G2 divided by that of G1. Coordinates are in G1's a₀, "
+            "so only this ratio changes the pattern; e.g. 2.87/3.59 = 0.7994 for "
+            "α-Fe on γ-Fe."
+        )
+        crystal_layout.addRow("a₀(G2)/a₀(G1)", self.lattice_ratio_spin)
+        self.crystal_layout = crystal_layout
+        self._sync_crystal_controls()
         self.axis_error = QtWidgets.QLabel()
         self.axis_error.setStyleSheet("color: #b42318;")
         self.axis_error.setWordWrap(True)
@@ -223,16 +226,25 @@ class ControlDock:
         self.axial_layer_label = QtWidgets.QLabel("Visible axial layers")
         crystal_layout.addRow(self.axial_layer_label, self.layer_combo)
         self.layer_combo.currentIndexChanged.connect(self.owner._on_layer_changed)
-        self.axis_combo.currentIndexChanged.connect(self.owner._on_geometry_changed)
-        self.structure_combo.currentIndexChanged.connect(
+        for axis_combo, structure_combo, apply_button, edit in (
+            (self.axis_combo, self.structure_combo, self.custom_axis_apply, self.custom_axis_edit),
+            (self.axis2_combo, self.structure2_combo, self.custom_axis2_apply,
+             self.custom_axis2_edit),
+        ):
+            axis_combo.currentIndexChanged.connect(self.owner._on_geometry_changed)
+            structure_combo.currentIndexChanged.connect(
+                lambda: self.owner._on_geometry_changed(apply_custom=True)
+            )
+            apply_button.clicked.connect(
+                lambda: self.owner._on_geometry_changed(apply_custom=True)
+            )
+            edit.returnPressed.connect(
+                lambda: self.owner._on_geometry_changed(apply_custom=True)
+            )
+        self.lattice_ratio_spin.valueChanged.connect(
             lambda: self.owner._on_geometry_changed(apply_custom=True)
         )
-        self.custom_axis_apply.clicked.connect(
-            lambda: self.owner._on_geometry_changed(apply_custom=True)
-        )
-        self.custom_axis_edit.returnPressed.connect(
-            lambda: self.owner._on_geometry_changed(apply_custom=True)
-        )
+        self.heterophase_check.toggled.connect(self.owner._on_heterophase_toggled)
         layout.addWidget(crystal_box)
 
         self.interaction_section = CollapsibleSection(
@@ -304,7 +316,9 @@ class ControlDock:
         self.import_session_button.setToolTip("Open a saved .dmap session, restoring its structure, selections and applied deformation.")
         self.import_session_button.clicked.connect(self.owner._choose_session_import_path)
         orientation_layout.addWidget(self.import_session_button)
-        orientation_layout.addWidget(QtWidgets.QLabel("CSL preset"))
+        self.preset_label = QtWidgets.QLabel(
+            "CSL preset" if self.owner.state.crystal.homophase else "Orientation relationship")
+        orientation_layout.addWidget(self.preset_label)
         self.preset_combo = QtWidgets.QComboBox()
         self.preset_combo.addItem("Custom angle", None)
         for index, preset in enumerate(self.owner.state.presets):
@@ -867,16 +881,75 @@ class ControlDock:
         self.owner._sync_angle_controls()
         self.owner.resizeDocks([dock], [400], QtCore.Qt.Orientation.Horizontal)
 
+    def _grain_structure_widgets(self):
+        """Lattice and axis selectors with a custom [h k l] row, for one grain."""
+        structure = QtWidgets.QComboBox()
+        for lattice in SUPPORTED_LATTICES:
+            structure.addItem(lattice, lattice)
+        axis = QtWidgets.QComboBox()
+        for key in ("100", "110", "111", "112"):
+            axis.addItem(f"⟨{key}⟩", key)
+        axis.addItem("Custom [h k l]", None)
+        row = QtWidgets.QWidget()
+        row_layout = QtWidgets.QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        edit = QtWidgets.QLineEdit()
+        edit.setPlaceholderText("e.g. 1 -1 3")
+        edit.setToolTip("Integer [h k l]; separate signed or multi-digit indices with spaces.")
+        apply_button = QtWidgets.QPushButton("Apply axis")
+        row_layout.addWidget(edit, 1)
+        row_layout.addWidget(apply_button)
+        return structure, axis, row, edit, apply_button
+
+    def _sync_crystal_controls(self):
+        """Show the state's two grains without emitting change signals."""
+        state = self.owner.state
+        heterophase = not state.crystal.homophase
+        widgets = (
+            self.structure_combo, self.axis_combo, self.structure2_combo, self.axis2_combo,
+            self.heterophase_check, self.lattice_ratio_spin,
+        )
+        blockers = [QtCore.QSignalBlocker(widget) for widget in widgets]
+        for structure, axis, row, edit, geometry in (
+            (self.structure_combo, self.axis_combo, self.custom_axis_row,
+             self.custom_axis_edit, state.geometries[0]),
+            (self.structure2_combo, self.axis2_combo, self.custom_axis2_row,
+             self.custom_axis2_edit, state.geometries[1]),
+        ):
+            structure.setCurrentIndex(structure.findData(geometry.lattice))
+            index = axis.findData(geometry.axis)
+            axis.setCurrentIndex(index if index >= 0 else axis.findData(None))
+            edit.setText(" ".join(map(str, geometry.axis_indices)))
+            row.setVisible(index < 0)
+        self.lattice_ratio_spin.setValue(state.crystal.scale)
+        self.heterophase_check.setChecked(heterophase)
+        del blockers
+        self._sync_heterophase_rows()
+
+    def _sync_heterophase_rows(self):
+        heterophase = self.heterophase_check.isChecked()
+        layout = self.crystal_layout
+        for widget in (self.structure2_combo, self.axis2_combo, self.lattice_ratio_spin):
+            widget.setVisible(heterophase)
+            layout.labelForField(widget).setVisible(heterophase)
+        self.custom_axis2_row.setVisible(heterophase and self.axis2_combo.currentData() is None)
+        layout.labelForField(self.structure_combo).setText(
+            "G1 structure" if heterophase else "Structure")
+        layout.labelForField(self.axis_combo).setText(
+            "G1 view axis" if heterophase else "View axis")
+
     def _populate_layer_combo(self):
+        state = self.owner.state
         with QtCore.QSignalBlocker(self.layer_combo):
             self.layer_combo.clear()
             self.layer_combo.addItem("All layers", -1)
-            for layer in range(self.owner.state.geometry.layer_count):
+            for layer in range(state.layer_count):
                 self.layer_combo.addItem(
-                    f"{layer_name(layer)} · z/a₀ = {layer*self.owner.state.geometry.layer_spacing:.6g}",
+                    f"{layer_name(layer)} · z/a₀ = {layer*state.geometry.layer_spacing:.6g}"
+                    if state.crystal.homophase else layer_name(layer),
                     layer,
                 )
-            self.layer_combo.setCurrentIndex(self.owner.state.selected_layer + 1)
+            self.layer_combo.setCurrentIndex(state.selected_layer + 1)
 
     def _create_appearance_panel(self):
         panel = QtWidgets.QWidget()
@@ -933,11 +1006,11 @@ class ControlDock:
         state = self.owner.state
         while self.appearance_symbols_layout.rowCount():
             self.appearance_symbols_layout.removeRow(0)
-        palette = list(dict.fromkeys(available_layer_symbols(state.geometry.layer_count) + state.layer_symbols))
+        palette = list(dict.fromkeys(available_layer_symbols(state.layer_count) + state.layer_symbols))
         icons = {symbol: marker_icon(symbol, "#334155", filled=False, size=22) for symbol in palette}
         self.layer_symbol_combos = []
         self.layer_size_spins = []
-        for layer in range(state.geometry.layer_count):
+        for layer in range(state.layer_count):
             combo = QtWidgets.QComboBox()
             combo.setIconSize(QtCore.QSize(22, 22))
             combo.setMinimumContentsLength(10)
@@ -1012,8 +1085,13 @@ class ControlDock:
                 item.widget().deleteLater()
         self.grain_layer_checks = [[], []]
         self.layer_checks = []
-        for layer in range(self.owner.state.geometry.layer_count):
+        state = self.owner.state
+        for layer in range(state.layer_count):
             for grain in (0, 1):
+                geometry = state.geometries[grain]
+                if layer >= geometry.layer_count:
+                    continue  # Another phase may have more layers than this grain.
+                spacing = state.crystal.scales[grain] * geometry.layer_spacing
                 check = QtWidgets.QCheckBox(f"G{grain + 1} {layer_name(layer)}")
                 check.setIcon(layer_marker_icon(
                     grain, layer, color=self.owner.state.grain_colors[grain],
@@ -1022,7 +1100,7 @@ class ControlDock:
                 check.setIconSize(QtCore.QSize(18, 18))
                 check.setToolTip(
                     f"Show G{grain + 1} layer {layer_name(layer)} atoms · "
-                    f"z/a₀ = {layer*self.owner.state.geometry.layer_spacing:.6g}"
+                    f"z/a₀ = {layer*spacing:.6g}"
                 )
                 check.setChecked(layer in self.owner.state.visible_grain_layers[grain])
                 check.toggled.connect(

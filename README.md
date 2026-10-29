@@ -28,6 +28,10 @@ G1/G2 atom counts, and a cross-grain vector after selected-cell bulk strain.
 
 - Simple cubic (SC), face-centered cubic (FCC) and body-centered cubic (BCC)
   lattices with ⟨100⟩, ⟨110⟩, ⟨111⟩, ⟨112⟩ and custom integer tilt axes.
+- Optional separate grain 2 for interfaces such as FCC/BCC: its own lattice,
+  view axis and lattice-constant ratio a₀(G2)/a₀(G1), with Bain,
+  Nishiyama–Wassermann and Kurdjumov–Sachs orientation presets and
+  projected-column matching.
 - Independent grain/layer visibility, grain-boundary side filtering,
   display rotation, floating grain reference axes, custom grain colors and unique
   layer symbols with adjustable sizes.

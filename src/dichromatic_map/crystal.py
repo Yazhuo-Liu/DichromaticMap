@@ -72,16 +72,36 @@ class AngleRange:
     """Fixed-axis, unstrained misorientation interval starts at zero degrees.
 
     ``period_deg`` describes equivalent rotations about the directed axis.
-    Interchanging the two grains halves that period to ``maximum_deg``.
+    When theta and -theta are equivalent (``sign_equivalent``), the input
+    interval is half that period: grain exchange gives this for a homophase
+    bicrystal, a shared in-plane two-fold axis for two different grains.
     Unknown lattice symmetry uses the generic 0--180 degree interval.
     """
 
     maximum_deg: float
     period_deg: float | None
     symmetry_order: int | None
+    sign_equivalent: bool = True
 
 
-def misorientation_range(axis="110", lattice="FCC") -> AngleRange:
+def _proper_cubic_rotations():
+    """The 24 signed permutation matrices with determinant +1."""
+    for permutation in permutations(range(3)):
+        inversions = sum(
+            permutation[i] > permutation[j] for i in range(3) for j in range(i + 1, 3)
+        )
+        parity = -1 if inversions % 2 else 1
+        for signs in product((-1, 1), repeat=3):
+            if parity * signs[0] * signs[1] * signs[2] == 1:
+                yield np.eye(3, dtype=np.int64)[list(permutation)] * np.array(signs)[:, None]
+
+
+PROPER_CUBIC_ROTATIONS = tuple(_proper_cubic_rotations())
+for _rotation in PROPER_CUBIC_ROTATIONS:
+    _rotation.setflags(write=False)
+
+
+def misorientation_range(axis="110", lattice="FCC", *, scale=1.0) -> AngleRange:
     """Return the symmetry-reduced range for a fixed cubic tilt axis.
 
     FCC, BCC and SC share the 24 proper cubic rotations. Only rotations that
@@ -90,30 +110,74 @@ def misorientation_range(axis="110", lattice="FCC") -> AngleRange:
     identifies positive and negative misorientations. This is not the full
     cubic disorientation reduction, which may change the tilt axis.
 
+    ``axis`` and ``lattice`` may also give one value per grain, with ``scale``
+    = a0(G2)/a0(G1). Unless both grains are identical, grain exchange is not a
+    symmetry: the period is 360/lcm(n1, n2) for directed-axis stabilizer
+    orders n1 and n2, halved only by a two-fold axis shared by both reference
+    frames (see ``_bicrystal_misorientation_range``).
+
     Axes are parsed and validated normally. For a lattice whose point group
     is not implemented, return a generic 180-degree maximum and no claimed
     rotational period or symmetry order.
     """
-    direction = parse_axis(axis)
-    if str(lattice).strip().upper() not in SUPPORTED_LATTICES:
+    if isinstance(lattice, Bicrystal):
+        lattice, axis, scale = lattice.lattices, lattice.axes, lattice.scale
+    axes = _per_grain(axis, "axis", axis_key)
+    lattices = _per_grain(lattice, "lattice", lambda value: str(value).strip().upper())
+    if any(value not in SUPPORTED_LATTICES for value in lattices):
         return AngleRange(180.0, None, None)
-    return _cubic_misorientation_range(direction)
+    if lattices[0] == lattices[1] and axes[0] == axes[1] and lattice_constant_ratio(scale) == 1.0:
+        return _cubic_misorientation_range(parse_axis(axes[0]))
+    return _bicrystal_misorientation_range(axes)
 
 
 @lru_cache(maxsize=64)
 def _cubic_misorientation_range(direction):
-    order = 0
-    for permutation in permutations(range(3)):
-        inversions = sum(
-            permutation[i] > permutation[j] for i in range(3) for j in range(i + 1, 3)
-        )
-        parity = -1 if inversions % 2 else 1
-        for signs in product((-1, 1), repeat=3):
-            if parity * signs[0] * signs[1] * signs[2] != 1:
-                continue
-            rotated = tuple(signs[i] * direction[permutation[i]] for i in range(3))
-            order += rotated == direction
+    order = sum(
+        tuple(int(value) for value in rotation @ direction) == direction
+        for rotation in PROPER_CUBIC_ROTATIONS
+    )
     return AngleRange(180.0 / order, 360.0 / order, order)
+
+
+def _twofold_angles(axis):
+    """Analysis-frame angles (mod 180°) of cubic two-fold axes normal to ``axis``.
+
+    A proper rotation reversing the directed axis is a half-turn about an
+    in-plane line: the +1 eigenvector of S, read from a column of S + I.
+    """
+    direction = np.array(parse_axis(axis), dtype=np.int64)
+    frame = _analysis_frame(direction)
+    angles = []
+    for rotation in PROPER_CUBIC_ROTATIONS:
+        if not np.array_equal(rotation @ direction, -direction):
+            continue
+        fixed = rotation + np.eye(3, dtype=np.int64)
+        line = fixed[:, int(np.argmax(np.linalg.norm(fixed, axis=0)))]
+        angles.append(float(np.degrees(np.arctan2(line @ frame[:, 1], line @ frame[:, 0])) % 180))
+    return angles
+
+
+@lru_cache(maxsize=64)
+def _bicrystal_misorientation_range(axes):
+    """Equivalent misorientations of two different grains about a common line.
+
+    Symmetry about grain g's axis adds multiples of 360/n_g to theta, so
+    theta is periodic with 360/lcm(n1,n2). A half-turn about an in-plane
+    line at angle beta maps theta to -theta + 2(alpha2 - alpha1), where
+    alpha_g are angles of grain two-fold axes in their reference frames.
+    The interval [0, P/2] is complete only if that offset is a period
+    multiple; otherwise all of [0, P] is retained rather than assuming one.
+    """
+    orders = [_cubic_misorientation_range(parse_axis(axis)).symmetry_order for axis in axes]
+    order = lcm(*orders)
+    period = 360.0 / order
+    half = period / 2
+    reflected = any(
+        min((second - first) % half, half - (second - first) % half) <= 1e-9
+        for first in _twofold_angles(axes[0]) for second in _twofold_angles(axes[1])
+    )
+    return AngleRange(half if reflected else period, period, order, reflected)
 
 
 def layer_name(index):
@@ -237,17 +301,22 @@ def get_geometry(lattice: str = "FCC", axis: str = "110") -> CrystalGeometry:
     return _geometry(lattice, axis)
 
 
+def _analysis_frame(direction):
+    """Columns (ex, ey, ez) in cubic coordinates; ez is along the integer axis."""
+    unit = direction / np.sqrt(int(direction @ direction))
+    reference = [0, 0, 1] if np.any(direction[:2]) else [0, 1, 0]
+    ex = np.cross(reference, unit)
+    ex /= np.linalg.norm(ex)
+    return _readonly(np.column_stack((ex, np.cross(unit, ex), unit)))
+
+
 @lru_cache(maxsize=64)
 def _geometry(lattice: str, axis: str) -> CrystalGeometry:
     if lattice not in SUPPORTED_LATTICES:
         raise ValueError("lattice must be FCC, BCC or SC")
     direction = np.array(parse_axis(axis), dtype=np.int64)
     axis_norm_squared = int(direction @ direction)
-    unit = direction / np.sqrt(axis_norm_squared)
-    reference = [0, 0, 1] if np.any(direction[:2]) else [0, 1, 0]
-    ex = np.cross(reference, unit)
-    ex /= np.linalg.norm(ex)
-    frame = _readonly(np.column_stack((ex, np.cross(unit, ex), unit)))
+    frame = _analysis_frame(direction)
     # Primitive cubic Bravais translations in units a0/2.
     if lattice == "FCC":
         primitive = np.array([[0, 1, 1], [1, 0, 1], [1, 1, 0]], dtype=np.int64)
@@ -302,6 +371,133 @@ def _geometry(lattice: str, axis: str) -> CrystalGeometry:
         _readonly(direction, int),
         step / (2 * np.sqrt(axis_norm_squared)),
     )
+
+
+def _per_grain(value, name, normalize):
+    """One shared value or exactly one value per grain, each normalized.
+
+    A per-grain value is a pair of strings or sequences; anything else, such
+    as an integer axis triple, is one value shared by both grains.
+    """
+    values = (value, value)
+    if not isinstance(value, str) and hasattr(value, "__iter__"):
+        items = tuple(value)
+        if len(items) == 2 and all(
+            isinstance(item, str) or hasattr(item, "__iter__") for item in items
+        ):
+            values = items
+        elif any(isinstance(item, str) for item in items):
+            raise ValueError(f"Provide one {name} or one {name} per grain")
+    return tuple(normalize(item) for item in values)
+
+
+def _normalize_lattice(lattice):
+    lattice = str(lattice).strip().upper()
+    if lattice not in SUPPORTED_LATTICES:
+        raise ValueError("lattice must be FCC, BCC or SC")
+    return lattice
+
+
+@dataclass(frozen=True)
+class Bicrystal:
+    """Each grain's cubic lattice and tilt axis, with their lattice-constant ratio.
+
+    Analysis lengths use grain 1's lattice constant a0; grain 2 is scaled by
+    ``scale`` = a0(G2)/a0(G1). Both axes lie along the common analysis z.
+    Only identical lattices, axes and lattice constants form a *homophase*
+    bicrystal, whose axial layers coincide and are matched layer by layer.
+    Otherwise each grain keeps its own layers and repeat; atoms are matched as
+    projected columns and no common axial period is assumed.
+    Construct instances with ``bicrystal``, which normalizes every field.
+    """
+
+    lattices: tuple[str, str]
+    axes: tuple[str, str]
+    scale: float = 1.0
+
+    @property
+    def homophase(self):
+        return (self.lattices[0] == self.lattices[1] and self.axes[0] == self.axes[1]
+                and self.scale == 1.0)
+
+    @property
+    def geometries(self) -> tuple[CrystalGeometry, CrystalGeometry]:
+        return tuple(get_geometry(lattice, axis) for lattice, axis in zip(self.lattices, self.axes))
+
+    @property
+    def scales(self):
+        return (1.0, self.scale)
+
+    @property
+    def layer_counts(self):
+        return tuple(geometry.layer_count for geometry in self.geometries)
+
+    @property
+    def layer_count(self):
+        """Layer IDs shared by display preferences: the larger grain count."""
+        return max(self.layer_counts)
+
+    @property
+    def lattice(self):
+        """Compact lattice field: one name when both grains share it."""
+        return self.lattices[0] if self.lattices[0] == self.lattices[1] else self.lattices
+
+    @property
+    def axis(self):
+        """Compact axis field: one key when both grains share it."""
+        return self.axes[0] if self.axes[0] == self.axes[1] else self.axes
+
+    @property
+    def label(self):
+        if self.homophase:
+            return f"{self.lattices[0]} ⟨{self.axes[0]}⟩"
+        return " / ".join(f"{lattice} [{axis}]" for lattice, axis in zip(self.lattices, self.axes))
+
+
+def bicrystal(lattice="FCC", axis="110", scale=1.0) -> Bicrystal:
+    """Normalize one shared or two per-grain lattices and axes.
+
+    An existing ``Bicrystal`` is returned unchanged. ``scale`` must be a
+    finite positive ratio a0(G2)/a0(G1); every geometry is validated here.
+    """
+    if isinstance(lattice, Bicrystal):
+        return lattice
+    lattices = _per_grain(lattice, "lattice", _normalize_lattice)
+    axes = _per_grain(axis, "axis", axis_key)
+    scale = lattice_constant_ratio(scale)
+    for name, key in zip(lattices, axes):
+        get_geometry(name, key)
+    return Bicrystal(lattices, axes, scale)
+
+
+def lattice_constant_ratio(scale):
+    """Validate a grain lattice constant divided by the analysis a0."""
+    if isinstance(scale, (bool, np.bool_)):
+        raise ValueError("Lattice-constant ratio must be a finite positive number")
+    try:
+        scale = float(scale)
+    except (TypeError, ValueError):
+        raise ValueError("Lattice-constant ratio must be a finite positive number") from None
+    if not np.isfinite(scale) or not 1e-3 <= scale <= 1e3:
+        raise ValueError("Lattice-constant ratio must be finite and between 0.001 and 1000")
+    return scale
+
+
+def grain_layer_pair(layer, crystal, *, allow_all=False):
+    """Validate one layer shared by both grains, or one layer per grain.
+
+    ``-1`` (all layers) is accepted only with ``allow_all``. A shared layer
+    must exist in both grains, matching the homophase same-layer convention.
+    """
+    counts = bicrystal(crystal).layer_counts
+    values = (layer, layer) if not hasattr(layer, "__iter__") else tuple(layer)
+    low = -1 if allow_all else 0
+    if len(values) != 2 or any(
+        isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer))
+        or not low <= value < count for value, count in zip(values, counts)
+    ):
+        raise ValueError("Select one valid axial layer in each grain")
+    return tuple(int(value) for value in values)
 
 
 @dataclass(frozen=True)
@@ -374,14 +570,16 @@ class CrystalVectorCoordinates:
 
 
 def crystal_vector_coordinates(
-    displacement, rotation_deg, deformation=None, lattice="FCC", axis="110"
+    displacement, rotation_deg, deformation=None, lattice="FCC", axis="110", *, scale=1.0
 ):
     """Express an actual analysis-space (x,y,z)/a0 displacement in one grain.
 
     Q maps reference cubic axes to analysis axes. The full current basis is
-    B=F3 Q, with polar-transported orthonormal axes O=polar(F3) Q. Therefore
-    current=O.T @ d and lattice=solve(B,d). The input already includes BOTH
+    B=s F3 Q, with polar-transported orthonormal axes O=polar(F3) Q. Therefore
+    current=O.T @ d / s and lattice=solve(B,d). The input already includes BOTH
     endpoints' deformations and translations; do not deform d a second time.
+    ``scale`` s is this grain's lattice constant / the analysis a0, so both
+    representations use this grain's own lattice constant.
     This concerns direct-lattice directions [uvw], not reciprocal plane (hkl).
     """
     displacement = np.asarray(displacement, dtype=float)
@@ -389,6 +587,7 @@ def crystal_vector_coordinates(
         raise ValueError("Displacement must contain three finite components / a0")
     if not np.isfinite(rotation_deg):
         raise ValueError("Grain rotation must be finite")
+    scale = lattice_constant_ratio(scale)
     f = np.eye(2) if deformation is None else np.asarray(deformation, dtype=float)
     if f.shape != (2, 2) or not np.all(np.isfinite(f)):
         raise ValueError("Deformation must be a finite 2-by-2 matrix")
@@ -407,14 +606,37 @@ def crystal_vector_coordinates(
     )
     reference_frame = r @ get_geometry(lattice, axis).frame.T
     current_frame = left @ right @ reference_frame
-    basis = f3 @ reference_frame
+    basis = scale * (f3 @ reference_frame)
     return CrystalVectorCoordinates(
-        current_frame.T @ displacement,
+        current_frame.T @ displacement / scale,
         np.linalg.solve(basis, displacement),
         current_frame,
         basis,
         bool(np.max(np.abs(stretches - 1)) > 1e-10),
     )
+
+
+def axial_displacement(crystal, first_grain, first_half_indices, second_grain,
+                       second_half_indices, axial_repeat=0):
+    """Analysis z/a0 from P1 to P2, with P2 shifted by whole axial repeats.
+
+    Each atom's height is its grain's reference half-indices projected on that
+    grain's axis, scaled by its lattice-constant ratio; in-plane F does not
+    change heights. One grain, or a homophase pair, differences the integer
+    indices first, exactly as for identical axial phases.
+    """
+    crystal = bicrystal(crystal)
+    second_geometry = crystal.geometries[second_grain]
+    second = (np.asarray(second_half_indices)
+              + axial_repeat * second_geometry.axial_repeat_half_indices)
+    if first_grain == second_grain or crystal.homophase:
+        scale = crystal.scales[second_grain]
+        return scale * (0.5 * (second - np.asarray(first_half_indices)) @ second_geometry.frame[:, 2])
+    heights = [
+        crystal.scales[grain] * (0.5 * np.asarray(indices) @ crystal.geometries[grain].frame[:, 2])
+        for grain, indices in ((first_grain, first_half_indices), (second_grain, second))
+    ]
+    return heights[1] - heights[0]
 
 
 def format_direction_components(components, unit="a₀"):
@@ -459,6 +681,7 @@ def projected_columns(
     *,
     layers=None,
     displacements=None,
+    scale=1.0,
 ) -> ProjectedGrain:
     """Generate only the columns intersecting an a0-scaled screen rectangle.
 
@@ -473,6 +696,8 @@ def projected_columns(
     ``displacements`` is an ordered history of whole-grain or rectangular
     shifts applied after the affine transform. Source atoms entering the crop
     are generated as well, preserving reference indices and axial phases.
+    ``scale`` is this grain's lattice constant divided by the analysis a0;
+    it multiplies the unstrained lattice before deformation and translation.
     """
 
     if not np.isfinite(width) or not np.isfinite(height) or width <= 0 or height <= 0:
@@ -488,6 +713,7 @@ def projected_columns(
     if translation.shape != (2,) or not np.all(np.isfinite(translation)):
         raise ValueError("translation must contain two finite coordinates")
     displacements = normalize_displacements(displacements)
+    scale = lattice_constant_ratio(scale)
 
     geometry = get_geometry(lattice, axis)
     if layers is None:
@@ -506,7 +732,8 @@ def projected_columns(
         selected_layers = sorted(set(selected_layers))
     radians = np.deg2rad(rotation_deg)
     cosine, sine = np.cos(radians), np.sin(radians)
-    rotation = np.array([[cosine, -sine], [sine, cosine]])
+    # The scaled rotation gives the unstrained positions a picked atom reports.
+    rotation = scale * np.array([[cosine, -sine], [sine, cosine]])
     transform = rotation
     range_error = (
         "View exceeds the supported numerical coordinate range. "
@@ -621,7 +848,8 @@ def projected_columns(
     # An orthonormal cubic-frame row has L1 norm <= sqrt(3). Dividing
     # half-indices by two bounds a rotated reference component by this
     # already-known integer-coordinate bound, without another bulk scan.
-    reference_bound = coordinate_bound * basis_bound + offset_bound
+    # A grain lattice-constant ratio scales those reference positions.
+    reference_bound = scale * (coordinate_bound * basis_bound + offset_bound)
     compensated = affine_needs_compensation(reference_bound, deformation_matrix, translation)
     if compensated:
         reference_basis = rotation @ geometry.planar_basis
@@ -772,6 +1000,96 @@ def matching_csl_preset(
             for preset in csl_presets(axis)
             if abs(preset.angle_deg - angle_deg) <= tolerance_deg
         ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
+class OrientationPreset:
+    """A named FCC/BCC orientation relationship about the chosen grain axes."""
+
+    relationship: str
+    angle_deg: float
+
+    @property
+    def name(self) -> str:
+        return self.relationship
+
+    @property
+    def label(self) -> str:
+        return f"{self.name}  ·  {self.angle_deg:.2f}°"
+
+
+# (name, FCC plane, BCC plane, FCC direction, BCC direction): parallel plane
+# normals and parallel in-plane directions, in each phase's cubic axes.
+ORIENTATION_RELATIONSHIPS = (
+    ("Bain", (0, 0, 1), (0, 0, 1), (1, 0, 0), (1, 1, 0)),
+    ("NW", (1, 1, 1), (0, 1, 1), (1, 1, -2), (0, -1, 1)),
+    ("KS", (1, 1, 1), (0, 1, 1), (-1, 0, 1), (-1, -1, 1)),
+)
+
+
+def _relationship_rotation(fcc_plane, bcc_plane, fcc_direction, bcc_direction):
+    """Rotation G with G v_BCC = v_FCC for cubic components of one vector."""
+    frames = []
+    for plane, direction in ((fcc_plane, fcc_direction), (bcc_plane, bcc_direction)):
+        normal = np.asarray(plane, dtype=float) / np.linalg.norm(plane)
+        line = np.asarray(direction, dtype=float) / np.linalg.norm(direction)
+        frames.append(np.column_stack((normal, line, np.cross(normal, line))))
+    return frames[0] @ frames[1].T
+
+
+def angle_presets(lattice="FCC", axis="110", scale=1.0):
+    """CSL presets for a homophase bicrystal; FCC/BCC relationships otherwise."""
+    crystal = bicrystal(lattice, axis, scale)
+    if crystal.homophase:
+        return csl_presets(crystal.axes[0])
+    if sorted(crystal.lattices) != ["BCC", "FCC"]:
+        return ()
+    return _orientation_presets(crystal.lattices, crystal.axes)
+
+
+@lru_cache(maxsize=64)
+def _orientation_presets(lattices, axes):
+    """Reference angles reproducing each relationship about the given axes.
+
+    A grain-g cubic vector u maps to analysis coordinates R(phi_g) C_g.T u,
+    with phi = +theta/2, -theta/2. A relationship G (grain-2 to grain-1 cubic
+    components) therefore requires C1.T G C2 = R(-theta): every symmetry
+    variant S1 G S2 that makes the two axes parallel gives one angle, reduced
+    into this bicrystal's misorientation interval and deduplicated.
+    """
+    geometries = [get_geometry(lattice, axis) for lattice, axis in zip(lattices, axes)]
+    directions = [geometry.frame[:, 2] for geometry in geometries]
+    bounds = _bicrystal_misorientation_range(axes)
+    presets = []
+    for name, *indices in ORIENTATION_RELATIONSHIPS:
+        relationship = _relationship_rotation(*indices)
+        if lattices[0] == "BCC":
+            relationship = relationship.T
+        angles = []
+        for first in PROPER_CUBIC_ROTATIONS:
+            for second in PROPER_CUBIC_ROTATIONS:
+                variant = first @ relationship @ second
+                if not np.allclose(variant @ directions[1], directions[0], atol=1e-9, rtol=0):
+                    continue
+                planar = geometries[0].frame.T @ variant @ geometries[1].frame
+                angle = -np.degrees(np.arctan2(planar[1, 0], planar[0, 0])) % bounds.period_deg
+                if bounds.sign_equivalent and angle > bounds.maximum_deg:
+                    angle = bounds.period_deg - angle
+                if min(angle, bounds.period_deg - angle) < 1e-9:
+                    angle = 0.0
+                if all(abs(angle - old) > 1e-7 for old in angles):
+                    angles.append(float(angle))
+        presets.extend(OrientationPreset(name, angle) for angle in angles)
+    return tuple(sorted(presets, key=lambda preset: (preset.angle_deg, preset.name)))
+
+
+def matching_angle_preset(angle_deg, tolerance_deg=0.006, lattice="FCC", axis="110", scale=1.0):
+    """The CSL or orientation-relationship preset within ``tolerance_deg``."""
+    return next(
+        (preset for preset in angle_presets(lattice, axis, scale)
+         if abs(preset.angle_deg - angle_deg) <= tolerance_deg),
         None,
     )
 

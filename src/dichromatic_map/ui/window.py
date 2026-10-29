@@ -6,6 +6,7 @@ window attributes below are properties onto those owners for API compatibility.
 
 from __future__ import annotations
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import ExitStack
 import html
 import os
 from pathlib import Path
@@ -25,13 +26,13 @@ from .session import SessionController
 from .completion import CellCompletionDialog
 from ..completion import cell_completion_candidates
 from ..crystal import (
-    get_geometry,
+    CSLPreset,
+    axial_displacement,
+    bicrystal,
     projected_columns,
     layer_name,
     GeometryLimitError,
-    csl_presets,
-    matching_csl_preset,
-    misorientation_range,
+    matching_angle_preset,
     crystal_vector_coordinates,
     format_direction_components,
 )
@@ -42,7 +43,7 @@ from ..state import (
     PatternParameters,
     SelectedAtom,
     CellVertex,
-    default_angle_deg,
+    default_crystal_angle_deg,
     VIEW_SCALE_MIN,
     VIEW_SCALE_MAX,
     PatternState,
@@ -56,8 +57,10 @@ from ..compute import (
     coincidence_layers_worker,
     local_match_layers_worker,
     grain_layer_subset,
+    projected_coincidence_worker,
+    projected_local_match_worker,
 )
-from ..matching import same_layer_coincidence_sites
+from ..matching import projected_coincidence_sites, same_layer_coincidence_sites
 from .controls import ControlDock
 from .plot import PatternPlot
 
@@ -393,8 +396,8 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _reset_appearance(self, *_args):
         self.state.grain_colors = list(DEFAULT_GRAIN_COLORS)
-        self.state.layer_symbols = default_layer_symbols(self.state.geometry.layer_count)
-        self.state.layer_size_scales = default_layer_size_scales(self.state.geometry.layer_count)
+        self.state.layer_symbols = default_layer_symbols(self.state.layer_count)
+        self.state.layer_size_scales = default_layer_size_scales(self.state.layer_count)
         self._refresh_appearance()
 
     def _refresh_appearance(self):
@@ -721,10 +724,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 self._manual_grain_polygons(),
                 self.state.angle_deg,
                 self.controls.manual_strain_limit.value(),
-                self.state.geometry.lattice,
-                self.state.geometry.axis,
-                self.state.manual_vertices[0].layer,
+                self.state.crystal.lattice,
+                self.state.crystal.axis,
+                self.state.manual_vertices[0].layers,
                 self.controls.manual_rotation_limit.value(),
+                scale=self.state.crystal.scale,
             )
         except ValueError as error:
             self.controls.manual_strain_note.setText(str(error))
@@ -755,7 +759,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.state.deformations = (fit.cell.f1, fit.cell.f2)
         self.state.translations = fit.translations.copy()
         self.state.manual_vertices = [
-            CellVertex(pair.mean(axis=0), vertex.layer, "CSL", pair.copy())
+            CellVertex(pair.mean(axis=0), vertex.layer, "CSL", pair.copy(), vertex.second_layer)
             for vertex, pair in zip(vertices, fit.vertices.transpose(1, 0, 2))
         ]
         self._clear_local_pairs()
@@ -764,7 +768,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.controls.manual_strain_note.setText(
             f"Applied: max principal strain {100*fit.cell.max_strain:.6f}%; "
             f"rotations G1 {fit.rotations_deg[0]:+.6f}°, G2 {fit.rotations_deg[1]:+.6f}°; "
-            f"four-pair residual {fit.residual:.2e} a₀. Full-lattice CSL is recomputed, layer by layer."
+            f"four-pair residual {fit.residual:.2e} a₀. "
+            + ("Full-lattice CSL is recomputed, layer by layer." if self.state.crystal.homophase
+               else "Coincident columns are recomputed across layers.")
         )
         self.controls.near_info.setPlainText(
             "SELECTED-CELL BULK STRAIN (not stress-free)\n"
@@ -793,10 +799,12 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         candidates = []
         states = self._region_states()
         if not self.state.csl_updating:
-            for layer, points in enumerate(self.state.coincident_points):
-                if layer not in self.state.visible_layers:
+            for layer, (points, partners) in enumerate(zip(
+                self.state.coincident_points, self.state.coincident_second_layers
+            )):
+                if layer not in self.state.visible_grain_layers[0]:
                     continue
-                keep = np.ones(len(points), dtype=bool)
+                keep = np.isin(partners, tuple(self.state.visible_grain_layers[1]))
                 if len(self.state.selected_points) == 2:
                     for grain in (0, 1):
                         keep &= selected_region_mask(
@@ -806,20 +814,25 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                             states[2 * grain + 1],
                         )
                 candidates.extend(
-                    CellVertex(point.copy(), layer, "CSL") for point in points[keep]
+                    CellVertex(point.copy(), layer, "CSL", None, self._second_layer(partner))
+                    for point, partner in zip(points[keep], partners[keep])
                 )
         if self.local_active and not self.state.local_updating:
             keep = self._local_pair_mask()
+            pairs = self.state.local_pairs
             candidates.extend(
-                CellVertex(point.copy(), int(layer), "local", np.stack((first, second)))
-                for point, layer, first, second in zip(
-                    self.state.local_pairs.midpoints[keep],
-                    self.state.local_pairs.layers[keep],
-                    self.state.local_pairs.first[keep],
-                    self.state.local_pairs.second[keep],
+                CellVertex(point.copy(), int(layer), "local", np.stack((first, second)),
+                           self._second_layer(second_layer))
+                for point, layer, second_layer, first, second in zip(
+                    pairs.midpoints[keep], pairs.layers[keep], pairs.second_layers[keep],
+                    pairs.first[keep], pairs.second[keep],
                 )
             )
         return candidates
+
+    def _second_layer(self, layer):
+        """A vertex's G2 layer, stored only when grain layers are unrelated."""
+        return None if self.state.crystal.homophase else int(layer)
 
     def _manual_completion_available(self):
         # Completion operates on original lattice coordinates. It does not
@@ -835,7 +848,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _manual_completion_key(self):
         return (
             self._geometry_signature(),
-            tuple((vertex.layer, vertex.source) for vertex in self.state.manual_vertices),
+            tuple((vertex.layers, vertex.source) for vertex in self.state.manual_vertices),
             tuple(self._manual_grain_polygons().ravel()),
             self.controls.manual_strain_limit.value(),
             self.controls.manual_rotation_limit.value(),
@@ -848,10 +861,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         try:
             candidates = cell_completion_candidates(
                 self._manual_grain_polygons(), self.state.angle_deg,
-                lattice=self.state.geometry.lattice, axis=self.state.geometry.axis,
-                layer=self.state.manual_vertices[0].layer,
+                lattice=self.state.crystal.lattice, axis=self.state.crystal.axis,
+                layer=self.state.manual_vertices[0].layers,
                 percent=self.controls.manual_strain_limit.value(),
                 max_rotation_deg=self.controls.manual_rotation_limit.value(),
+                scale=self.state.crystal.scale,
             )
         except ValueError as error:
             self._manual_pick_warning(str(error))
@@ -878,12 +892,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if candidate.fit is None:
             return
         count = len(self.state.manual_vertices)
-        layer = self.state.manual_vertices[0].layer
+        first = self.state.manual_vertices[0]
         generated = []
         for pair in candidate.vertices[:, count:].transpose(1, 0, 2):
             source = ("CSL" if np.linalg.norm(pair[0] - pair[1]) <= COINCIDENCE_TOLERANCE_FACTOR
                       else candidate.source)
-            generated.append(CellVertex(pair.mean(axis=0), layer, source, pair.copy()))
+            generated.append(CellVertex(pair.mean(axis=0), first.layer, source, pair.copy(),
+                                        first.second_layer))
         self.state.manual_vertices = self.state.manual_vertices + generated
         self.plot._draw_manual_cell()
         self._set_mode("idle")
@@ -917,14 +932,22 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         }.get(symbol, symbol.removeprefix("number:"))
         return f"{glyph} layer"
 
+    def _vertex_layers_label(self, layers, short=False):
+        """One shared layer, or each grain's own layer for different grains."""
+        if self.state.crystal.homophase:
+            label = self._cell_layer_label(layers[0])
+            return label.split()[0] if short else label
+        glyphs = [self._cell_layer_label(layer).split()[0] for layer in layers]
+        return f"G1 {glyphs[0]}/G2 {glyphs[1]}" + ("" if short else " layers")
+
     def _resolve_cell_vertex(self, candidate):
         if candidate.grain_positions is not None:
             return candidate
         # Exact CSL stores marker centers; resolve its two real atoms once at
         # selection time, not later from a possibly panned-away drawing buffer.
         endpoints = []
-        for grain in self.state.grains:
-            points = grain.positions[grain.layers == candidate.layer]
+        for grain, layer in zip(self.state.grains, candidate.layers):
+            points = grain.positions[grain.layers == layer]
             if not len(points):
                 raise ValueError(
                     "Common-site atoms are not available; wait for the lattice update"
@@ -970,7 +993,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             return
         candidate = candidates[index]
         hit_layers = {
-            candidates[i].layer
+            candidates[i].layers
             for i in np.flatnonzero(np.abs(distance - distance[index]) < 1e-6)
         }
         if len(hit_layers) > 1:
@@ -980,11 +1003,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             return
         if (
             self.state.manual_vertices
-            and candidate.layer != self.state.manual_vertices[0].layer
+            and candidate.layers != self.state.manual_vertices[0].layers
         ):
             self._manual_pick_warning(
-                f"Wrong layer/symbol: expected {self._cell_layer_label(self.state.manual_vertices[0].layer)}, "
-                f"clicked {self._cell_layer_label(candidate.layer)}. Point not selected."
+                f"Wrong layer/symbol: expected {self._vertex_layers_label(self.state.manual_vertices[0].layers)}, "
+                f"clicked {self._vertex_layers_label(candidate.layers)}. Point not selected."
             )
             return
         if any(
@@ -1019,7 +1042,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self._queue_manual_count()
         else:
             self.controls.manual_info.setPlainText(
-                f"Selected {len(trial)}/4 vertices in {self._cell_layer_label(candidate.layer)}. "
+                f"Selected {len(trial)}/4 vertices in {self._vertex_layers_label(candidate.layers)}. "
                 "Continue around the perimeter in the same layer."
             )
             self._update_status()
@@ -1035,7 +1058,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             else None
         )
         states = self._region_states() if filtered else (True, True, True, True)
-        layer = self.state.manual_vertices[0].layer
+        layer = self.state.manual_vertices[0].layers
         key = (
             tuple(points.ravel()),
             self._geometry_signature(),
@@ -1053,13 +1076,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             points,
             self.state.angle_deg,
             tuple(f.copy() for f in self.state.deformations),
-            self.state.geometry.lattice,
-            self.state.geometry.axis,
+            self.state.crystal.lattice,
+            self.state.crystal.axis,
             boundary,
             states,
             layer,
             self.state.translations.copy(),
             normalize_grain_displacements(self.state.grain_displacements),
+            self.state.crystal.scale,
         )
         if (
             self.compute.manual_count_future is not None
@@ -1115,7 +1139,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _show_manual_counts(self):
         counts = self.state.manual_counts
-        layer = self.state.manual_vertices[0].layer
+        layers = self.state.manual_vertices[0].layers
         custom = self._has_displacements() or self._custom_position_base()
         lines = [
             (
@@ -1123,7 +1147,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 if self.state.manual_strain_fit is not None
                 else "Manual region; periodicity not verified."
             ),
-            f"Only the picked {self._cell_layer_label(layer)} is counted; not an all-layer total.",
+            f"Only the picked {self._vertex_layers_label(layers)} is counted; not an all-layer total.",
             "Each grain uses its own four current atom vertices.",
             (
                 "GB side visibility applied."
@@ -1131,7 +1155,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 else "Both grains; independent of view and display-layer filter."
             ),
         ]
-        for grain in (0, 1):
+        for grain, layer in enumerate(layers):
             interior = counts.interior[grain, layer]
             boundary = counts.boundary[grain, layer]
             lines.append(
@@ -1172,17 +1196,33 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.plot._fit_model_corners(self._manual_grain_polygons().reshape(-1, 2))
 
     def _empty_coincidences(self):
-        return tuple(np.empty((0, 2)) for _ in range(self.state.geometry.layer_count))
+        return self.state.empty_coincidences()[0]
+
+    def _clear_coincidences(self):
+        self.state.coincident_points, self.state.coincident_second_layers = (
+            self.state.empty_coincidences()
+        )
+
+    def _grain_layer_sets(self, layers):
+        """Restrict shared layer IDs to the layers each grain actually has."""
+        return [set(layers) & set(range(count)) for count in self.state.crystal.layer_counts]
+
+    def _coincidence_dirty_layers(self, grain, layers):
+        """Coincidence groups affected by a grain filter; G2 can affect any group."""
+        return set(layers) if grain == 0 or self.state.crystal.homophase else None
 
     def _set_all_layers_visible(self, visible: bool) -> None:
-        layers = set(range(self.state.geometry.layer_count)) if visible else set()
+        layers = set(range(self.state.layer_count)) if visible else set()
+        grain_layers = self._grain_layer_sets(layers)
         dirty_grains = {
             (grain, layer)
-            for grain, previous in enumerate(self.state.visible_grain_layers)
-            for layer in previous ^ layers
+            for grain, (previous, current) in enumerate(
+                zip(self.state.visible_grain_layers, grain_layers))
+            for layer in previous ^ current
         }
-        dirty_coincidences = self.state.visible_layers ^ layers
-        self.state.visible_grain_layers = [set(layers), set(layers)]
+        dirty_coincidences = (self.state.visible_layers ^ layers
+                              if self.state.crystal.homophase else None)
+        self.state.visible_grain_layers = grain_layers
         self._sync_shared_visible_layers()
         for checks in self.controls.grain_layer_checks:
             for check in checks:
@@ -1217,10 +1257,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if equal_selections and len(self.state.visible_layers) == 1
             else -1
         )
-        self._apply_layer_visibility({(grain, layer)}, {layer})
+        self._apply_layer_visibility(
+            {(grain, layer)}, self._coincidence_dirty_layers(grain, {layer}))
 
     def _on_axial_layer_toggled(self, layer: int, visible: bool) -> None:
-        for grain in (0, 1):
+        grains = [grain for grain, count in enumerate(self.state.crystal.layer_counts)
+                  if layer < count]
+        for grain in grains:
             if visible:
                 self.state.visible_grain_layers[grain].add(layer)
             else:
@@ -1233,7 +1276,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if len(self.state.visible_layers) == 1
             else -1
         )
-        self._apply_layer_visibility({(0, layer), (1, layer)}, {layer})
+        self._apply_layer_visibility(
+            {(grain, layer) for grain in grains},
+            self._coincidence_dirty_layers(max(grains, default=0), {layer}),
+        )
 
     def _apply_layer_visibility(self, dirty_grains=None, dirty_coincidences=None) -> None:
         self.plot._rebuild_legend()
@@ -1245,11 +1291,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _on_layer_changed(self, *_args):
         self.state.selected_layer = self.controls.layer_combo.currentData()
         layers = (
-            set(range(self.state.geometry.layer_count))
+            set(range(self.state.layer_count))
             if self.state.selected_layer < 0
             else {self.state.selected_layer}
         )
-        self.state.visible_grain_layers = [set(layers), set(layers)]
+        self.state.visible_grain_layers = self._grain_layer_sets(layers)
         self._sync_shared_visible_layers()
         for grain, checks in enumerate(self.controls.grain_layer_checks):
             for layer, check in enumerate(checks):
@@ -1261,8 +1307,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _geometry_signature(self):
         """Identify physical positions independently of the view rectangle."""
         return (
-            self.state.geometry.lattice,
-            self.state.geometry.axis,
+            self.state.crystal.lattice,
+            self.state.crystal.axis,
+            self.state.crystal.scale,
             self.state.angle_deg,
             tuple(self.state.deformations[0].ravel()),
             tuple(self.state.deformations[1].ravel()),
@@ -1272,57 +1319,140 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _update_geometry_labels(self):
         self.plot._update_reference_axes()
+        crystal = self.state.crystal
         model = self.state.geometry
-        name = f"{model.lattice} ⟨{model.axis}⟩ Tilt GB"
+        if crystal.homophase:
+            name = f"{model.lattice} ⟨{model.axis}⟩ Tilt GB"
+            units = "Coordinates in a₀ · 1 = one lattice constant"
+        else:
+            name = f"{crystal.label} Interface"
+            units = (f"Coordinates in a₀ of G1 · a₀(G2)/a₀(G1) = {crystal.scale:.6g}"
+                     if crystal.scale != 1.0 else "Coordinates in a₀ · 1 = one lattice constant")
         self.setWindowTitle(name + " · Dichromatic Pattern")
         self.controls.heading.setText(
-            f"<div style='font-size:17px;font-weight:700;color:#17212b'>{name}</div>"
-            "<div style='color:#64748b;margin-top:3px'>Coordinates in a₀ · 1 = one lattice constant</div>"
+            f"<div style='font-size:17px;font-weight:700;color:#17212b'>{html.escape(name)}</div>"
+            f"<div style='color:#64748b;margin-top:3px'>{units}</div>"
         )
         self.plot.plot_item.setLabel("bottom", f"{model.x_label} / a₀", units="")
         self.plot.plot_item.setLabel("left", f"{model.y_label} / a₀", units="")
-        self.controls.layer_info.setText(
-            f"{model.layer_count} axial layers per grain · spacing = {model.layer_spacing:.6g} a₀\n"
-            f"Axial repeat = {model.axial_period:.6g} a₀"
-            + (
-                "\nLegend shows the first 6 enabled layers; use the grain/layer checkboxes to inspect others."
-                if model.layer_count > 6
-                else ""
-            )
-            + "\nCSL and near-pair markers require the layer to be visible in both grains."
+        legend_note = (
+            "\nLegend shows the first 6 enabled layers; use the grain/layer checkboxes to inspect others."
+            if self.state.layer_count > 6 else ""
         )
+        if crystal.homophase:
+            self.controls.layer_info.setText(
+                f"{model.layer_count} axial layers per grain · spacing = {model.layer_spacing:.6g} a₀\n"
+                f"Axial repeat = {model.axial_period:.6g} a₀"
+                + legend_note
+                + "\nCSL and near-pair markers require the layer to be visible in both grains."
+            )
+        else:
+            self.controls.layer_info.setText(
+                "\n".join(
+                    f"G{grain + 1} {geometry.lattice} {geometry.axis_label}: "
+                    f"{geometry.layer_count} layers · spacing "
+                    f"{scale * geometry.layer_spacing:.6g} a₀ · repeat "
+                    f"{scale * geometry.axial_period:.6g} a₀"
+                    for grain, (geometry, scale) in enumerate(
+                        zip(self.state.geometries, crystal.scales))
+                )
+                + legend_note
+                + "\nGrain layers are unrelated: coincident columns and near pairs match "
+                "projected columns of any G1/G2 layers, both visible."
+            )
         self.controls.axial_spin.setToolTip(
             "Vector readout only: P2 shifts by "
-            + self._format_lattice_vector(model.axial_repeat_half_indices)
-            + f" per step along {model.axis_label}. This selects a periodic atom "
+            + " or ".join(dict.fromkeys(
+                self._format_lattice_vector(geometry.axial_repeat_half_indices)
+                + f" along {geometry.axis_label}"
+                + ("" if crystal.homophase else f" in G{grain + 1}")
+                for grain, geometry in enumerate(self.state.geometries)
+            ))
+            + " per step. This selects a periodic atom "
             "represented by the same projected column; it does not add thickness, "
             "duplicate the structure, or change plotted atoms."
         )
 
+    def _on_heterophase_toggled(self, checked):
+        controls = self.controls
+        if checked:
+            # G2 starts as a copy of G1: the structure is unchanged until edited.
+            first = self.state.geometries[0]
+            widgets = (controls.structure2_combo, controls.axis2_combo,
+                       controls.lattice_ratio_spin)
+            with ExitStack() as blockers:
+                for widget in widgets:
+                    blockers.enter_context(QtCore.QSignalBlocker(widget))
+                controls.structure2_combo.setCurrentIndex(
+                    controls.structure2_combo.findData(first.lattice))
+                index = controls.axis2_combo.findData(first.axis)
+                controls.axis2_combo.setCurrentIndex(
+                    index if index >= 0 else controls.axis2_combo.findData(None))
+                controls.custom_axis2_edit.setText(" ".join(map(str, first.axis_indices)))
+                controls.lattice_ratio_spin.setValue(1.0)
+            controls._sync_heterophase_rows()
+            return
+        controls._sync_heterophase_rows()
+        self._on_geometry_changed(apply_custom=True)
+
+    def _requested_crystal(self, apply_custom):
+        """The structure selected by the controls, or None while a custom axis is pending."""
+        controls = self.controls
+        heterophase = controls.heterophase_check.isChecked()
+        controls.custom_axis_row.setVisible(controls.axis_combo.currentData() is None)
+        controls._sync_heterophase_rows()
+        grains = [(controls.structure_combo, controls.axis_combo, controls.custom_axis_edit)]
+        if heterophase:
+            grains.append((controls.structure2_combo, controls.axis2_combo,
+                           controls.custom_axis2_edit))
+        lattices, axes = [], []
+        for structure, axis_combo, edit in grains:
+            axis = axis_combo.currentData()
+            if axis is None:
+                if not apply_custom:
+                    return None
+                axis = edit.text()
+            lattices.append(structure.currentData())
+            axes.append(axis)
+        if not heterophase:
+            return bicrystal(lattices[0], axes[0])
+        ratio = controls.lattice_ratio_spin.value()
+        if ratio == round(self.state.crystal.scale, controls.lattice_ratio_spin.decimals()):
+            ratio = self.state.crystal.scale  # Keep a saved ratio the spin box rounds.
+        return bicrystal(lattices, axes, ratio)
+
     def _on_geometry_changed(self, *_args, apply_custom=False):
-        lattice = self.controls.structure_combo.currentData()
-        axis = self.controls.axis_combo.currentData()
-        self.controls.custom_axis_row.setVisible(axis is None)
-        if axis is None:
-            if not apply_custom:
-                return
-            axis = self.controls.custom_axis_edit.text()
+        controls = self.controls
         try:
-            geometry = get_geometry(lattice, axis)
+            crystal = self._requested_crystal(apply_custom)
         except ValueError as error:
-            self.controls.axis_error.setText(str(error))
-            self.controls.axis_error.show()
-            with QtCore.QSignalBlocker(self.controls.structure_combo):
-                self.controls.structure_combo.setCurrentIndex(
-                    self.controls.structure_combo.findData(self.state.geometry.lattice)
-                )
+            controls.axis_error.setText(str(error))
+            controls.axis_error.show()
+            # Keep the edited axis text for correction; restore the rest.
+            state = self.state
+            widgets = (controls.structure_combo, controls.structure2_combo,
+                       controls.lattice_ratio_spin)
+            with ExitStack() as blockers:
+                for widget in widgets:
+                    blockers.enter_context(QtCore.QSignalBlocker(widget))
+                for combo, geometry in zip(widgets[:2], state.geometries):
+                    combo.setCurrentIndex(combo.findData(geometry.lattice))
+                controls.lattice_ratio_spin.setValue(state.crystal.scale)
             return
-        self.controls.axis_error.clear()
-        self.controls.axis_error.hide()
-        axis = geometry.axis
-        if (lattice, axis) == (self.state.geometry.lattice, self.state.geometry.axis):
+        if crystal is None:
             return
-        axis_changed = axis != self.state.geometry.axis
+        controls.axis_error.clear()
+        controls.axis_error.hide()
+        parameters = replace(
+            self.state.parameters, lattice=crystal.lattices[0], axis=crystal.axes[0],
+            lattice2=None if crystal.homophase else crystal.lattices[1],
+            axis2=None if crystal.homophase else crystal.axes[1],
+            lattice_ratio=crystal.scale,
+        )
+        previous = self.state.crystal
+        if crystal == previous:
+            self.state.parameters = parameters
+            return
         for timer in (
             self.angle_preview_timer,
             self.coincidence_timer,
@@ -1337,25 +1467,20 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._clear_lattice_selections()
         self.state.grain_displacements = [[], []]
         self._sync_translation_controls("Manual moves cleared by the lattice/axis change.")
-        self.state.geometry = geometry
-        self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, geometry.layer_count)
-        self.state.layer_size_scales = resize_layer_size_scales(self.state.layer_size_scales, geometry.layer_count)
-        self.state.angle_range = misorientation_range(geometry.axis, geometry.lattice)
+        self.state.apply_crystal(crystal)
+        self.state.layer_symbols = resize_layer_symbols(self.state.layer_symbols, self.state.layer_count)
+        self.state.layer_size_scales = resize_layer_size_scales(
+            self.state.layer_size_scales, self.state.layer_count)
         self.state.render_error = None
-        self.state.parameters = replace(
-            self.state.parameters, lattice=lattice, axis=axis
-        )
-        self.state.presets = csl_presets(axis)
-        if axis_changed:
-            self.state.angle_deg = default_angle_deg(axis)
+        self.state.parameters = parameters
+        # Keep an angle only while its meaning (both axes, grain exchange) holds.
+        if (crystal.axes != previous.axes or crystal.homophase != previous.homophase
+                or self.state.angle_deg > self.state.angle_range.maximum_deg):
+            self.state.angle_deg = default_crystal_angle_deg(crystal)
         self.state.pending_angle = self.state.angle_deg
         self.state.angle_update_active = False
         self._clear_near_cell(reset_custom=True)
-        with QtCore.QSignalBlocker(self.controls.preset_combo):
-            self.controls.preset_combo.clear()
-            self.controls.preset_combo.addItem("Custom angle", None)
-            for index, preset in enumerate(self.state.presets):
-                self.controls.preset_combo.addItem(preset.label, index)
+        self._populate_preset_combo()
         self.state.axial_repeat = 0
         with QtCore.QSignalBlocker(self.controls.axial_spin):
             self.controls.axial_spin.setValue(0)
@@ -1367,12 +1492,11 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.state.grain_signature = None
         self.state.visible_atom_masks = []
         self.state.visible_atom_counts = [0, 0]
-        self.state.visible_coincidence_counts = [0] * geometry.layer_count
-        self.state.coincident_points = self._empty_coincidences()
+        self.state.visible_coincidence_counts = [0] * self.state.layer_count
+        self._clear_coincidences()
         self.state.selected_layer = -1
-        all_layers = set(range(geometry.layer_count))
-        self.state.visible_grain_layers = [set(all_layers), set(all_layers)]
-        self.state.visible_layers = set(all_layers)
+        self.state.visible_grain_layers = [set(range(count)) for count in crystal.layer_counts]
+        self._sync_shared_visible_layers()
         self.controls._populate_layer_combo()
         self.controls._rebuild_layer_checks()
         self.plot._create_layer_items()
@@ -1386,10 +1510,18 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.controls.near_info.setPlainText(
                 "Off. Original unstrained lattices displayed."
             )
-        self._update_status(
-            f"Changed to {lattice} {self.state.geometry.axis_label}; previous selections cleared."
-        )
+        self._update_status(f"Changed to {crystal.label}; previous selections cleared.")
         self._sync_translation_controls("Manual moves cleared by the lattice/axis change.")
+
+    def _populate_preset_combo(self):
+        combo = self.controls.preset_combo
+        with QtCore.QSignalBlocker(combo):
+            combo.clear()
+            combo.addItem("Custom angle", None)
+            for index, preset in enumerate(self.state.presets):
+                combo.addItem(preset.label, index)
+        self.controls.preset_label.setText(
+            "CSL preset" if self.state.crystal.homophase else "Orientation relationship")
 
     @property
     def common_cell(self):
@@ -1400,8 +1532,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if self.state.near_cell is not None
             else exact_csl_cell(
                 self.state.angle_deg,
-                lattice=self.state.geometry.lattice,
-                axis=self.state.geometry.axis,
+                lattice=self.state.crystal.lattice,
+                axis=self.state.crystal.axis,
+                scale=self.state.crystal.scale,
             )
         )
 
@@ -1557,8 +1690,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             self.state.angle_deg,
             self.controls.strain_spin.value(),
             self.controls.search_index_spin.value(),
-            lattice=self.state.geometry.lattice,
-            axis=self.state.geometry.axis,
+            lattice=self.state.crystal.lattice,
+            axis=self.state.crystal.axis,
+            scale=self.state.crystal.scale,
         )
         self.near_poll_timer.start()
         self._poll_near_search()  # Cached complete searches need no timer delay.
@@ -1633,15 +1767,6 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.near_debounce_timer.stop()
         self._cancel_parallel_work()
         self._clear_local_pairs()
-        executor, matching_workers = self.compute.matching_executor(
-            sum(len(grain.positions) for grain in self.state.grains),
-            self.state.geometry.layer_count,
-        )
-        groups = np.array_split(
-            np.arange(self.state.geometry.layer_count),
-            min(matching_workers, self.state.geometry.layer_count),
-        )
-        selections = [grain.layer_selections() for grain in self.state.grains]
         distance = self.controls.local_distance_spin.value()
         self.compute.parallel_stage = "local"
         self.compute.parallel_payload = {
@@ -1649,16 +1774,32 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "distance": distance,
         }
         try:
-            self.compute.parallel_futures = [
-                executor.submit(
-                    local_match_layers_worker,
-                    grain_layer_subset(self.state.grains[0], layers, selections[0]),
-                    grain_layer_subset(self.state.grains[1], layers, selections[1]),
-                    distance,
-                    layers,
+            if not self.state.crystal.homophase:
+                # Mutual-nearest columns compete across every layer of both
+                # grains, so this match is not split into layer groups.
+                self.compute.parallel_futures = [self.compute.thread_executor().submit(
+                    projected_local_match_worker, *self.state.grains, distance,
+                )]
+            else:
+                executor, matching_workers = self.compute.matching_executor(
+                    sum(len(grain.positions) for grain in self.state.grains),
+                    self.state.layer_count,
                 )
-                for layers in groups
-            ]
+                groups = np.array_split(
+                    np.arange(self.state.layer_count),
+                    min(matching_workers, self.state.layer_count),
+                )
+                selections = [grain.layer_selections() for grain in self.state.grains]
+                self.compute.parallel_futures = [
+                    executor.submit(
+                        local_match_layers_worker,
+                        grain_layer_subset(self.state.grains[0], layers, selections[0]),
+                        grain_layer_subset(self.state.grains[1], layers, selections[1]),
+                        distance,
+                        layers,
+                    )
+                    for layers in groups
+                ]
         except Exception as error:
             self._parallel_failure(error)
             return
@@ -1672,7 +1813,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         mask = np.full(len(pairs.layers), self.local_active, dtype=bool)
         if self.state.grain_signature != self._geometry_signature():
             mask[:] = False
-        mask &= np.isin(pairs.layers, tuple(self.state.visible_layers))
+        # Both endpoints' own layers must be shown (one shared layer if homophase).
+        mask &= np.isin(pairs.layers, tuple(self.state.visible_grain_layers[0]))
+        mask &= np.isin(pairs.second_layers, tuple(self.state.visible_grain_layers[1]))
         if len(self.state.selected_points) == 2:
             states = self._region_states()
             for grain, points in enumerate((pairs.first, pairs.second)):
@@ -1753,29 +1896,21 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _regenerate_buffer_checked(self, compute_coincidences: bool) -> None:
         center, width, height, bounds = self.plot._buffer_geometry()
         half_angle = 0.5 * self.state.angle_deg
+        crystal = self.state.crystal
         self.state.grains = [
             projected_columns(
                 width,
                 height,
-                +half_angle,
+                sign * half_angle,
                 center=tuple(center),
-                deformation=self.state.deformations[0],
-                lattice=self.state.geometry.lattice,
-                axis=self.state.geometry.axis,
-                translation=self.state.translations[0],
-                displacements=self.state.grain_displacements[0],
-            ),
-            projected_columns(
-                width,
-                height,
-                -half_angle,
-                center=tuple(center),
-                deformation=self.state.deformations[1],
-                lattice=self.state.geometry.lattice,
-                axis=self.state.geometry.axis,
-                translation=self.state.translations[1],
-                displacements=self.state.grain_displacements[1],
-            ),
+                deformation=self.state.deformations[grain],
+                lattice=crystal.lattices[grain],
+                axis=crystal.axes[grain],
+                translation=self.state.translations[grain],
+                displacements=self.state.grain_displacements[grain],
+                scale=crystal.scales[grain],
+            )
+            for grain, sign in enumerate((1.0, -1.0))
         ]
         self.state.buffer_bounds = bounds
         self.state.render_error = None
@@ -1783,7 +1918,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if compute_coincidences:
             self._compute_coincidences()
         else:
-            self.state.coincident_points = self._empty_coincidences()
+            self._clear_coincidences()
             self.state.csl_updating = True
         self._update_visible_points()
         self._update_title()
@@ -1793,13 +1928,15 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self._clear_local_pairs()
         center, width, height, bounds = self.plot._buffer_geometry()
         half_angle = 0.5 * self.state.angle_deg
+        crystal = self.state.crystal
         args = [
             (
                 width, height, sign * half_angle, tuple(center),
                 self.state.deformations[index].copy(),
-                self.state.geometry.lattice, self.state.geometry.axis,
+                crystal.lattices[index], crystal.axes[index],
                 self.state.translations[index].copy(),
                 normalize_grain_displacements(self.state.grain_displacements)[index],
+                crystal.scales[index],
             )
             for index, sign in enumerate((1.0, -1.0))
         ]
@@ -1811,7 +1948,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         # Keep only the newest request. Running jobs cannot be cancelled, so
         # drain them before adding replacements instead of growing the queue.
         self.compute.regeneration_pending = (args, payload)
-        self.state.coincident_points = self._empty_coincidences()
+        self._clear_coincidences()
         self.state.csl_updating = True
         for item in self.plot.coincidence_items:
             self.plot._set_scatter(item, np.empty((0, 2)))
@@ -1853,30 +1990,37 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if len(self.state.grains) != 2:
             return
         self._cancel_parallel_work()
-        executor, matching_workers = self.compute.matching_executor(
-            sum(len(grain.positions) for grain in self.state.grains),
-            self.state.geometry.layer_count,
-        )
         tolerance = COINCIDENCE_TOLERANCE_FACTOR
-        layer_groups = np.array_split(
-            np.arange(self.state.geometry.layer_count),
-            min(matching_workers, self.state.geometry.layer_count),
-        )
-        selections = [grain.layer_selections() for grain in self.state.grains]
+        projected = not self.state.crystal.homophase
         try:
-            self.compute.parallel_futures = [
-                executor.submit(
-                    coincidence_layers_worker,
-                    grain_layer_subset(self.state.grains[0], layers, selections[0]),
-                    grain_layer_subset(self.state.grains[1], layers, selections[1]),
-                    tolerance,
-                    layers,
+            if projected:
+                self.compute.parallel_futures = [self.compute.thread_executor().submit(
+                    projected_coincidence_worker, *self.state.grains, tolerance,
+                )]
+            else:
+                executor, matching_workers = self.compute.matching_executor(
+                    sum(len(grain.positions) for grain in self.state.grains),
+                    self.state.layer_count,
                 )
-                for layers in layer_groups
-            ]
+                layer_groups = np.array_split(
+                    np.arange(self.state.layer_count),
+                    min(matching_workers, self.state.layer_count),
+                )
+                selections = [grain.layer_selections() for grain in self.state.grains]
+                self.compute.parallel_futures = [
+                    executor.submit(
+                        coincidence_layers_worker,
+                        grain_layer_subset(self.state.grains[0], layers, selections[0]),
+                        grain_layer_subset(self.state.grains[1], layers, selections[1]),
+                        tolerance,
+                        layers,
+                    )
+                    for layers in layer_groups
+                ]
         except Exception as error:  # pragma: no cover - platform-specific failure
             self._parallel_failure(error)
             return
+        self.compute.parallel_payload = {"projected": projected}
         self.compute.parallel_stage = "coincidences"
         self.state.csl_updating = True
         self.parallel_poll_timer.start()
@@ -1923,12 +2067,19 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             return
 
         if stage == "coincidences":
-            by_layer = {
-                layer: points for _pid, batch in results for layer, points in batch
-            }
-            self.state.coincident_points = tuple(
-                by_layer[layer] for layer in range(self.state.geometry.layer_count)
-            )
+            projected = self.compute.parallel_payload.get("projected", False)
+            self.compute.parallel_payload = {}
+            if projected:
+                ((_pid, (points, partners)),) = results
+                self.state.coincident_points = points
+                self.state.coincident_second_layers = partners
+            else:
+                by_layer = {
+                    layer: points for _pid, batch in results for layer, points in batch
+                }
+                self._set_same_layer_coincidences(
+                    [by_layer[layer] for layer in range(self.state.layer_count)]
+                )
             self.state.csl_updating = False
             self.state.angle_update_active = False
             self.parallel_poll_timer.stop()
@@ -1939,7 +2090,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             else:
                 self.compute.warm_matching_pool(
                     sum(len(grain.positions) for grain in self.state.grains),
-                    self.state.geometry.layer_count,
+                    self.state.layer_count,
                 )
             return
 
@@ -1962,7 +2113,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 self._update_status()
                 self.compute.warm_matching_pool(
                     sum(len(grain.positions) for grain in self.state.grains),
-                    self.state.geometry.layer_count,
+                    self.state.layer_count,
                 )
 
     def _parallel_failure(self, error: Exception) -> None:
@@ -2019,12 +2170,23 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if len(self.state.grains) != 2:
             return
         tolerance = COINCIDENCE_TOLERANCE_FACTOR
-        self.state.coincident_points = same_layer_coincidence_sites(
-            self.state.grains[0], self.state.grains[1], tolerance
-        )
+        if self.state.crystal.homophase:
+            self._set_same_layer_coincidences(same_layer_coincidence_sites(
+                self.state.grains[0], self.state.grains[1], tolerance
+            ))
+        else:
+            self.state.coincident_points, self.state.coincident_second_layers = (
+                projected_coincidence_sites(*self.state.grains, tolerance)
+            )
         self.state.csl_updating = False
         if self.local_active:
             self._start_local_matching()
+
+    def _set_same_layer_coincidences(self, sites):
+        self.state.coincident_points = tuple(sites)
+        self.state.coincident_second_layers = tuple(
+            np.full(len(points), layer, dtype=np.int16) for layer, points in enumerate(sites)
+        )
 
     def _refresh_view_buffer(self) -> None:
         self._start_parallel_regeneration(
@@ -2132,11 +2294,14 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             if not incremental:
                 self.state.visible_atom_masks.append(visible_mask)
 
-        for layer, (points, item) in enumerate(
-            zip(self.state.coincident_points, self.plot.coincidence_items, strict=True)
-        ):
+        for layer, (points, partners, item) in enumerate(zip(
+            self.state.coincident_points, self.state.coincident_second_layers,
+            self.plot.coincidence_items, strict=True,
+        )):
             if dirty_coincidence_layers is not None and layer not in dirty_coincidence_layers:
                 continue
+            # Both grains' layers must be shown: G1's group and each G2 partner.
+            points = points[np.isin(partners, tuple(self.state.visible_grain_layers[1]))]
             if boundary_ready:
                 first_mask = selected_region_mask(
                     points,
@@ -2155,7 +2320,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 visible_points = points[first_mask & second_mask]
             else:
                 visible_points = points
-            if layer not in self.state.visible_layers:
+            if layer not in self.state.visible_grain_layers[0]:
                 visible_points = np.empty((0, 2))
             self.plot._set_scatter(item, visible_points)
         self._refresh_visible_counts()
@@ -2195,9 +2360,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _update_title(self) -> None:
         self.plot._update_common_cell()
-        preset = matching_csl_preset(
-            self.state.angle_deg, axis=self.state.geometry.axis
-        )
+        preset = matching_angle_preset(self.state.angle_deg, lattice=self.state.crystal)
         suffix = f" · {preset.name}" if preset is not None else ""
         if self.state.manual_strain_fit is not None:
             fit = self.state.manual_strain_fit
@@ -2215,14 +2378,16 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         if self.state.display_rotation_deg:
             suffix += f" · display rotation {self.state.display_rotation_deg:.1f}°"
         angle_label = "reference θ" if self.state.manual_strain_fit is not None else "θ"
+        kind = ("tilt dichromatic pattern" if self.state.crystal.homophase
+                else "interface dichromatic pattern")
         self.plot._set_title(
             f"<span style='font-size:15px;color:#17212b'>"
-            f"{self.state.geometry.lattice} ⟨{self.state.geometry.axis}⟩ tilt dichromatic pattern · {angle_label} = {self.state.angle_deg:.2f}°"
+            f"{html.escape(self.state.crystal.label)} {kind} · {angle_label} = {self.state.angle_deg:.2f}°"
             f"{suffix}</span>"
         )
         prefix = "Reference" if self.state.manual_strain_fit is not None else "Exact"
         exact = f"{prefix} θ = {self.state.angle_deg:.8f}°"
-        if preset is not None:
+        if isinstance(preset, CSLPreset):
             tail = ", ".join(
                 str(int(preset.n * index)) for index in self.state.geometry.axis_indices
             )
@@ -2231,7 +2396,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
 
     def _queue_angle_update(self, angle_deg: float) -> None:
         angle_deg = float(np.clip(angle_deg, 0.0, self.state.angle_range.maximum_deg))
-        preset = matching_csl_preset(float(angle_deg), axis=self.state.geometry.axis)
+        preset = matching_angle_preset(float(angle_deg), lattice=self.state.crystal)
         self.state.pending_angle = (
             preset.angle_deg if preset is not None else float(angle_deg)
         )
@@ -2303,18 +2468,27 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
         self.controls.angle_range_label.setText(f"Allowed range: 0–{bounds.maximum_deg:g}°")
         if bounds.symmetry_order is None:
             explanation = "Unknown crystal symmetry; using the general 0–180° range."
-        else:
+        elif self.state.crystal.homophase:
             explanation = (
                 f"{self.state.geometry.axis_label}: {bounds.symmetry_order}-fold axial symmetry; "
                 f"rotation period {bounds.period_deg:g}°. Exchanging the grains gives "
                 f"the fixed-axis range 0–{bounds.maximum_deg:g}°."
+            )
+        else:
+            explanation = (
+                "Both grains' axial symmetries give a rotation period of "
+                f"{bounds.period_deg:g}°. "
+                + ("A two-fold axis shared by both grains identifies ±θ"
+                   if bounds.sign_equivalent else
+                   "No shared two-fold axis identifies ±θ, and the grains cannot be exchanged")
+                + f"; range 0–{bounds.maximum_deg:g}°."
             )
         for widget in (self.controls.angle_spin, self.controls.angle_slider,
                        self.controls.angle_range_label):
             widget.setToolTip(explanation)
         self.controls.angle_slider.setValue(round(angle * 100.0))
         self.controls.angle_spin.setValue(angle)
-        preset = matching_csl_preset(angle, axis=self.state.geometry.axis)
+        preset = matching_angle_preset(angle, lattice=self.state.crystal)
         combo_index = 0
         if preset is not None:
             combo_index = self.state.presets.index(preset) + 1
@@ -2557,8 +2731,10 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             f"{self._atom_name(first)} → {self._atom_name(second)} · axial {self.state.axial_repeat:+d}"
         ]
         for grain, vector in vectors:
+            # Each grain's components use its own lattice constant.
+            unit = "a₀" if grain == 0 or self.state.crystal.scale == 1.0 else "a₀(G2)"
             lines.append(
-                f"G{grain+1} current (polar): {format_direction_components(vector.current)}"
+                f"G{grain+1} current (polar): {format_direction_components(vector.current, unit)}"
             )
         # Material coordinates can stay integer while current spatial
         # components change under strain. Keep these notions explicitly apart.
@@ -2576,15 +2752,13 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
     def _selected_vector_displacement(self):
         """Actual 3D displacement, including phase height and P2's periodic image."""
         first, second = self.state.selected_atoms
-        axial_half_indices = (
-            second.half_indices
-            - first.half_indices
-            + self.state.axial_repeat * self.state.geometry.axial_repeat_half_indices
-        )
-        dz = 0.5 * axial_half_indices @ self.state.geometry.frame[:, 2]
         # Both grains share the tilt axis, even after their in-plane F and
-        # translations. Only z may be obtained by subtracting cross-grain
-        # reference indices; x/y must come from their actual atom positions.
+        # translations. Only z may be obtained from reference indices (each
+        # grain's own layer heights); x/y must come from actual atom positions.
+        dz = axial_displacement(
+            self.state.crystal, first.grain_index, first.half_indices,
+            second.grain_index, second.half_indices, self.state.axial_repeat,
+        )
         return np.r_[second.position - first.position, dz]
 
     def _selected_crystal_vectors(self):
@@ -2602,8 +2776,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                     displacement,
                     (1 if grain == 0 else -1) * self.state.angle_deg / 2,
                     self.state.deformations[grain],
-                    self.state.geometry.lattice,
-                    self.state.geometry.axis,
+                    self.state.crystal.lattices[grain],
+                    self.state.crystal.axes[grain],
+                    scale=self.state.crystal.scales[grain],
                 ),
             )
             for grain in grains
@@ -2660,7 +2835,9 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
                 message = f"Translate region · click corner {len(self._translation_corners) + 1}/2"
             else:
                 message = "Ready · choose an interaction tool"
-        visible_status_layers = sorted(self.state.visible_layers)
+        homophase = self.state.crystal.homophase
+        visible_status_layers = sorted(
+            self.state.visible_layers if homophase else self.state.visible_grain_layers[0])
         csl_state = (
             "updating…"
             if self.state.csl_updating
@@ -2686,7 +2863,7 @@ class DichromaticPatternWindow(QtWidgets.QMainWindow):
             "Selections stay active while navigating</div>"
             "<div style='margin-top:7px;color:#526174'>"
             f"Visible G1 / G2: {self.state.visible_atom_counts[0]} / {self.state.visible_atom_counts[1]}<br>"
-            f"Same-layer CSL: {csl_state}<br>"
+            f"{'Same-layer CSL' if homophase else 'Coincident columns (by G1 layer)'}: {csl_state}<br>"
             f"Compute: {compute_state}</div>"
         )
 

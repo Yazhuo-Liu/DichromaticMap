@@ -1,4 +1,9 @@
-"""Exact layer-preserving CSL and local same-layer atom matching."""
+"""Exact layer-preserving CSL and local same-layer atom matching.
+
+Two different grains (see ``crystal.Bicrystal``) have unrelated axial layers.
+Their exact common cell is found from rational planar bases, and atoms are
+matched as projected columns across all layers of both grains.
+"""
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -6,7 +11,7 @@ from fractions import Fraction
 from functools import lru_cache
 from math import gcd
 import numpy as np
-from .crystal import ProjectedGrain, get_geometry, congruence_kernel
+from .crystal import ProjectedGrain, bicrystal, get_geometry, congruence_kernel
 from .cells import StrainedCell, bases, determinant, reduce_cell
 
 DEFAULT_LOCAL_DISTANCE = 0.1  # pair separation in a0, not a strain percentage
@@ -15,11 +20,20 @@ COINCIDENCE_TOLERANCE_FACTOR = 1.0e-6
 
 @dataclass(frozen=True)
 class LocalPairs:
-    """Original endpoints of one-to-one same-layer near pairs (units a0)."""
+    """Original endpoints of one-to-one near pairs (units a0).
+
+    ``layers`` holds each pair's grain-1 layer and ``second_layers`` its
+    grain-2 layer. Same-layer pairs omit the latter, which then equals layers.
+    """
 
     first: np.ndarray
     second: np.ndarray
     layers: np.ndarray
+    second_layers: np.ndarray | None = None
+
+    def __post_init__(self):
+        if self.second_layers is None:
+            object.__setattr__(self, "second_layers", self.layers)
 
     @classmethod
     def empty(cls):
@@ -33,7 +47,7 @@ class LocalPairs:
         return cls(
             *(
                 np.concatenate([getattr(batch, name) for batch in batches])
-                for name in ("first", "second", "layers")
+                for name in ("first", "second", "layers", "second_layers")
             )
         )
 
@@ -252,7 +266,36 @@ def local_near_pairs(
     return LocalPairs.concatenate(batches)
 
 
-def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
+def projected_near_pairs(
+    grain1, grain2, distance=DEFAULT_LOCAL_DISTANCE, exact_tolerance=1e-6
+):
+    """Mutual nearest projected columns of two grains with unrelated layers.
+
+    Every column of each grain competes, whatever its axial layer, so this is
+    a projection (column) match rather than a three-dimensional coincidence.
+    Each pair records the layer of both endpoints. Exact pairs participate in
+    the assignment and are then omitted, as in ``local_near_pairs``.
+    """
+    if not np.isfinite(distance) or not 0 < distance <= 0.5:
+        raise ValueError("Local pair distance must be in (0, 0.5] a0")
+    if not np.isfinite(exact_tolerance) or exact_tolerance < 0:
+        raise ValueError("Exact tolerance must be finite and nonnegative")
+    first, second = grain1.positions, grain2.positions
+    if not len(first) or not len(second):
+        return LocalPairs.empty()
+    forward = _nearest_in_radius(first, second, distance)
+    reverse = _nearest_in_radius(second, first, distance)
+    i = np.flatnonzero(forward >= 0)
+    j = forward[i]
+    mutual = reverse[j] == i
+    i, j = i[mutual], j[mutual]
+    keep = _point_distances(first[i], second[j]) > exact_tolerance
+    i, j = i[keep], j[keep]
+    return LocalPairs(first[i], second[j], grain1.layers[i].astype(np.int16),
+                      grain2.layers[j].astype(np.int16))
+
+
+def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110", *, scale=1.0):
     """Exact, layer-preserving common cell; no strain search or atom matching.
 
     Recognize tan(theta/2)/sqrt(axis.axis) = n/m to 1e-9 degrees, with
@@ -266,19 +309,26 @@ def exact_csl_cell(angle, max_denominator=128, lattice="FCC", axis="110"):
     This is primitive in the A-preserving plane, not necessarily in 3D.
     Noncommensurate/unrecognized angles return None, never a strained fit.
     Returned arrays are independent writable copies of the private cache.
+
+    Per-grain lattices/axes or a lattice-constant ratio (``scale``) use
+    ``_exact_common_cell`` instead: the planar translation lattices of two
+    different grains, over angles in [0, 360].
     """
-    geometry = get_geometry(lattice, axis)
+    crystal = bicrystal(lattice, axis, scale)
     if not isinstance(max_denominator, (int, np.integer)) or max_denominator < 1:
         raise ValueError("max_denominator must be a positive integer")
-    if not np.isfinite(angle) or not 0 <= angle <= 180:
+    if not np.isfinite(angle) or not 0 <= angle <= (180 if crystal.homophase else 360):
         return None
-    cached = _exact_csl_cell(float(angle), int(max_denominator),
-                             geometry.lattice, geometry.axis)
+    if crystal.homophase:
+        cached = _exact_csl_cell(float(angle), int(max_denominator),
+                                 crystal.lattices[0], crystal.axes[0])
+    else:
+        cached = _exact_common_cell(float(angle), int(max_denominator), crystal)
     if cached is None:
         return None
     return StrainedCell(*(getattr(cached, field).copy()
                          for field in ("m1", "m2", "f1", "f2", "cell")),
-                       cached.max_strain, cached.lattice, cached.axis)
+                       cached.max_strain, cached.lattice, cached.axis, cached.scale)
 
 
 @lru_cache(maxsize=256)
@@ -337,10 +387,122 @@ def _exact_csl_cell(angle, max_denominator, lattice, axis):
     return StrainedCell(*arrays, 0.0, lattice, axis)
 
 
+@lru_cache(maxsize=256)
+def _exact_common_cell(angle, max_denominator, crystal):
+    """Common planar translations of two different grains, without strain.
+
+    Recognize every entry of B2^-1 B1 as a rational with denominator at most
+    max_denominator, to 1e-9 relative to max(1, |entry|). With B2^-1 B1 = P/d,
+    the congruence kernel of P modulo d gives M1 and M2 = P M1 / d, verified
+    by B1 M1 = B2 M2 to 1e-8 a0. A lattice-constant ratio given as a rounded
+    decimal is generally incommensurate and correctly returns None.
+    """
+    b1, b2 = bases(angle, crystal)
+    with np.errstate(over="ignore", invalid="ignore"):
+        relative = np.linalg.solve(b2, b1)
+    if not np.all(np.isfinite(relative)):
+        return None
+    fractions = []
+    for value in relative.flat:
+        fraction = Fraction(float(value)).limit_denominator(max_denominator)
+        if abs(float(fraction) - value) > 1e-9 * max(1.0, abs(value)):
+            return None
+        fractions.append(fraction)
+    d = 1
+    for fraction in fractions:
+        d = d * fraction.denominator // gcd(d, fraction.denominator)
+    p = np.array([int(fraction * d) for fraction in fractions], dtype=object).reshape(2, 2)
+    m1 = congruence_kernel(p, d)
+    m2 = np.asarray((p @ m1.astype(object)) // d, dtype=np.int64)
+    m1, m2, cell = reduce_cell(m1, m2, b1 @ m1)
+    if not np.allclose(cell, b2 @ m2, atol=1e-8, rtol=0):
+        return None
+    arrays = (m1, m2, np.eye(2), np.eye(2), cell)
+    for array in arrays:
+        array.setflags(write=False)
+    return StrainedCell(*arrays, 0.0, crystal.lattice, crystal.axis, crystal.scale)
+
+
 # Preserve cache inspection/control used by Python clients of the public API.
-exact_csl_cell.cache_clear = _exact_csl_cell.cache_clear
+def _clear_exact_cell_caches():
+    _exact_csl_cell.cache_clear()
+    _exact_common_cell.cache_clear()
+
+
+exact_csl_cell.cache_clear = _clear_exact_cell_caches
 exact_csl_cell.cache_info = _exact_csl_cell.cache_info
 exact_csl_cell.cache_parameters = _exact_csl_cell.cache_parameters
+
+
+def _coincident_partners(first, second, tolerance, tolerance_squared):
+    """Index of one second-set partner within tolerance for each first point, or -1."""
+    first_cells, second_cells = _spatial_cells(first, second, tolerance)
+    # Small relative rectangles keep the fast packed-key path. Larger
+    # rectangles retain both full int64 coordinates, without 32-bit wrap.
+    packed = all(np.max(cells) < np.iinfo(np.uint32).max
+                 for cells in (first_cells, second_cells))
+    if packed:
+        def cell_keys(cells):
+            unsigned = cells.astype(np.uint64)
+            return (unsigned[:, 0] << np.uint64(32)) | unsigned[:, 1]
+    else:
+        dtype = np.dtype([("x", np.int64), ("y", np.int64)])
+
+        def cell_keys(cells):
+            return np.ascontiguousarray(cells).view(dtype).reshape(-1)
+
+    second_keys = cell_keys(second_cells)
+    order = np.argsort(second_keys, kind="stable")
+    sorted_keys = second_keys[order]
+    bin_starts = np.r_[0, np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]) + 1]
+    bin_keys = sorted_keys[bin_starts]
+    bin_counts = np.diff(np.r_[bin_starts, len(second)])
+    matched_second = np.full(len(first), -1, dtype=np.int64)
+
+    # A genuine match can lie in the same cell or one of eight neighbors.
+    # Searching all first sites in a batch keeps large CSL views responsive.
+    for delta_x in (-1, 0, 1):
+        for delta_y in (-1, 0, 1):
+            unresolved = matched_second < 0
+            if not np.any(unresolved):
+                break
+            first_indices = np.flatnonzero(unresolved)
+            neighbor_cells = first_cells[first_indices] + (delta_x, delta_y)
+            neighbor_keys = cell_keys(neighbor_cells)
+            locations = np.searchsorted(bin_keys, neighbor_keys)
+            within = locations < len(bin_keys)
+            safe_locations = np.minimum(locations, len(bin_keys) - 1)
+            key_matches = within & (bin_keys[safe_locations] == neighbor_keys)
+            if not np.any(key_matches):
+                continue
+            trial_first = first_indices[key_matches]
+            starts = bin_starts[safe_locations[key_matches]]
+            counts = bin_counts[safe_locations[key_matches]]
+            # Usually a tiny exact bin has one atom. When it has several,
+            # every occupant must be considered before declaring no match.
+            for occupant in range(int(np.max(counts))):
+                active = (counts > occupant) & (matched_second[trial_first] < 0)
+                if not np.any(active):
+                    break
+                current_first = trial_first[active]
+                current_second = order[starts[active] + occupant]
+                delta = first[current_first] - second[current_second]
+                if np.isfinite(tolerance_squared) and tolerance_squared >= np.finfo(float).tiny:
+                    with np.errstate(over="ignore", under="ignore"):
+                        accepted = np.einsum("ij,ij->i", delta, delta) <= tolerance_squared
+                else:
+                    accepted = np.hypot(delta[:, 0], delta[:, 1]) <= tolerance
+                matched_second[current_first[accepted]] = current_second[accepted]
+        if not np.any(matched_second < 0):
+            break
+    return matched_second
+
+
+def _tolerance_squared(tolerance):
+    if not np.isfinite(tolerance) or tolerance <= 0.0:
+        raise ValueError("coincidence tolerance must be finite and positive")
+    with np.errstate(over="ignore", under="ignore"):
+        return np.float64(tolerance) ** 2
 
 
 def same_layer_coincidence_sites(
@@ -350,12 +512,8 @@ def same_layer_coincidence_sites(
 ) -> tuple[np.ndarray, ...]:
     """Find coincidences separately in every computed axial phase."""
 
-    if not np.isfinite(tolerance) or tolerance <= 0.0:
-        raise ValueError("coincidence tolerance must be finite and positive")
+    tolerance_squared = _tolerance_squared(tolerance)
     sites_by_layer: list[np.ndarray] = []
-    with np.errstate(over="ignore", under="ignore"):
-        tolerance_squared = np.float64(tolerance) ** 2
-
     first_layers = grain_1.layer_selections()
     second_layers = grain_2.layer_selections()
     count = max(
@@ -370,69 +528,42 @@ def same_layer_coincidence_sites(
         if len(first) == 0 or len(second) == 0:
             sites_by_layer.append(np.empty((0, 2)))
             continue
-
-        first_cells, second_cells = _spatial_cells(first, second, tolerance)
-        # Small relative rectangles keep the fast packed-key path. Larger
-        # rectangles retain both full int64 coordinates, without 32-bit wrap.
-        packed = all(np.max(cells) < np.iinfo(np.uint32).max
-                     for cells in (first_cells, second_cells))
-        if packed:
-            def cell_keys(cells):
-                unsigned = cells.astype(np.uint64)
-                return (unsigned[:, 0] << np.uint64(32)) | unsigned[:, 1]
-        else:
-            dtype = np.dtype([("x", np.int64), ("y", np.int64)])
-
-            def cell_keys(cells):
-                return np.ascontiguousarray(cells).view(dtype).reshape(-1)
-
-        second_keys = cell_keys(second_cells)
-        order = np.argsort(second_keys, kind="stable")
-        sorted_keys = second_keys[order]
-        bin_starts = np.r_[0, np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]) + 1]
-        bin_keys = sorted_keys[bin_starts]
-        bin_counts = np.diff(np.r_[bin_starts, len(second)])
-        matched_second = np.full(len(first), -1, dtype=np.int64)
-
-        # A genuine match can lie in the same cell or one of eight neighbors.
-        # Searching all first sites in a batch keeps large CSL views responsive.
-        for delta_x in (-1, 0, 1):
-            for delta_y in (-1, 0, 1):
-                unresolved = matched_second < 0
-                if not np.any(unresolved):
-                    break
-                first_indices = np.flatnonzero(unresolved)
-                neighbor_cells = first_cells[first_indices] + (delta_x, delta_y)
-                neighbor_keys = cell_keys(neighbor_cells)
-                locations = np.searchsorted(bin_keys, neighbor_keys)
-                within = locations < len(bin_keys)
-                safe_locations = np.minimum(locations, len(bin_keys) - 1)
-                key_matches = within & (bin_keys[safe_locations] == neighbor_keys)
-                if not np.any(key_matches):
-                    continue
-                trial_first = first_indices[key_matches]
-                starts = bin_starts[safe_locations[key_matches]]
-                counts = bin_counts[safe_locations[key_matches]]
-                # Usually a tiny exact bin has one atom. When it has several,
-                # every occupant must be considered before declaring no match.
-                for occupant in range(int(np.max(counts))):
-                    active = (counts > occupant) & (matched_second[trial_first] < 0)
-                    if not np.any(active):
-                        break
-                    current_first = trial_first[active]
-                    current_second = order[starts[active] + occupant]
-                    delta = first[current_first] - second[current_second]
-                    if np.isfinite(tolerance_squared) and tolerance_squared >= np.finfo(float).tiny:
-                        with np.errstate(over="ignore", under="ignore"):
-                            accepted = np.einsum("ij,ij->i", delta, delta) <= tolerance_squared
-                    else:
-                        accepted = np.hypot(delta[:, 0], delta[:, 1]) <= tolerance
-                    matched_second[current_first[accepted]] = current_second[accepted]
-            if not np.any(matched_second < 0):
-                break
-
+        matched_second = _coincident_partners(first, second, tolerance, tolerance_squared)
         matched_first = np.flatnonzero(matched_second >= 0)
         sites_by_layer.append(
             first[matched_first] / 2 + second[matched_second[matched_first]] / 2
         )
     return tuple(sites_by_layer)
+
+
+def projected_coincidence_sites(
+    grain_1: ProjectedGrain,
+    grain_2: ProjectedGrain,
+    tolerance: float,
+) -> tuple[tuple[np.ndarray, ...], tuple[np.ndarray, ...]]:
+    """Coincident projected columns of two grains with unrelated axial layers.
+
+    Every grain-1 column is compared with every grain-2 column. Results are
+    grouped by grain-1 layer, padded to both grains' larger layer count, and
+    paired with the grain-2 layer of each site. A coincidence in projection
+    need not be a coincidence in three dimensions.
+    """
+    tolerance_squared = _tolerance_squared(tolerance)
+    count = max(getattr(grain_1, "layer_count", 2), getattr(grain_2, "layer_count", 2),
+                int(np.max(grain_1.layers, initial=-1)) + 1,
+                int(np.max(grain_2.layers, initial=-1)) + 1)
+    sites = [np.empty((0, 2)) for _ in range(count)]
+    partners = [np.empty(0, dtype=np.int16) for _ in range(count)]
+    first = np.asarray(grain_1.positions, dtype=np.float64)
+    second = np.asarray(grain_2.positions, dtype=np.float64)
+    if len(first) and len(second):
+        matched_second = _coincident_partners(first, second, tolerance, tolerance_squared)
+        matched_first = np.flatnonzero(matched_second >= 0)
+        matched_second = matched_second[matched_first]
+        midpoints = first[matched_first] / 2 + second[matched_second] / 2
+        first_layers = grain_1.layers[matched_first]
+        for layer in np.unique(first_layers):
+            selection = first_layers == layer
+            sites[int(layer)] = midpoints[selection]
+            partners[int(layer)] = grain_2.layers[matched_second[selection]].astype(np.int16)
+    return tuple(sites), tuple(partners)

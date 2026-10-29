@@ -75,6 +75,19 @@ def manual_strain_state():
     return state
 
 
+def drop_schema_6_fields(payload):
+    """Remove grain-2 parameters and vertex layers, as in a schema 5 file."""
+    state = payload["state"]
+    for field in ("lattice2", "axis2", "lattice_ratio"):
+        state["parameters"].pop(field)
+    for vertices in (state["manual_vertices"], state["manual_unstrained_vertices"] or []):
+        for vertex in vertices:
+            vertex.pop("second_layer")
+    for cell in (state["near_cell"], (state["manual_strain_fit"] or {}).get("cell")):
+        if cell is not None:
+            cell.pop("scale")
+
+
 def rewrite_metadata(path, mutate):
     with zipfile.ZipFile(path) as archive:
         members = {name: archive.read(name) for name in archive.namelist()}
@@ -208,7 +221,7 @@ def test_displacements_cannot_retain_stale_applied_cell_metadata(tmp_path):
 
 def test_save_uses_current_geometry_and_exact_angle_not_launch_parameters(tmp_path):
     state = PatternState(PatternParameters())
-    state.geometry = crystal.get_geometry("BCC", "100")
+    state.apply_crystal(crystal.bicrystal("BCC", "100"))
     state.angle_deg = 2 * np.degrees(np.arctan(1 / 3))
     state.visible_grain_layers = [set(range(state.geometry.layer_count)) for _ in range(2)]
     path = tmp_path / "changed.dmap"
@@ -364,6 +377,7 @@ def test_legacy_schema_restores_existing_vertices_and_appearance(tmp_path, versi
     before = populated_state()
     session.save_session(path, before, SETTINGS, VIEW)
     def downgrade(payload):
+        drop_schema_6_fields(payload)
         payload["schema_version"] = version
         payload["state"].pop("grain_displacements")
     rewrite_metadata(path, downgrade)
@@ -398,6 +412,7 @@ def test_generated_vertex_provenance_roundtrip_requires_schema_4(tmp_path, count
         [v.grain_positions for v in state.manual_vertices],
     )
     def downgrade(payload):
+        drop_schema_6_fields(payload)
         payload["schema_version"] = 3
         payload["state"].pop("grain_displacements")
     rewrite_metadata(path, downgrade)
@@ -432,6 +447,7 @@ def test_schema_1_migrates_appearance_defaults_without_changing_physical_state(t
     session.save_session(path, before, SETTINGS, VIEW)
 
     def downgrade(payload):
+        drop_schema_6_fields(payload)
         payload["schema_version"] = 1
         payload["state"].pop("grain_colors")
         payload["state"].pop("layer_symbols")
@@ -468,6 +484,7 @@ def test_schema_2_retains_colors_symbols_and_physical_state_with_default_sizes(t
     session.save_session(path, before, SETTINGS, VIEW)
 
     def downgrade(payload):
+        drop_schema_6_fields(payload)
         payload["schema_version"] = 2
         payload["state"].pop("layer_size_scales")
         payload["state"].pop("grain_displacements")

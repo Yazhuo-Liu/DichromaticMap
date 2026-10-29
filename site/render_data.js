@@ -43,8 +43,13 @@ class SelectedRows {
 
 function decodeRenderResult(value) {
   if (value?.format !== "dichromatic-map-render-v1") return value;
-  return {...value.metadata, grains: value.grains.map(grain => new DenseRows(grain, 6)),
+  const result = {...value.metadata, grains: value.grains.map(grain => new DenseRows(grain, 6)),
     coincidences: new DenseRows(value.coincidences, 3), local: value.local === null ? null : new DenseRows(value.local, 5)};
+  // Rows keep the G1 layer; two different grains add each row's G2 layer.
+  for (const name of ["coincidence_partners", "local_partners"]) {
+    if (value[name] != null) result[name] = value[name];
+  }
+  return result;
 }
 
 if (typeof module !== "undefined") module.exports = {decodeRenderResult, DenseRows, SelectedRows};
