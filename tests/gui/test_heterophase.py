@@ -10,6 +10,11 @@ pytestmark = pytest.mark.gui
 FE = dict(lattice="FCC", axis="110", lattice2="BCC", axis2="111", lattice_ratio=2.87 / 3.59)
 
 
+def cross2(u, v):
+    """z component of u × v for in-plane vectors (NumPy 2 np.cross needs 3D)."""
+    return u[0] * v[1] - u[1] * v[0]
+
+
 def test_grain_two_controls_start_as_a_copy_of_grain_one(gui):
     window = gui.window()
     controls = window.controls
@@ -91,12 +96,12 @@ def test_two_grain_manual_cell_counts_and_session_roundtrip(gui, tmp_path):
     origin = min(chosen, key=lambda vertex: np.linalg.norm(vertex.position))
     others = sorted(chosen, key=lambda vertex: np.linalg.norm(vertex.position - origin.position))
     a = next(v for v in others[1:] if np.linalg.norm(v.position - origin.position) > 1)
-    b = next(v for v in others[1:] if abs(np.cross(a.position - origin.position,
-                                                   v.position - origin.position)) > 1)
+    b = next(v for v in others[1:] if abs(cross2(a.position - origin.position,
+                                                 v.position - origin.position)) > 1)
     fourth_target = a.position + b.position - origin.position
     c = min(chosen, key=lambda vertex: np.linalg.norm(vertex.position - fourth_target))
     vertices = [origin, a, c, b]
-    if np.cross(a.position - origin.position, b.position - origin.position) < 0:
+    if cross2(a.position - origin.position, b.position - origin.position) < 0:
         vertices = [origin, b, c, a]
     window.state.manual_vertices = [window._resolve_cell_vertex(vertex) for vertex in vertices]
     window._queue_manual_count()
